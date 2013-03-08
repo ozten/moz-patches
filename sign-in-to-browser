@@ -1,0 +1,128 @@
+# HG changeset patch
+# Parent 5722c4346dfe92e584957433ca2d05029004016c
+
+diff --git a/browser/base/content/browser-identity.js b/browser/base/content/browser-identity.js
+--- a/browser/base/content/browser-identity.js
++++ b/browser/base/content/browser-identity.js
+@@ -21,43 +21,56 @@ function IdentityShim() {
+   this.isLoaded = false;
+ }
+ 
+ IdentityShim.prototype = {
+   init: function IdentityShim_init() {
+     addMessageListener('identity-delegate-watch', this);
+     addMessageListener('identity-delegate-request', this);
+     addMessageListener('identity-delegate-logout', this);
++    addMessageListener('identity-delegate-signin', this);
++    addMessageListener('identity-delegate-createUser', this);
+     sendAsyncMessage('identity-delegate-loaded');
+     logger.log('init().  sent identity-delegate-complete');
+     this.isLoaded = true;
+   },
+ 
+   uninit: function IdentityShim_uninit() {
+     if (this.isLoaded) {
+       removeMessageListener('identity-delegate-watch', this);
+       removeMessageListener('identity-delegate-request', this);
+       removeMessageListener('identity-delegate-logout', this);
++      removeMessageListener('identity-delegate-signin', this);
++      removeMessageListener('identity-delegate-createUser', this);
+       sendAsyncMessage('identity-delegate-complete', null);
+       logger.log('uninit().  sent identity-delegate-complete');
+       this.isLoaded = false;
+     }
+   },
+ 
+   receiveMessage: function IdentityShim_receiveMessage(aMessage) {
++    let options = aMessage.json;
+     switch (aMessage.name) {
+       case 'identity-delegate-watch':
+-        this.watch(aMessage.json);
++        this.watch(options);
+         break;
+       case 'identity-delegate-request':
+-        this.request(aMessage.json);
++        this.request(options);
+         break;
+       case 'identity-delegate-logout':
+-        this.logout(aMessage.json);
++        this.logout(options);
+         break;
++
++      case 'identity-delegate-signin':
++        this.signin(options);
++        break;
++      case 'identity-delegate-createUser':
++        this.createUser(options);
++        break;
++  
+       default:
+         logger.error("received unexpected message:", aMessage.name);
+         break;
+     }
+   },
+ 
+   _identityDoMethod: function IdentityShim__identityDoMethod(message) {
+     sendAsyncMessage('identity-service-doMethod', message);
+@@ -119,16 +132,61 @@ IdentityShim.prototype = {
+       let BrowserID = content.wrappedJSObject.BrowserID;
+       let callback = function() {
+         this._identityDoMethod({method: 'logout', _internal: options._internal});
+         this._close();
+       }.bind(this);
+ 
+       BrowserID.internal.logout(options.origin, callback);
+     }
++  },
++
++  signin: function IdentityShim_signin(options) {
++    let email = options.email;
++    let password = options.password;
++    let origin = options.origin;
++    if (email && password && origin) {
++      logger.log("try to signin", email, "->", origin);
++      let stringifiedOptions = JSON.stringify(options);
++      let BrowserID = content.wrappedJSObject.BrowserID;
++
++      let callback = function(assertion, internalParams) {
++        internalParams = internalParams || {};
++        if (assertion) {
++          logger.log("got assertion");
++          this._identityDoMethod({
++            method: 'login',
++            assertion: assertion,
++            _internal: options._internal,
++            _internalParams: internalParams});
++      }.bind(this);;
++
++      BrowserID.internal.signin(
++          email, password, origin, 
++          callback, stringifiedOptions);
++    }
++  },
++
++  createUser: function IdentityShim_createUser(options) {
++    let email = options.email;
++    let password = options.password;
++    // XXX what about unverified here ...
++    if (email && password) {
++      logger.log("authenticate", email);
++      let BrowserID = content.wrappedJSObject.BrowserID;
++
++      let callback = function(success) {
++        this._identityDoMethod({
++          method: 'createUser',
++          success: success
++        });
++      }.bind(this);
++
++      BrowserID.internal.createUser(email, password, callback);
++    }
+   }
+ };
+ 
+ this.shim = null; 
+ 
+ addEventListener('DOMContentLoaded', function(e) {
+   content.addEventListener('load', function(e) {
+     logger.log('content loaded');

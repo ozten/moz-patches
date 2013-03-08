@@ -1,0 +1,2497 @@
+# HG changeset patch
+# Parent 0e7639e3bdfbe56b5e788f234cafb3c5074954cc
+
+diff --git a/browser/base/content/browser-identity.js b/browser/base/content/browser-identity.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/browser-identity.js
+@@ -0,0 +1,146 @@
++/* -*- Mode: js2; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- /
++/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
++ * You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// This JS shim contains the callbacks to fire DOMRequest events for
++// navigator.pay API within the payment processor's scope.
++
++'use strict';
++
++let { classes: Cc, interfaces: Ci, utils: Cu } = Components;
++Cu.import('resource://gre/modules/XPCOMUtils.jsm');
++
++XPCOMUtils.defineLazyGetter(this, "logger", function () {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
++
++function IdentityShim() {
++  this.isLoaded = false;
++}
++
++IdentityShim.prototype = {
++  init: function IdentityShim_init() {
++    addMessageListener('identity-delegate-watch', this);
++    addMessageListener('identity-delegate-request', this);
++    addMessageListener('identity-delegate-logout', this);
++    sendAsyncMessage('identity-delegate-loaded');
++    logger.log('init().  sent identity-delegate-complete');
++    this.isLoaded = true;
++  },
++
++  uninit: function IdentityShim_uninit() {
++    if (this.isLoaded) {
++      removeMessageListener('identity-delegate-watch', this);
++      removeMessageListener('identity-delegate-request', this);
++      removeMessageListener('identity-delegate-logout', this);
++      sendAsyncMessage('identity-delegate-complete', null);
++      logger.log('uninit().  sent identity-delegate-complete');
++      this.isLoaded = false;
++    }
++  },
++
++  receiveMessage: function IdentityShim_receiveMessage(aMessage) {
++    switch (aMessage.name) {
++      case 'identity-delegate-watch':
++        this.watch(aMessage.json);
++        break;
++      case 'identity-delegate-request':
++        this.request(aMessage.json);
++        break;
++      case 'identity-delegate-logout':
++        this.logout(aMessage.json);
++        break;
++      default:
++        logger.error("received unexpected message:", aMessage.name);
++        break;
++    }
++  },
++
++  _identityDoMethod: function IdentityShim__identityDoMethod(message) {
++    sendAsyncMessage('identity-service-doMethod', message);
++  },
++
++  _close: function IdentityShim__close() {
++    this.uninit();
++  },
++
++  watch: function IdentityShim_watch(options) {
++    logger.log('doInternalWatch: isLoaded:', this.isLoaded, 'options:', options);
++    if (options) {
++      let BrowserID = content.wrappedJSObject.BrowserID;
++      let callback = function(aParams, aInternalParams) {
++        this._identityDoMethod(aParams);
++        if (aParams.method === 'ready') {
++          this._close();
++        }
++      }.bind(this);
++
++      BrowserID.internal.watch(
++        callback,
++        JSON.stringify(options),
++        function(...things) {
++          logger.log('internal watch returned:', things);
++        }
++      );
++    }
++  },
++
++  request: function IdentityShim_request(options) {
++    logger.log('doInternalRequest: isLoaded:', this.isLoaded, 'options:', options);
++    if (options) {
++      var stringifiedOptions = JSON.stringify(options);
++      let callback = function(assertion, internalParams) {
++        internalParams = internalParams || {};
++        if (assertion) {
++          logger.log("got assertion");
++          this._identityDoMethod({
++            method: 'login',
++            assertion: assertion,
++            _internal: options._internal,
++            _internalParams: internalParams});
++        }
++        this._close();
++      }.bind(this);
++
++      content.wrappedJSObject.BrowserID.internal.get(
++        options.origin,
++        callback,
++        stringifiedOptions
++      );
++    }
++  },
++
++  logout: function IdentityShim_logout(options) {
++    logger.log('doInternalLogout: isLoaded:', this.isLoaded, 'options:', options);
++    if (options) {
++      let BrowserID = content.wrappedJSObject.BrowserID;
++      let callback = function() {
++        this._identityDoMethod({method: 'logout', _internal: options._internal});
++        this._close();
++      }.bind(this);
++
++      BrowserID.internal.logout(options.origin, callback);
++    }
++  }
++};
++
++this.shim = null; 
++
++addEventListener('DOMContentLoaded', function(e) {
++  content.addEventListener('load', function(e) {
++    logger.log('content loaded');
++    this.shim = new IdentityShim();
++    this.shim.init();
++  });
++});
++
++content.addEventListener('beforeunload', function(e) {
++  if (this.shim) {
++    this.shim.uninit();
++  }
++});
++
++
+diff --git a/browser/base/content/browser.css b/browser/base/content/browser.css
+--- a/browser/base/content/browser.css
++++ b/browser/base/content/browser.css
+@@ -270,36 +270,16 @@ panel[noactions] > richlistbox > richlis
+ #urlbar[pageproxystate="invalid"] > #urlbar-icons > .urlbar-icon:not(#go-button),
+ #urlbar[pageproxystate="valid"] > #urlbar-icons > #go-button,
+ #urlbar[pageproxystate="invalid"][focused="true"] > #urlbar-go-button ~ toolbarbutton,
+ #urlbar[pageproxystate="valid"] > #urlbar-go-button,
+ #urlbar:not([focused="true"]) > #urlbar-go-button {
+   visibility: collapse;
+ }
+ 
+-#urlbar[pageproxystate="invalid"] > #identity-box > #identity-icon-labels {
+-  visibility: collapse;
+-}
+-
+-#urlbar[pageproxystate="invalid"] > #identity-box {
+-  pointer-events: none;
+-}
+-
+-#identity-icon-labels {
+-  max-width: 18em;
+-}
+-
+-#identity-icon-country-label {
+-  direction: ltr;
+-}
+-
+-#identity-box.verifiedIdentity > #identity-icon-labels > #identity-icon-label {
+-  -moz-margin-end: 0.25em !important;
+-}
+-
+ #wrapper-search-container > #search-container > #searchbar > .searchbar-textbox > .autocomplete-textbox-container > .textbox-input-box > html|*.textbox-input {
+   visibility: hidden;
+ }
+ 
+ /* ::::: Unified Back-/Forward Button ::::: */
+ #back-button > .toolbarbutton-menu-dropmarker,
+ #forward-button > .toolbarbutton-menu-dropmarker {
+   display: none;
+@@ -361,26 +341,16 @@ window[chromehidden~="toolbar"] toolbar:
+   overflow-y: visible !important;
+ }
+ 
+ #sync-notifications notification {
+   -moz-binding: url("chrome://browser/content/sync/notification.xml#notification");
+ }
+ %endif
+ 
+-/* Identity UI */
+-#identity-popup-content-box.unknownIdentity > #identity-popup-connectedToLabel ,
+-#identity-popup-content-box.unknownIdentity > #identity-popup-runByLabel ,
+-#identity-popup-content-box.unknownIdentity > #identity-popup-content-host ,
+-#identity-popup-content-box.unknownIdentity > #identity-popup-content-owner ,
+-#identity-popup-content-box.verifiedIdentity > #identity-popup-connectedToLabel2 ,
+-#identity-popup-content-box.verifiedDomain > #identity-popup-connectedToLabel2 {
+-  display: none;
+-}
+-
+ /*  Full Screen UI */
+ 
+ #fullscr-toggler {
+   height: 1px;
+   background: black;
+ }
+ 
+ #full-screen-warning-container {
+diff --git a/browser/base/content/urlbarBindings.xml b/browser/base/content/urlbarBindings.xml
+--- a/browser/base/content/urlbarBindings.xml
++++ b/browser/base/content/urlbarBindings.xml
+@@ -1117,264 +1117,70 @@
+       <method name="onDownloadEnded">
+         <body><![CDATA[
+           this.updateProgress();
+         ]]></body>
+       </method>
+     </implementation>
+   </binding>
+ 
+-  <binding id="identity-request-notification" extends="chrome://global/content/bindings/notification.xml#popup-notification">
+-    <content align="start">
++  <binding 
++    id="identity-request-notification" 
++    extends="chrome://global/content/bindings/notification.xml#popup-notification">
+ 
+-      <xul:image class="popup-notification-icon"
+-                 xbl:inherits="popupid,src=icon"/>
++    <content>
++      <panel id="persona-container" anonid="persona-container" flex="1" />
++    </content>
+ 
+-      <xul:vbox flex="1">
+-        <xul:vbox anonid="identity-deck">
+-          <xul:vbox flex="1" pack="center"> <!-- 1: add an email -->
+-            <html:input type="email" anonid="email" required="required" size="30"/>
+-            <xul:description anonid="newidentitydesc"/>
+-            <xul:spacer flex="1"/>
+-            <xul:label class="text-link custom-link small-margin" anonid="chooseemail" hidden="true"/>
+-          </xul:vbox>
+-          <xul:vbox flex="1" hidden="true"> <!-- 2: choose an email -->
+-            <xul:description anonid="chooseidentitydesc"/>
+-            <xul:radiogroup anonid="identities">
+-            </xul:radiogroup>
+-            <xul:label class="text-link custom-link" anonid="newemail"/>
+-          </xul:vbox>
+-        </xul:vbox>
+-        <xul:hbox class="popup-notification-button-container"
+-                  pack="end" align="center">
+-          <xul:label anonid="tos" class="text-link" hidden="true"/>
+-          <xul:label anonid="privacypolicy" class="text-link" hidden="true"/>
+-          <xul:spacer flex="1"/>
+-          <xul:image anonid="throbber" src="chrome://browser/skin/tabbrowser/loading.png"
+-                     style="visibility:hidden" width="16" height="16"/>
+-          <xul:button anonid="button"
+-                      type="menu-button"
+-                      class="popup-notification-menubutton"
+-                      xbl:inherits="oncommand=buttoncommand,label=buttonlabel,accesskey=buttonaccesskey">
+-            <xul:menupopup anonid="menupopup"
+-                           xbl:inherits="oncommand=menucommand">
+-              <children/>
+-              <xul:menuitem class="menuitem-iconic popup-notification-closeitem"
+-                            label="&closeNotificationItem.label;"
+-                            xbl:inherits="oncommand=closeitemcommand"/>
+-            </xul:menupopup>
+-          </xul:button>
+-        </xul:hbox>
+-      </xul:vbox>
+-      <xul:vbox pack="start">
+-        <xul:toolbarbutton anonid="closebutton"
+-                           class="messageCloseButton popup-notification-closebutton tabbable"
+-                           xbl:inherits="oncommand=closebuttoncommand"
+-                           tooltiptext="&closeNotification.tooltip;"/>
+-      </xul:vbox>
+-    </content>
+-    <implementation>
++    <implementation implements="nsIObserver, nsIDOMEventListener">
+       <constructor><![CDATA[
+-        // this.notification.options.identity is used to pass identity-specific info to the binding
+-        let origin = this.identity.origin
++        dump(" ** in identity xul constructor\n");
++        this.complete = false;
+ 
+-        // Populate text
+-        this.emailField.placeholder = gNavigatorBundle.
+-                                      getString("identity.newIdentity.email.placeholder");
+-        this.newIdentityDesc.textContent = gNavigatorBundle.getFormattedString(
+-                                             "identity.newIdentity.description", [origin]);
+-        this.chooseIdentityDesc.textContent = gNavigatorBundle.getFormattedString(
+-                                                "identity.chooseIdentity.description", [origin]);
++        // Mark outgoing messages with the id of the caller
++        this.messageSubject = Components.classes["@mozilla.org/supports-string;1"]
++          .createInstance(Components.interfaces.nsISupportsString);
++        this.messageSubject.data = this.notification.options.context.id;
+ 
+-        // Show optional terms of service and privacy policy links
+-        this._populateLink(this.identity.termsOfService, "tos", "identity.termsOfService");
+-        this._populateLink(this.identity.privacyPolicy, "privacypolicy", "identity.privacyPolicy");
++        // adopt the iframe and display it in the panel
++        // XXX this does not work in FF3.6 or older
++        let personaIframe = this.notification.options.context.iframe;
++        let node = document.adoptNode(personaIframe);
++        let panel = document.getAnonymousElementByAttribute(this, "anonid", "persona-container");
++        panel.appendChild(node);
+ 
+-        // Populate the list of identities to choose from. The origin is used to provide
+-        // better suggestions.
+-        let identities = this.SignInToWebsiteUX.getIdentitiesForSite(origin);
++        // The dimensions of the panel are modified dynamically by
++        // SignInToWebsite.jsm.
+ 
+-        this._populateIdentityList(identities);
++        dump(" ** Persona host iframe attached to xul panel\n");
+ 
+-        if (typeof this.step == "undefined") {
+-          // First opening of this notification
+-          // Show the add email pane (0) if there are no existing identities otherwise show the list
+-          this.step = "result" in identities && identities.result.length ? 1 : 0;
+-        } else {
+-          // Already opened so restore previous state
+-          if (this.identity.typedEmail) {
+-            this.emailField.value = this.identity.typedEmail;
+-          }
+-          if (this.identity.selected) {
+-            // If the user already chose an identity then update the UI to reflect that
+-            this.onIdentitySelected();
+-          }
+-          // Update the view for the step
+-          this.step = this.step;
+-        }
++        // Listen to messages from SignInToWebsite.jsm
++        Services.obs.addObserver(this, "identity-delegate-ui-close", false);
+ 
+-        // Fire notification with the chosen identity when main button is clicked
+-        this.button.addEventListener("command", this._onButtonCommand.bind(this), true);
+-
+-        // Do the same if enter is pressed in the email field
+-        this.emailField.addEventListener("keypress", function emailFieldKeypress(aEvent) {
+-          if (aEvent.keyCode != aEvent.DOM_VK_RETURN)
+-            return;
+-          this._onButtonCommand(aEvent);
+-        }.bind(this));
+-
+-        this.addEmailLink.value = gNavigatorBundle.getString("identity.newIdentity.label");
+-        this.addEmailLink.accessKey = gNavigatorBundle.getString("identity.newIdentity.accessKey");
+-        this.addEmailLink.addEventListener("click", function addEmailClick(evt) {
+-          this.step = 0;
+-        }.bind(this));
+-
+-        this.chooseEmailLink.value = gNavigatorBundle.getString("identity.chooseIdentity.label");
+-        this.chooseEmailLink.hidden = !("result" in identities && identities.result.length);
+-        this.chooseEmailLink.addEventListener("click", function chooseEmailClick(evt) {
+-          this.step = 1;
+-        }.bind(this));
+-
+-        this.emailField.addEventListener("blur", function onEmailBlur() {
+-          this.identity.typedEmail = this.emailField.value;
+-        }.bind(this));
++        // message back to SignInToWebsite that we've started
++        // and the flow with the given id can go ahead
++        // XXX we might not need this
++        Services.obs.notifyObservers(this.messageSubject, "identity-delegate-ui-open", null);
+       ]]></constructor>
+ 
+-      <field name="SignInToWebsiteUX" readonly="true">
+-        let sitw = {};
+-        Components.utils.import("resource:///modules/SignInToWebsite.jsm", sitw);
+-        sitw.SignInToWebsiteUX;
+-      </field>
++      <destructor><![CDATA[
++        if (!this.complete) {
++          Services.obs.notifyObservers(this.messageSubject, "identity-delegate-canceled", null);
++        }
++        Services.obs.removeObserver(this, "identity-delegate-ui-close", false);
++      ]]></destructor>
+ 
+-      <field name="newIdentityDesc" readonly="true">
+-        document.getAnonymousElementByAttribute(this, "anonid", "newidentitydesc");
+-      </field>
+-
+-      <field name="chooseIdentityDesc" readonly="true">
+-        document.getAnonymousElementByAttribute(this, "anonid", "chooseidentitydesc");
+-      </field>
+-
+-      <field name="identityList" readonly="true">
+-        document.getAnonymousElementByAttribute(this, "anonid", "identities");
+-      </field>
+-
+-      <field name="emailField" readonly="true">
+-        document.getAnonymousElementByAttribute(this, "anonid", "email");
+-      </field>
+-
+-      <field name="addEmailLink" readonly="true">
+-        document.getAnonymousElementByAttribute(this, "anonid", "newemail");
+-      </field>
+-
+-      <field name="chooseEmailLink" readonly="true">
+-        document.getAnonymousElementByAttribute(this, "anonid", "chooseemail");
+-      </field>
+-
+-      <field name="throbber" readonly="true">
+-        document.getAnonymousElementByAttribute(this, "anonid", "throbber");
+-      </field>
+-
+-      <field name="identity" readonly="true">
+-        this.notification.options.identity;
+-      </field>
+-
+-      <!-- persist the state on the identity object so we can re-create the
+-           notification state upon re-opening -->
+-      <property name="step">
+-        <getter>
+-          return this.identity.step;
+-        </getter>
+-        <setter><![CDATA[
+-          let deck = document.getAnonymousElementByAttribute(this, "anonid", "identity-deck");
+-          for (let i = 0; i < deck.children.length; i++) {
+-            deck.children[i].hidden = (val != i);
+-          }
+-          this.identity.step = val;
+-          switch (val) {
+-            case 0:
+-              this.emailField.focus();
+-              break;
+-          }]]>
+-        </setter>
+-      </property>
+-
+-      <method name="onIdentitySelected">
++      <method name="observe">
++        <parameter name="aSubject"/>
++        <parameter name="aTopic"/>
++        <parameter name="aData"/>
+         <body><![CDATA[
+-          this.throbber.style.visibility = "visible";
+-          this.button.disabled = true;
+-          this.emailField.value = this.identity.selected
+-          this.emailField.disabled = true;
+-          this.identityList.disabled = true;
+-        ]]></body>
+-      </method>
+-
+-      <method name="_populateLink">
+-        <parameter name="aURL"/>
+-        <parameter name="aLinkId"/>
+-        <parameter name="aStringId"/>
+-        <body><![CDATA[
+-          if (aURL) {
+-            // Show optional link to aURL
+-            let link = document.getAnonymousElementByAttribute(this, "anonid", aLinkId);
+-            link.value = gNavigatorBundle.getString(aStringId);
+-            link.href = aURL;
+-            link.hidden = false;
+-          }
+-        ]]></body>
+-      </method>
+-
+-      <method name="_populateIdentityList">
+-        <parameter name="aIdentities"/>
+-        <body><![CDATA[
+-          let foundLastUsed = false;
+-          let lastUsed = this.identity.selected || aIdentities.lastUsed;
+-          for (let id in aIdentities.result) {
+-            let label = aIdentities.result[id];
+-            let opt = this.identityList.appendItem(label);
+-            if (label == lastUsed) {
+-              this.identityList.selectedItem = opt;
+-              foundLastUsed = true;
+-            }
+-          }
+-          if (!foundLastUsed) {
+-            this.identityList.selectedIndex = -1;
+-          }
+-        ]]></body>
+-      </method>
+-
+-      <method name="_onButtonCommand">
+-        <parameter name="aEvent"/>
+-        <body><![CDATA[
+-          if (aEvent.target != aEvent.currentTarget)
+-            return;
+-          let chosenId;
+-          switch (this.step) {
+-            case 0:
+-              aEvent.stopPropagation();
+-              if (!this.emailField.validity.valid) {
+-                this.emailField.focus();
+-                return;
+-              }
+-              chosenId = this.emailField.value;
+-              break;
+-            case 1:
+-              aEvent.stopPropagation();
+-              let selectedItem = this.identityList.selectedItem
+-              chosenId = selectedItem ? selectedItem.label : null;
+-              if (!chosenId)
+-                return;
+-              break;
+-            default:
+-              throw new Error("Unknown case");
+-              return;
+-          }
+-          // Actually select the identity
+-          this.SignInToWebsiteUX.selectIdentity(this.identity.rpId, chosenId);
+-          this.identity.selected = chosenId;
+-          this.onIdentitySelected();
++          // The only message we observe is identity-delegate-ui-close
++          this.complete = true;
++          this.notification.remove();
+         ]]></body>
+       </method>
+ 
+     </implementation>
+   </binding>
+ 
+   <binding id="center-item">
+     <content align="center">
+diff --git a/browser/base/jar.mn b/browser/base/jar.mn
+--- a/browser/base/jar.mn
++++ b/browser/base/jar.mn
+@@ -55,16 +55,17 @@ browser.jar:
+         content/browser/abouthealthreport/abouthealth.css     (content/abouthealthreport/abouthealth.css)
+ #endif
+         content/browser/aboutRobots-icon.png          (content/aboutRobots-icon.png)
+         content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
+         content/browser/aboutSocialError.xhtml        (content/aboutSocialError.xhtml)
+ *       content/browser/browser.css                   (content/browser.css)
+ *       content/browser/browser.js                    (content/browser.js)
+ *       content/browser/browser.xul                   (content/browser.xul)
++        content/browser/browser-identity.js           (content/browser-identity.js)
+ *       content/browser/browser-tabPreviews.xml       (content/browser-tabPreviews.xml)
+         content/browser/content.js                    (content/content.js)
+         content/browser/newtab/newTab.xul             (content/newtab/newTab.xul)
+ *       content/browser/newtab/newTab.js              (content/newtab/newTab.js)
+         content/browser/newtab/newTab.css             (content/newtab/newTab.css)
+         content/browser/newtab/preload.xhtml          (content/newtab/preload.xhtml)
+ *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
+ *       content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
+diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
+--- a/browser/modules/SignInToWebsite.jsm
++++ b/browser/modules/SignInToWebsite.jsm
+@@ -1,247 +1,457 @@
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+-"use strict";
++'use strict';
+ 
+-this.EXPORTED_SYMBOLS = ["SignInToWebsiteUX"];
++this.EXPORTED_SYMBOLS = ['SignInToWebsiteUX'];
+ 
+ const Cc = Components.classes;
+ const Ci = Components.interfaces;
+ const Cu = Components.utils;
+ 
+-Cu.import("resource://gre/modules/Services.jsm");
+-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++Cu.import('resource://gre/modules/Services.jsm');
++Cu.import('resource://gre/modules/XPCOMUtils.jsm');
++Cu.import('resource://gre/modules/identity/IdentityUtils.jsm');
+ 
+-XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
+-                                  "resource://gre/modules/identity/Identity.jsm");
++const kIdentityScreen = 'https://picl.personatest.org/sign_in#NATIVE';
++const kIdentityFrame = 'https://picl.personatest.org/communication_iframe';
++const kIdentityShim = 'chrome://browser/content/browser-identity.js';
+ 
+-XPCOMUtils.defineLazyModuleGetter(this, "Logger",
+-                                  "resource://gre/modules/identity/LogUtils.jsm");
++const PANEL_MIN_HEIGHT = 440;
++const PANEL_MIN_WIDTH = 300;
+ 
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["SignInToWebsiteUX"].concat(aMessageArgs));
++XPCOMUtils.defineLazyModuleGetter(this, 'IdentityService',
++                                  'resource://gre/modules/identity/MinimalIdentity.jsm');
++
++XPCOMUtils.defineLazyGetter(this, "logger", function () {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
++
++/**
++ * Ripped off from the resize watcher in base/content/browser-social.js
++ */
++
++function sizePanelToContent(iframe) {
++  // FIXME: bug 764787: Maybe we can use nsIDOMWindowUtils.getRootBounds() here?
++  let doc = iframe.contentDocument;
++  if (!doc || !doc.body) {
++    return;
++  }
++  let body = doc.body;
++
++  // offsetHeight/Width don't include margins, so account for that.
++  let cs = doc.defaultView.getComputedStyle(body);
++  let computedHeight = parseInt(cs.marginTop) + body.offsetHeight + parseInt(cs.marginBottom);
++  let height = Math.max(computedHeight, PANEL_MIN_HEIGHT);
++  let computedWidth = parseInt(cs.marginLeft) + body.offsetWidth + parseInt(cs.marginRight);
++  let width = Math.max(computedWidth, PANEL_MIN_WIDTH);
++
++  // The panel can only resize vertically; otherwise, we would have to
++  // compensate for leftward or rightward shifts here
++  iframe.style.height = height + "px";
++  iframe.style.width = width + "px";
++  logger.log("new size:", width, "x", height);
+ }
+ 
+-this.SignInToWebsiteUX = {
++function ResizeWatcher(iframe) {
++  this._mutationObserver = null;
++  this._iframe = iframe;
+ 
+-  init: function SignInToWebsiteUX_init() {
++  this.start();
++}
+ 
+-    /*
+-     * bug 793906 - temporarily disabling desktop UI so we can
+-     * focus on b2g without worrying about desktop as well
+-     *
+-    Services.obs.addObserver(this, "identity-request", false);
+-    Services.obs.addObserver(this, "identity-auth", false);
+-    Services.obs.addObserver(this, "identity-auth-complete", false);
+-    Services.obs.addObserver(this, "identity-login-state-changed", false);
+-     */
++ResizeWatcher.prototype = {
++  start: function ResizeWatcher_start() {
++    this.stop(); // just in case...
++    let doc = this._iframe.contentDocument;
++
++    this._mutationObserver = new this._iframe.contentWindow.MutationObserver(
++      function(mutations) { 
++        sizePanelToContent(this._iframe); 
++      }.bind(this));
++
++    // Observe anything that causes the size to change.
++    let config = {
++      attributes: true, 
++      characterData: true, 
++      childList: true, 
++      subtree: true
++    };
++
++    this._mutationObserver.observe(doc, config);
++
++    // and since this may be setup after the load event has fired we do an
++    // initial resize now.
++    sizePanelToContent(this._iframe);
+   },
+ 
+-  uninit: function SignInToWebsiteUX_uninit() {
+-    /*
+-     * As above:
+-     * bug 793906 - temporarily disabling desktop UI so we can
+-     * focus on b2g without worrying about desktop as well
+-     *
+-    Services.obs.removeObserver(this, "identity-request");
+-    Services.obs.removeObserver(this, "identity-auth");
+-    Services.obs.removeObserver(this, "identity-auth-complete");
+-    Services.obs.removeObserver(this, "identity-login-state-changed");
+-     */
++  stop: function ResizeWatcher_stop() {
++    if (this._mutationObserver) {
++      logger.log("disconnecting mutation observer");
++      try {
++        this._mutationObserver.disconnect();
++      } catch (ex) {
++        // may get "TypeError: can't access dead object" which seems strange,
++        // but doesn't seem to indicate a real problem, so ignore it...
++      }
++      this._mutationObserver = null;
++    }
++  }
++}
++
++/**
++ * Return the chrome window and <browser> for the given outer window ID.
++ */
++function getUIForWindowID(aWindowId) {
++  logger.log("get UI for window id:", aWindowId);
++  let someWindow = Services.wm.getMostRecentWindow('navigator:browser');
++  if (!someWindow) {
++    logger.error('SignInToWebsiteUX', 'no window');
++    return {};
++  }
++
++  let windowUtils = someWindow.QueryInterface(Ci.nsIInterfaceRequestor)
++                              .getInterface(Ci.nsIDOMWindowUtils);
++  let content = windowUtils.getOuterWindowWithId(aWindowId);
++
++  if (content) {
++    let browser = content.QueryInterface(Ci.nsIInterfaceRequestor)
++                         .getInterface(Ci.nsIWebNavigation)
++                         .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
++    //let browser = someWindow.gBrowser;
++    logger.log("browser in getUI is", (typeof browser), browser);
++    let chromeWin = browser.ownerDocument.defaultView;
++
++    return {
++      content: content,
++      browser: browser,
++      chromeWin: chromeWin
++    };
++  }
++  logger.error('SignInToWebsiteUX', 'no content');
++
++  return {};
++}
++
++function requestUI(aContext) {
++  logger.log('requestUI for windowId', aContext.id);
++  let UI = getUIForWindowID(aContext.id);
++
++  // message is not shown in the UI but is required
++  let mainAction = {
++    label: UI.chromeWin.gNavigatorBundle.getString('identity.next.label'),
++    accessKey: UI.chromeWin.gNavigatorBundle.getString('identity.next.accessKey'),
++    callback: function() {} // required
++  };
++  let secondaryActions = [];
++  let options = {
++    context: aContext
++  };
++
++  logger.log('now open PopupNotification');
++  UI.chromeWin.PopupNotifications.show(UI.browser,
++                                       'identity-request', aContext.id,
++                                       'identity-notification-icon', mainAction,
++                                       [], options);
++}
++
++function HostFrame() {
++  this._iframe = null;
++  this._resizeWatcher = null;
++}
++
++HostFrame.prototype = {
++  /*
++   * getIframe - adds iframe to aOptions
++   */
++  getIframe: function HostFrame_getIframe(aOptions, aCallback) {
++    if (this._gotIframe) {
++      logger.error("Can only get iframe once with HostFrame helper");
++      return;
++    }
++
++    this._createIframe(aOptions);
++    aCallback();
+   },
+ 
+-  observe: function SignInToWebsiteUX_observe(aSubject, aTopic, aData) {
+-    log("observe: received", aTopic, "with", aData, "for", aSubject);
+-    let options = null;
+-    if (aSubject) {
+-      options = aSubject.wrappedJSObject;
++  cleanUp: function HostFrame_cleanUp() {
++    logger.log("cleaning up hostframe");
++    if (this._resizeWatcher) {
++      this._resizeWatcher.stop();
+     }
+-    switch(aTopic) {
+-      case "identity-request":
+-        this.requestLogin(options);
++  },
++
++  /*
++   * create an iframe and insert it into aOptions.  If showUI is
++   * true, attach the iframe to a xul panel in the popup notification.
++   * Otherwise attach to a hidden document.
++   */
++  _createIframe: function HostFrame_createIframe(aOptions) {
++    let srcURI = aOptions.showUI ? kIdentityScreen : kIdentityFrame;
++    logger.log('showUI is', aOptions.showUI, 'so iframe src =', srcURI);
++
++    let hiddenDoc = Services.appShell.hiddenDOMWindow.document;
++    this._iframe = hiddenDoc.createElementNS('http://www.w3.org/1999/xhtml', 'iframe');
++
++    this._iframe.setAttribute('mozbrowser', true);
++    this._iframe.setAttribute('mozframetype', 'content');
++    this._iframe.setAttribute('type', 'content');
++    this._iframe.setAttribute('remote', true);
++    this._iframe.setAttribute('id', 'persona-host-frame');
++    this._iframe.setAttribute('src', srcURI);
++
++    // implement a dynamic resize watcher a la Social API
++    this._iframe.style.height = "440px";
++    this._iframe.style.width = "300px";
++
++    aOptions.iframe = this._iframe;
++
++    if (aOptions.showUI) {
++      // synchronous, so we can call _injectShim below with no race condition
++      requestUI(aOptions);
++      this._resizeWatcher = new ResizeWatcher(this._iframe);
++    } else {
++      hiddenDoc.documentElement.appendChild(this._iframe);
++    }
++    this._injectShim(this._iframe);
++  },
++
++  _injectShim: function HostFrame_injectShim(aIframe) {
++    logger.log('_injectShim aIframe', (typeof aIframe), aIframe.src);
++    let mm = aIframe.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader.messageManager;
++    logger.log('loadFrameScript:', kIdentityShim);
++    mm.loadFrameScript(kIdentityShim, true);
++  }
++};
++
++function Pipe(aOptions, aController) {
++  this.options = aOptions;
++  this.controller = aController;
++  this.mm = null;
++  this._closed = false;
++  return this;
++}
++
++Pipe.prototype = {
++  observe: function pipe_observe(aSubject, aTopic, aData) {
++    logger.log('pipe observed', aTopic);
++    switch (aTopic) {
++      case 'identity-delegate-canceled':
++        this._close();
++        this.controller.serviceDoMethod({method: 'cancel'}, this.options.id);
+         break;
+-      case "identity-auth":
+-        this._openAuthenticationUI(aData, options);
+-        break;
+-      case "identity-auth-complete":
+-        this._closeAuthenticationUI(aData);
+-        break;
+-      case "identity-login-state-changed":
+-        let emailAddress = aData;
+-        if (emailAddress) {
+-          this._removeRequestUI(options);
+-          this._showLoggedInUI(emailAddress, options);
+-        } else {
+-          this._removeLoggedInUI(options);
+-        }
+-        break;
++
+       default:
+-        Logger.reportError("SignInToWebsiteUX", "Unknown observer notification:", aTopic);
++        logger.error('pipe observed unexpected topic: ' + aTopic);
+         break;
+     }
+   },
+ 
+-  /**
+-   * The website is requesting login so the user must choose an identity to use.
+-   */
+-  requestLogin: function SignInToWebsiteUX_requestLogin(aOptions) {
+-    let windowID = aOptions.rpId;
+-    log("requestLogin", aOptions);
+-    let [chromeWin, browserEl] = this._getUIForWindowID(windowID);
++  _close: function pipe__delegateClose() {
++    this._closed = true;
++    logger.log("remove pipe observers");
++    Services.obs.removeObserver(this, 'identity-delegate-canceled');
++    if (this.mm) {
++      this.mm.removeMessageListener('identity-service-doMethod', this._serviceDoMethod);
++      this.mm.removeMessageListener('identity-delegate-complete', this._delegateComplete);
++      this.mm.removeMessageListener('identity-delegate-loaded', this._delegateLoaded);
++    }
++    logger.log("notifying identity-delegate-ui-closed");
++    let subject = Cc['@mozilla.org/supports-string;1'].createInstance(Ci.nsISupportsString);
++    subject.data = this.options.id;
++    Services.obs.notifyObservers(subject, 'identity-delegate-ui-close', null);
+ 
+-    // message is not shown in the UI but is required
+-    let message = aOptions.origin;
+-    let mainAction = {
+-      label: chromeWin.gNavigatorBundle.getString("identity.next.label"),
+-      accessKey: chromeWin.gNavigatorBundle.getString("identity.next.accessKey"),
+-      callback: function() {}, // required
+-    };
+-    let options = {
+-      identity: {
+-        origin: aOptions.origin,
+-      },
+-    };
+-    let secondaryActions = [];
+-
+-    // add some extra properties to the notification to store some identity-related state
+-    for (let opt in aOptions) {
+-      options.identity[opt] = aOptions[opt];
++    if (typeof this.options.onComplete === 'function') {
++      logger.log("close calling onComplete");
++      this.options.onComplete();
+     }
+-    log("requestLogin: rpId: ", options.identity.rpId);
+-
+-    chromeWin.PopupNotifications.show(browserEl, "identity-request", message,
+-                                      "identity-notification-icon", mainAction,
+-                                      [], options);
+   },
+ 
+-  /**
+-   * Get the list of possible identities to login to the given origin.
+-   */
+-  getIdentitiesForSite: function SignInToWebsiteUX_getIdentitiesForSite(aOrigin) {
+-    return IdentityService.RP.getIdentitiesForSite(aOrigin);
++  _delegateLoaded: function pipe__delegateLoaded() {
++    logger.log('delegate loaded; sending message:', this.options.message);
++    this.mm.sendAsyncMessage(this.options.message, this.options.rpOptions);
++    //this.resizer = new DynamicResizeWatcher();
++    //this.resizer.start(
+   },
+ 
+-  /**
+-   * User chose a new or existing identity from the doorhanger after a request() call
+-   */
+-  selectIdentity: function SignInToWebsiteUX_selectIdentity(aRpId, aIdentity) {
+-    log("selectIdentity: rpId: ", aRpId, " identity: ", aIdentity);
+-    IdentityService.selectIdentity(aRpId, aIdentity);
++  _delegateComplete: function pipe__delegateComplete() {
++    logger.log('delegate completed actions; close the pipe\n');
++    this._close();
+   },
+ 
+-  // Private
++  _serviceDoMethod: function pipe__doMethod(aMethodOptions) {
++    let message = aMethodOptions.json;
++    if (typeof message === 'string') {
++      try {
++        message = JSON.parse(message);
++      } catch (err) {
++        logger.error('Bad json message: ' + message);
++        return;
++      }
++    }
++    this.controller.serviceDoMethod(message, this.options.id);
++  },
+ 
+-  /**
+-   * Return the chrome window and <browser> for the given outer window ID.
+-   */
+-  _getUIForWindowID: function(aWindowID) {
+-    let someWindow = Services.wm.getMostRecentWindow("navigator:browser");
+-    if (!someWindow) {
+-      Logger.reportError("SignInToWebsiteUX", "no window");
+-      return [null, null];
++  communicate: function pipe_communicate() {
++    if (this._closed) {
++      logger.error('Cannot communicate with persona frame; pipe already closed');
++      return;
++    }
++    Services.obs.addObserver(this, 'identity-delegate-canceled', false);
++
++    let frameLoader = this.options.iframe.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader;
++    if (frameLoader) {
++      this.mm = frameLoader.messageManager;
++      this.mm.addMessageListener('identity-service-doMethod', this._serviceDoMethod.bind(this));
++      this.mm.addMessageListener('identity-delegate-loaded', this._delegateLoaded.bind(this));
++      this.mm.addMessageListener('identity-delegate-complete', this._delegateComplete.bind(this));
++    } else {
++      logger.error('FrameLoader unavailable; Frame did not get attached properly?');
++    }
++  }
++};
++
++this.SignInToWebsiteUX = {
++  init: function SignInToWebsiteUX_init() {
++    this.contexts = {};
++    Services.obs.addObserver(this, 'identity-controller-watch', false);
++    Services.obs.addObserver(this, 'identity-controller-request', false);
++    Services.obs.addObserver(this, 'identity-controller-logout', false);
++    Services.obs.addObserver(this, 'identity-controller-canceled', false);
++  },
++
++  uninit: function SignInToWebsiteUX_uninit() {
++    Services.obs.removeObserver(this, 'identity-controller-watch');
++    Services.obs.removeObserver(this, 'identity-controller-request');
++    Services.obs.removeObserver(this, 'identity-controller-logout');
++    Services.obs.removeObserver(this, 'identity-controller-canceled');
++  },
++
++  observe: function SignInToWebsiteUX_observe(aSubject, aTopic, aData) {
++    logger.log('controller observed:', aTopic);
++    // XXX need to detect page unload of any of our flows
++    // XXX we get strings from xul, and objects from elsewhere
++    let rpOptions = {};
++    if (aSubject) {
++      if (aSubject.wrappedJSObject) {
++        rpOptions = aSubject.wrappedJSObject;
++      } else {
++        rpOptions = {id: aSubject.QueryInterface(Ci.nsISupportsString).data};
++      }
++    }
++    if (!rpOptions.id) {
++      logger.error('Got a message with no RP id');
++      return;
+     }
+ 
+-    let windowUtils = someWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+-                                .getInterface(Ci.nsIDOMWindowUtils);
+-    let content = windowUtils.getOuterWindowWithId(aWindowID);
++    let rpId = rpOptions.id;
++    let UI = getUIForWindowID(rpId);
+ 
+-    if (content) {
+-      let browser = content.QueryInterface(Ci.nsIInterfaceRequestor)
+-                           .getInterface(Ci.nsIWebNavigation)
+-                           .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
+-      let chromeWin = browser.ownerDocument.defaultView;
+-      return [chromeWin, browser];
++    let options = {
++      id: rpOptions.id,
++      rpOptions: rpOptions
++    };
++
++    switch (aTopic) {
++      case 'identity-controller-watch':
++        this.doWatch(options);
++        break;
++
++      case 'identity-controller-request':
++        this.doRequest(options);
++        break;
++
++      case 'identity-controller-logout':
++        this.doLogout(options);
++        break;
++
++      default:
++        logger.error('SignInToWebsiteUX', 'Unknown observer notification:', aTopic);
++        break;
+     }
+-    Logger.reportError("SignInToWebsiteUX", "no content");
+-
+-    return [null, null];
+   },
+ 
+-  /**
+-   * Open UI with a content frame displaying aAuthURI so that the user can authenticate with their
+-   * IDP.  Then tell Identity.jsm the identifier for the window so that it knows that the DOM API
+-   * calls are for this authentication flow.
+-   */
+-  _openAuthenticationUI: function _openAuthenticationUI(aAuthURI, aContext) {
+-    // Open a tab/window with aAuthURI with an identifier (aID) attached so that the DOM APIs know this is an auth. window.
+-    let chromeWin = Services.wm.getMostRecentWindow('navigator:browser');
+-    let features = "chrome=false,width=640,height=480,centerscreen,location=yes,resizable=yes,scrollbars=yes,status=yes";
+-    log("aAuthURI: ", aAuthURI);
+-    let authWin = Services.ww.openWindow(chromeWin, "about:blank", "", features, null);
+-    let windowID = authWin.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindowUtils).outerWindowID;
+-    log("authWin outer id: ", windowID);
++  serviceDoMethod: function SignInToWebsiteUX_doMethod(aMessage, aId) {
++    logger.log('serviceDoMethod received:', aMessage);
++    switch (aMessage.method) {
++      case 'ready':
++        IdentityService.doReady(aId);
++        break;
+ 
+-    let provId = aContext.provId;
+-    // Tell the ID service about the id before loading the url
+-    IdentityService.IDP.setAuthenticationFlow(windowID, provId);
++      case 'login':
++        if (aMessage._internalParams) {
++          IdentityService.doLogin(aId, aMessage.assertion, aMessage._internalParams);
++        } else {
++          IdentityService.doLogin(aId, aMessage.assertion);
++        }
++        break;
+ 
+-    authWin.location = aAuthURI;
++      case 'logout':
++        IdentityService.doLogout(aId);
++        break;
++
++      case 'cancel':
++        IdentityService.doCancel(aId);
++        break;
++
++      default:
++        logger.error('Unknown identity method: ' + aMessage.method);
++        break;
++    }
+   },
+ 
+-  _closeAuthenticationUI: function _closeAuthenticationUI(aAuthId) {
+-    log("_closeAuthenticationUI:", aAuthId);
+-    let [chromeWin, browserEl] = this._getUIForWindowID(aAuthId);
+-    if (chromeWin)
+-      chromeWin.close();
+-    else
+-      Logger.reportError("SignInToWebsite", "Could not close window with ID", aAuthId);
++  cleanUp: function SignInToWebsiteUX_cleanUp(aId) {
++    let context = this.contexts[aId];
++    if (context) { 
++      if (context.hostFrame) {
++        context.hostFrame.cleanUp();
++      }
++      if (context.iframe && context.iframe.parentNode) {
++        logger.log("removing iframe from parent node and deleting it");
++        context.iframe.parentNode.removeChild(context.iframe);
++        delete context.iframe;
++      }
++      this.contexts[aId] = {};
++      delete this.contexts[aId];
++    }
+   },
+ 
+-  /**
+-   * Show a doorhanger indicating the currently logged-in user.
+-   */
+-  _showLoggedInUI: function _showLoggedInUI(aIdentity, aContext) {
+-    let windowID = aContext.rpId;
+-    log("_showLoggedInUI for ", windowID);
+-    let [chromeWin, browserEl] = this._getUIForWindowID(windowID);
++  delegate: function SignInToWebsiteUX_delegate(aOptions) {
++    let hostFrame = new HostFrame();
++    hostFrame.getIframe(aOptions, function() {
++      // iframe has been added to aOptions
+ 
+-    let message = chromeWin.gNavigatorBundle.getFormattedString("identity.loggedIn.description",
+-                                                          [aIdentity]);
+-    let mainAction = {
+-      label: chromeWin.gNavigatorBundle.getString("identity.loggedIn.signOut.label"),
+-      accessKey: chromeWin.gNavigatorBundle.getString("identity.loggedIn.signOut.accessKey"),
+-      callback: function() {
+-        log("sign out callback fired");
+-        IdentityService.RP.logout(windowID);
+-      },
+-    };
+-    let secondaryActions = [];
+-    let options = {
+-      dismissed: true,
+-    };
+-    let loggedInNot = chromeWin.PopupNotifications.show(browserEl, "identity-logged-in", message,
+-                                                  "identity-notification-icon", mainAction,
+-                                                  secondaryActions, options);
+-    loggedInNot.rpId = windowID;
++      // callback for the pipe when flow is complete
++      aOptions.onComplete = function pipe_onComplete() {
++        this.cleanUp(aOptions.id);
++      }.bind(this);
++
++      // store context and communicate with pipe
++      this.contexts[aOptions.id] = aOptions;
++      this.contexts[aOptions.id].hostFrame = hostFrame;
++
++      let pipe = new Pipe(aOptions, this);
++      pipe.communicate();
++    }.bind(this));
+   },
+ 
+-  /**
+-   * Remove the doorhanger indicating the currently logged-in user.
+-   */
+-  _removeLoggedInUI: function _removeLoggedInUI(aContext) {
+-    let windowID = aContext.rpId;
+-    log("_removeLoggedInUI for ", windowID);
+-    if (!windowID)
+-      throw "_removeLoggedInUI: Invalid RP ID";
+-    let [chromeWin, browserEl] = this._getUIForWindowID(windowID);
+-
+-    let loggedInNot = chromeWin.PopupNotifications.getNotification("identity-logged-in", browserEl);
+-    if (loggedInNot)
+-      chromeWin.PopupNotifications.remove(loggedInNot);
++  doWatch: function SignInToWebsiteUX_doWatch(aOptions) {
++    aOptions.message = 'identity-delegate-watch';
++    aOptions.showUI = false;
++    this.delegate(aOptions);
+   },
+ 
+-  /**
+-   * Remove the doorhanger indicating the currently logged-in user.
+-   */
+-  _removeRequestUI: function _removeRequestUI(aContext) {
+-    let windowID = aContext.rpId;
+-    log("_removeRequestUI for ", windowID);
+-    let [chromeWin, browserEl] = this._getUIForWindowID(windowID);
+-
+-    let requestNot = chromeWin.PopupNotifications.getNotification("identity-request", browserEl);
+-    if (requestNot)
+-      chromeWin.PopupNotifications.remove(requestNot);
++  doRequest: function SignInToWebsiteUX_doRequest(aOptions) {
++    aOptions.message = 'identity-delegate-request';
++    aOptions.showUI = true;
++    this.delegate(aOptions);
+   },
+ 
++  doLogout: function SignInToWebsiteUX_doLogout(aOptions) {
++    aOptions.message = 'identity-delegate-logout';
++    aOptions.showUI = false;
++    this.delegate(aOptions);
++  }
+ };
+diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
+--- a/dom/identity/DOMIdentity.jsm
++++ b/dom/identity/DOMIdentity.jsm
+@@ -9,33 +9,26 @@ const {classes: Cc, interfaces: Ci, util
+ // This is the parent process corresponding to nsDOMIdentity.
+ this.EXPORTED_SYMBOLS = ["DOMIdentity"];
+ 
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/identity/IdentityUtils.jsm");
+ 
+ XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
+-#ifdef MOZ_B2G_VERSION
+                                   "resource://gre/modules/identity/MinimalIdentity.jsm");
+-#else
+-                                  "resource://gre/modules/identity/Identity.jsm");
+-#endif
+-
+-XPCOMUtils.defineLazyModuleGetter(this,
+-                                  "Logger",
+-                                  "resource://gre/modules/identity/LogUtils.jsm");
+ 
+ XPCOMUtils.defineLazyServiceGetter(this, "ppmm",
+                                    "@mozilla.org/parentprocessmessagemanager;1",
+                                    "nsIMessageListenerManager");
+ 
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["DOMIdentity"].concat(aMessageArgs));
+-}
++XPCOMUtils.defineLazyGetter(this, "logger", function () {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
+ 
+ function IDDOMMessage(aOptions) {
+   objectCopy(aOptions, this);
+ }
+ 
+ function IDPProvisioningContext(aID, aOrigin, aTargetMM) {
+   this._id = aID;
+   this._origin = aOrigin;
+@@ -50,24 +43,24 @@ IDPProvisioningContext.prototype = {
+     let message = new IDDOMMessage({id: this.id});
+     message.identity = aID;
+     message.certDuration = aCertDuration;
+     this._mm.sendAsyncMessage("Identity:IDP:CallBeginProvisioningCallback",
+                               message);
+   },
+ 
+   doGenKeyPairCallback: function IDPPC_doGenKeyPairCallback(aPublicKey) {
+-    log("doGenKeyPairCallback");
++    logger.log("doGenKeyPairCallback");
+     let message = new IDDOMMessage({id: this.id});
+     message.publicKey = aPublicKey;
+     this._mm.sendAsyncMessage("Identity:IDP:CallGenKeyPairCallback", message);
+   },
+ 
+   doError: function(msg) {
+-    log("Provisioning ERROR: " + msg);
++    logger.warning("Provisioning ERROR: " + msg);
+   },
+ };
+ 
+ function IDPAuthenticationContext(aID, aOrigin, aTargetMM) {
+   this._id = aID;
+   this._origin = aOrigin;
+   this._mm = aTargetMM;
+ }
+@@ -79,79 +72,83 @@ IDPAuthenticationContext.prototype = {
+   doBeginAuthenticationCallback: function IDPAC_doBeginAuthCB(aIdentity) {
+     let message = new IDDOMMessage({id: this.id});
+     message.identity = aIdentity;
+     this._mm.sendAsyncMessage("Identity:IDP:CallBeginAuthenticationCallback",
+                               message);
+   },
+ 
+   doError: function IDPAC_doError(msg) {
+-    log("Authentication ERROR: " + msg);
++    logger.warning("Authentication ERROR: " + msg);
+   },
+ };
+ 
+ function RPWatchContext(aOptions, aTargetMM) {
+   objectCopy(aOptions, this);
+ 
+   // id and origin are required
+   if (! (this.id && this.origin)) {
+-    throw new Error("id and origin are required for RP watch context");
++    let err = "id and origin are required for RP watch context";
++    logger.error(err);
++    throw new Error(err);
+   }
+ 
+   // default for no loggedInUser is undefined, not null
+   this.loggedInUser = aOptions.loggedInUser;
+ 
+   // Maybe internal
+   this._internal = aOptions._internal;
+ 
+   this._mm = aTargetMM;
+ }
+ 
+ RPWatchContext.prototype = {
+   doLogin: function RPWatchContext_onlogin(aAssertion, aMaybeInternalParams) {
+-    log("doLogin: " + this.id);
++    logger.log("doLogin: " + this.id);
+     let message = new IDDOMMessage({id: this.id, assertion: aAssertion});
+     if (aMaybeInternalParams) {
+       message._internalParams = aMaybeInternalParams;
+     }
+     this._mm.sendAsyncMessage("Identity:RP:Watch:OnLogin", message);
+   },
+ 
+   doLogout: function RPWatchContext_onlogout() {
+-    log("doLogout: " + this.id);
++    logger.log("doLogout: " + this.id);
+     let message = new IDDOMMessage({id: this.id});
+     this._mm.sendAsyncMessage("Identity:RP:Watch:OnLogout", message);
+   },
+ 
+   doReady: function RPWatchContext_onready() {
+-    log("doReady: " + this.id);
++    logger.log("doReady: " + this.id);
+     let message = new IDDOMMessage({id: this.id});
+     this._mm.sendAsyncMessage("Identity:RP:Watch:OnReady", message);
+   },
+ 
+   doCancel: function RPWatchContext_oncancel() {
+-    log("doCancel: " + this.id);
++    logger.log("doCancel: " + this.id);
+     let message = new IDDOMMessage({id: this.id});
+     this._mm.sendAsyncMessage("Identity:RP:Watch:OnCancel", message);
+   },
+ 
+   doError: function RPWatchContext_onerror(aMessage) {
+-    log("doError: " + aMessage);
++    logger.warning("doError:", aMessage);
+   }
+ };
+ 
+ this.DOMIdentity = {
+   // nsIMessageListener
+   receiveMessage: function DOMIdentity_receiveMessage(aMessage) {
+     let msg = aMessage.json;
+ 
+     // Target is the frame message manager that called us and is
+     // used to send replies back to the proper window.
+     let targetMM = aMessage.target;
+ 
++    //logger.log("received message:", aMessage.name);
++
+     switch (aMessage.name) {
+       // RP
+       case "Identity:RP:Watch":
+         this._watch(msg, targetMM);
+         break;
+       case "Identity:RP:Request":
+         this._request(msg);
+         break;
+@@ -201,16 +198,17 @@ this.DOMIdentity = {
+              "Identity:IDP:CompleteAuthentication",
+              "Identity:IDP:AuthenticationFailure"],
+ 
+   // Private.
+   _init: function DOMIdentity__init() {
+     Services.ww.registerNotification(this);
+     Services.obs.addObserver(this, "xpcom-shutdown", false);
+     this._subscribeListeners();
++    logger.log("DOM identity service initialized");
+   },
+ 
+   _subscribeListeners: function DOMIdentity__subscribeListeners() {
+     if (!ppmm) return;
+     for (let message of this.messages) {
+       ppmm.addMessageListener(message, this);
+     }
+   },
+@@ -218,26 +216,28 @@ this.DOMIdentity = {
+   _unsubscribeListeners: function DOMIdentity__unsubscribeListeners() {
+     for (let message of this.messages) {
+       ppmm.removeMessageListener(message, this);
+     }
+     ppmm = null;
+   },
+ 
+   _resetFrameState: function(aContext) {
+-    log("_resetFrameState: ", aContext.id);
++    logger.log("_resetFrameState: ", aContext.id);
+     if (!aContext._mm) {
+-      throw new Error("ERROR: Trying to reset an invalid context");
++      let err = "Trying to reset an invalid context";
++      logger.error(err);
++      throw new Error(err);
+     }
+     let message = new IDDOMMessage({id: aContext.id});
+     aContext._mm.sendAsyncMessage("Identity:ResetState", message);
+   },
+ 
+   _watch: function DOMIdentity__watch(message, targetMM) {
+-    log("DOMIdentity__watch: " + message.id);
++    logger.log("DOMIdentity__watch: " + message.id);
+     // Pass an object with the watch members to Identity.jsm so it can call the
+     // callbacks.
+     let context = new RPWatchContext(message, targetMM);
+     IdentityService.RP.watch(context);
+   },
+ 
+   _request: function DOMIdentity__request(message) {
+     IdentityService.RP.request(message.id, message);
+diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
+--- a/dom/identity/nsDOMIdentity.js
++++ b/dom/identity/nsDOMIdentity.js
+@@ -18,22 +18,28 @@ const PREF_SYNTHETIC_EVENTS_OK = "dom.id
+ const MAX_STRING_LENGTH = 2048;
+ // Maximum number of times navigator.id.request can be called for a document
+ const MAX_RP_CALLS = 100;
+ 
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/identity/IdentityUtils.jsm");
+ 
++XPCOMUtils.defineLazyGetter(this, "logger", function () {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
++
+ // This is the child process corresponding to nsIDOMIdentity
+ XPCOMUtils.defineLazyServiceGetter(this, "cpmm",
+                                    "@mozilla.org/childprocessmessagemanager;1",
+                                    "nsIMessageSender");
+ 
+ function nsDOMIdentity(aIdentityInternal) {
++  logger.log("nsDOMIdentity constructor");
+   this._identityInternal = aIdentityInternal;
+ }
+ nsDOMIdentity.prototype = {
+   __exposedProps__: {
+     // Relying Party (RP)
+     watch: 'r',
+     request: 'r',
+     logout: 'r',
+@@ -60,16 +66,17 @@ nsDOMIdentity.prototype = {
+     return true;
+   },
+ 
+   /**
+    * Relying Party (RP) APIs
+    */
+ 
+   watch: function nsDOMIdentity_watch(aOptions) {
++    logger.log(aOptions);
+     if (this._rpWatcher) {
+       throw new Error("navigator.id.watch was already called");
+     }
+ 
+     if (!aOptions || typeof(aOptions) !== "object") {
+       throw new Error("options argument to watch is required");
+     }
+ 
+@@ -84,56 +91,59 @@ nsDOMIdentity.prototype = {
+ 
+     // Optional callback "onready"
+     if (aOptions["onready"]
+         && typeof(aOptions['onready']) !== "function") {
+       throw new Error("onready must be a function");
+     }
+ 
+     let message = this.DOMIdentityMessage(aOptions);
++    logger.log(message);
+ 
+     // loggedInUser vs loggedInEmail
+     // https://developer.mozilla.org/en-US/docs/DOM/navigator.id.watch
+     // This parameter, loggedInUser, was renamed from loggedInEmail in early
+     // September, 2012. Both names will continue to work for the time being,
+     // but code should be changed to use loggedInUser instead.
+     checkRenamed(aOptions, "loggedInEmail", "loggedInUser");
+     message["loggedInUser"] = aOptions["loggedInUser"];
+ 
++    logger.log(message);
+     let emailType = typeof(aOptions["loggedInUser"]);
+     if (aOptions["loggedInUser"] && aOptions["loggedInUser"] !== "undefined") {
+       if (emailType !== "string") {
+         throw new Error("loggedInUser must be a String or null");
+       }
+ 
+       // TODO: Bug 767610 - check email format.
+       // See nsHTMLInputElement::IsValidEmailAddress
+       if (aOptions["loggedInUser"].indexOf("@") == -1
+           || aOptions["loggedInUser"].length > MAX_STRING_LENGTH) {
+         throw new Error("loggedInUser is not valid");
+       }
+       // Set loggedInUser in this block that "undefined" doesn't get through.
+       message.loggedInUser = aOptions.loggedInUser;
+     }
+-    this._log("loggedInUser: " + message.loggedInUser);
++    logger.log("loggedInUser:", message.loggedInUser);
+ 
+     this._rpWatcher = aOptions;
+     this._identityInternal._mm.sendAsyncMessage("Identity:RP:Watch", message);
+   },
+ 
+   request: function nsDOMIdentity_request(aOptions) {
++    logger.log(aOptions);
+     let util = this._window.QueryInterface(Ci.nsIInterfaceRequestor)
+                            .getInterface(Ci.nsIDOMWindowUtils);
+ 
+     // The only time we permit calling of request() outside of a user
+     // input handler is when we are handling the (deprecated) get() or
+     // getVerifiedEmail() calls, which make use of an RP context
+     // marked as _internal.
+     if (this.nativeEventsRequired && !util.isHandlingUserInput && !aOptions._internal) {
+-      this._log("request: rejecting non-native event");
++      error("request: rejecting non-native event");
+       return;
+     }
+ 
+     // Has the caller called watch() before this?
+     if (!this._rpWatcher) {
+       throw new Error("navigator.id.request called before navigator.id.watch");
+     }
+     if (this._rpCalls > MAX_RP_CALLS) {
+@@ -166,16 +176,17 @@ nsDOMIdentity.prototype = {
+       }
+     }
+ 
+     this._rpCalls++;
+     this._identityInternal._mm.sendAsyncMessage("Identity:RP:Request", message);
+   },
+ 
+   logout: function nsDOMIdentity_logout() {
++    logger.log("logout");
+     if (!this._rpWatcher) {
+       throw new Error("navigator.id.logout called before navigator.id.watch");
+     }
+     if (this._rpCalls > MAX_RP_CALLS) {
+       throw new Error("navigator.id.logout called too many times");
+     }
+ 
+     this._rpCalls++;
+@@ -238,72 +249,72 @@ nsDOMIdentity.prototype = {
+       onlogout: function get_onlogout() {},
+       onready: function get_onready() {
+         self.request(opts);
+       }
+     });
+   },
+ 
+   getVerifiedEmail: function nsDOMIdentity_getVerifiedEmail(aCallback) {
+-    Cu.reportError("WARNING: getVerifiedEmail has been deprecated");
++    error("WARNING: getVerifiedEmail has been deprecated");
+     this.get(aCallback, {});
+   },
+ 
+   /**
+    *  Identity Provider (IDP) Provisioning APIs
+    */
+ 
+   beginProvisioning: function nsDOMIdentity_beginProvisioning(aCallback) {
+-    this._log("beginProvisioning");
++    logger.log("beginProvisioning");
+     if (this._beginProvisioningCallback) {
+       throw new Error("navigator.id.beginProvisioning already called.");
+     }
+     if (!aCallback || typeof(aCallback) !== "function") {
+       throw new Error("beginProvisioning callback is required.");
+     }
+ 
+     this._beginProvisioningCallback = aCallback;
+     this._identityInternal._mm.sendAsyncMessage("Identity:IDP:BeginProvisioning",
+                                                 this.DOMIdentityMessage());
+   },
+ 
+   genKeyPair: function nsDOMIdentity_genKeyPair(aCallback) {
+-    this._log("genKeyPair");
++    logger.log("genKeyPair");
+     if (!this._beginProvisioningCallback) {
+       throw new Error("navigator.id.genKeyPair called outside of provisioning");
+     }
+     if (this._genKeyPairCallback) {
+       throw new Error("navigator.id.genKeyPair already called.");
+     }
+     if (!aCallback || typeof(aCallback) !== "function") {
+       throw new Error("genKeyPair callback is required.");
+     }
+ 
+     this._genKeyPairCallback = aCallback;
+     this._identityInternal._mm.sendAsyncMessage("Identity:IDP:GenKeyPair",
+                                                 this.DOMIdentityMessage());
+   },
+ 
+   registerCertificate: function nsDOMIdentity_registerCertificate(aCertificate) {
+-    this._log("registerCertificate");
++    logger.log("registerCertificate");
+     if (!this._genKeyPairCallback) {
+       throw new Error("navigator.id.registerCertificate called outside of provisioning");
+     }
+     if (this._provisioningEnded) {
+       throw new Error("Provisioning already ended");
+     }
+     this._provisioningEnded = true;
+ 
+     let message = this.DOMIdentityMessage();
+     message.cert = aCertificate;
+     this._identityInternal._mm.sendAsyncMessage("Identity:IDP:RegisterCertificate", message);
+   },
+ 
+   raiseProvisioningFailure: function nsDOMIdentity_raiseProvisioningFailure(aReason) {
+-    this._log("raiseProvisioningFailure '" + aReason + "'");
++    logger.log("raiseProvisioningFailure '" + aReason + "'");
+     if (this._provisioningEnded) {
+       throw new Error("Provisioning already ended");
+     }
+     if (!aReason || typeof(aReason) != "string") {
+       throw new Error("raiseProvisioningFailure reason is required");
+     }
+     this._provisioningEnded = true;
+ 
+@@ -312,17 +323,17 @@ nsDOMIdentity.prototype = {
+     this._identityInternal._mm.sendAsyncMessage("Identity:IDP:ProvisioningFailure", message);
+   },
+ 
+   /**
+    *  Identity Provider (IDP) Authentication APIs
+    */
+ 
+   beginAuthentication: function nsDOMIdentity_beginAuthentication(aCallback) {
+-    this._log("beginAuthentication");
++    logger.log("beginAuthentication");
+     if (this._beginAuthenticationCallback) {
+       throw new Error("navigator.id.beginAuthentication already called.");
+     }
+     if (typeof(aCallback) !== "function") {
+       throw new Error("beginAuthentication callback is required.");
+     }
+     if (!aCallback || typeof(aCallback) !== "function") {
+       throw new Error("beginAuthentication callback is required.");
+@@ -400,54 +411,54 @@ nsDOMIdentity.prototype = {
+           return;
+         }
+         this._initializeState();
+         Services.obs.notifyObservers(null, "identity-DOM-state-reset", this._id);
+         break;
+       case "Identity:RP:Watch:OnLogin":
+         // Do we have a watcher?
+         if (!this._rpWatcher) {
+-          dump("WARNING: Received OnLogin message, but there is no RP watcher\n");
++          error("WARNING: Received OnLogin message, but there is no RP watcher");
+           return;
+         }
+ 
+         if (this._rpWatcher.onlogin) {
+           if (this._rpWatcher._internal) {
+             this._rpWatcher.onlogin(msg.assertion, msg._internalParams);
+           } else {
+             this._rpWatcher.onlogin(msg.assertion);
+           }
+         }
+         break;
+       case "Identity:RP:Watch:OnLogout":
+         // Do we have a watcher?
+         if (!this._rpWatcher) {
+-          dump("WARNING: Received OnLogout message, but there is no RP watcher\n");
++          error("WARNING: Received OnLogout message, but there is no RP watcher");
+           return;
+         }
+ 
+         if (this._rpWatcher.onlogout) {
+           this._rpWatcher.onlogout();
+         }
+         break;
+       case "Identity:RP:Watch:OnReady":
+         // Do we have a watcher?
+         if (!this._rpWatcher) {
+-          dump("WARNING: Received OnReady message, but there is no RP watcher\n");
++          error("WARNING: Received OnReady message, but there is no RP watcher");
+           return;
+         }
+ 
+         if (this._rpWatcher.onready) {
+           this._rpWatcher.onready();
+         }
+         break;
+       case "Identity:RP:Watch:OnCancel":
+         // Do we have a watcher?
+         if (!this._rpWatcher) {
+-          dump("WARNING: Received OnCancel message, but there is no RP watcher\n");
++          error("WARNING: Received OnCancel message, but there is no RP watcher");
+           return;
+         }
+ 
+         if (this._onCancelRequestCallback) {
+           this._onCancelRequestCallback();
+         }
+         break;
+       case "Identity:IDP:CallBeginProvisioningCallback":
+@@ -457,20 +468,16 @@ nsDOMIdentity.prototype = {
+         this._callGenKeyPairCallback(msg);
+         break;
+       case "Identity:IDP:CallBeginAuthenticationCallback":
+         this._callBeginAuthenticationCallback(msg);
+         break;
+     }
+   },
+ 
+-  _log: function nsDOMIdentity__log(msg) {
+-    this._identityInternal._log(msg);
+-  },
+-
+   _callGenKeyPairCallback: function nsDOMIdentity__callGenKeyPairCallback(message) {
+     // create a pubkey object that works
+     let chrome_pubkey = JSON.parse(message.publicKey);
+ 
+     // bunch of stuff to create a proper object in window context
+     function genPropDesc(value) {
+       return {
+         enumerable: true, configurable: true, writable: true, value: value
+@@ -583,17 +590,17 @@ nsDOMIdentityInternal.prototype = {
+ 
+     this._identity._init(aWindow);
+ 
+     let util = aWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+                       .getInterface(Ci.nsIDOMWindowUtils);
+     this._id = util.outerWindowID;
+     this._innerWindowID = util.currentInnerWindowID;
+ 
+-    this._log("init was called from " + aWindow.document.location);
++    logger.log("init was called from", aWindow.document.location);
+ 
+     this._mm = cpmm;
+ 
+     // Setup listeners for messages from parent process.
+     this._messages = [
+       "Identity:ResetState",
+       "Identity:RP:Watch:OnLogin",
+       "Identity:RP:Watch:OnLogout",
+@@ -605,27 +612,20 @@ nsDOMIdentityInternal.prototype = {
+     ];
+     this._messages.forEach((function(msgName) {
+       this._mm.addMessageListener(msgName, this);
+     }).bind(this));
+ 
+     // Setup observers so we can remove message listeners.
+     Services.obs.addObserver(this, "inner-window-destroyed", false);
+ 
++    logger.log("return");
+     return this._identity;
+   },
+ 
+-  // Private.
+-  _log: function nsDOMIdentityInternal__log(msg) {
+-    if (!this._debug) {
+-      return;
+-    }
+-    dump("nsDOMIdentity (" + this._id + "): " + msg + "\n");
+-  },
+-
+   // Component setup.
+   classID: Components.ID("{210853d9-2c97-4669-9761-b1ab9cbf57ef}"),
+ 
+   QueryInterface: XPCOMUtils.generateQI(
+     [Ci.nsIDOMGlobalPropertyInitializer, Ci.nsIMessageListener]
+   ),
+ 
+   classInfo: XPCOMUtils.generateCI({
+diff --git a/modules/libpref/src/init/all.js b/modules/libpref/src/init/all.js
+--- a/modules/libpref/src/init/all.js
++++ b/modules/libpref/src/init/all.js
+@@ -379,17 +379,17 @@ pref("toolkit.telemetry.server", "https:
+ pref("toolkit.telemetry.server_owner", "Mozilla");
+ // Information page about telemetry (temporary ; will be about:telemetry in the end)
+ pref("toolkit.telemetry.infoURL", "http://www.mozilla.com/legal/privacy/firefox.html#telemetry");
+ // Determines whether full SQL strings are returned when they might contain sensitive info
+ // i.e. dynamically constructed SQL strings or SQL executed by addons against addon DBs
+ pref("toolkit.telemetry.debugSlowSql", false);
+ 
+ // Identity module
+-pref("toolkit.identity.enabled", false);
++pref("dom.identity.enabled", false);
+ pref("toolkit.identity.debug", false);
+ 
+ // Enable deprecation warnings.
+ pref("devtools.errorconsole.deprecation_warnings", true);
+ 
+ // Disable remote debugging protocol logging
+ pref("devtools.debugger.log", false);
+ // Disable remote debugging connections
+diff --git a/toolkit/identity/IdentityUtils.jsm b/toolkit/identity/IdentityUtils.jsm
+--- a/toolkit/identity/IdentityUtils.jsm
++++ b/toolkit/identity/IdentityUtils.jsm
+@@ -18,40 +18,38 @@ this.EXPORTED_SYMBOLS = [
+ const Cu = Components.utils;
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ 
+ XPCOMUtils.defineLazyServiceGetter(this, "uuidgen",
+                                    "@mozilla.org/uuid-generator;1",
+                                    "nsIUUIDGenerator");
+ 
+-XPCOMUtils.defineLazyModuleGetter(this, "Logger",
+-                                  "resource://gre/modules/identity/LogUtils.jsm");
+-
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["Identity"].concat(aMessageArgs));
+-}
++XPCOMUtils.defineLazyGetter(this, "logger", function () {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
+ 
+ function defined(item) {
+   return typeof item !== 'undefined';
+ }
+ 
+ var checkDeprecated = this.checkDeprecated = function checkDeprecated(aOptions, aField) {
+   if (defined(aOptions[aField])) {
+-    log("WARNING: field is deprecated:", aField);
++    logger.log("WARNING: field is deprecated:", aField);
+     return true;
+   }
+   return false;
+ };
+ 
+ this.checkRenamed = function checkRenamed(aOptions, aOldName, aNewName) {
+   if (defined(aOptions[aOldName]) &&
+       defined(aOptions[aNewName])) {
+     let err = "You cannot provide both " + aOldName + " and " + aNewName;
+-    Logger.reportError(err);
++    logger.error(err);
+     throw new Error(err);
+   }
+ 
+   if (checkDeprecated(aOptions, aOldName)) {
+     aOptions[aNewName] = aOptions[aOldName];
+     delete(aOptions[aOldName]);
+   }
+ };
+diff --git a/toolkit/identity/LogUtils.jsm b/toolkit/identity/LogUtils.jsm
+--- a/toolkit/identity/LogUtils.jsm
++++ b/toolkit/identity/LogUtils.jsm
+@@ -1,103 +1,178 @@
+ /* -*- Mode: js2; js2-basic-offset: 2; indent-tabs-mode: nil; -*- */
+ /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ "use strict";
+ 
+-this.EXPORTED_SYMBOLS = ["Logger"];
+-const PREF_DEBUG = "toolkit.identity.debug";
++this.EXPORTED_SYMBOLS = ["Logger", "getLogger"];
+ 
+ const Cu = Components.utils;
+ const Ci = Components.interfaces;
+-const Cc = Components.classes;
+-const Cr = Components.results;
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+ 
+-function IdentityLogger() {
+-  Services.prefs.addObserver(PREF_DEBUG, this, false);
+-  this._debug = Services.prefs.getBoolPref(PREF_DEBUG);
+-  return this;
++function Logger(aIdentifier, aEnablingPref) {
++  this._identifier = aIdentifier;
++  this._enablingPref = aEnablingPref;
++
++  // Enabled by default if a pref for toggling the logger is not given
++  this._enabled = !this._enablingPref;
++
++  this.init();
+ }
+ 
+-IdentityLogger.prototype = {
++Logger.prototype = {
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsISupports, Ci.nsIObserver]),
+ 
++  init: function Logger_init() {
++    if (this._enablingPref) {
++      Services.prefs.addObserver(this._enablingPref, this, false);
++      this._enabled = Services.prefs.getBoolPref(this._enablingPref);
++    }
++  },
++
+   observe: function observe(aSubject, aTopic, aData) {
+     switch(aTopic) {
+       case "nsPref:changed":
+-        this._debug = Services.prefs.getBoolPref(PREF_DEBUG);
++        this._enabled = Services.prefs.getBoolPref(this._enablingPref);
++        dump("LogUtils " + 
++             (this._enabled ? "enabled" : "disabled") + 
++             " for " + this._identifier + "\n");
+         break;
+ 
+       case "quit-application-granted":
+-        Services.prefs.removeObserver(PREF_DEBUG, this);
++        Services.prefs.removeObserver(this._enablingPref, this);
+         break;
+ 
+       default:
+         this.log("Logger observer", "Unknown topic:", aTopic);
+         break;
+     }
+   },
+ 
+-  _generateLogMessage: function _generateLogMessage(aPrefix, args) {
+-    // create a string representation of a list of arbitrary things
++  _generatePrefix: function _generatePrefix() {
++    let caller = Components.stack.caller.caller;
++    let parts = ['[' + this._identifier + ']'];
++
++    // filename could be like path/to/foo.js or Scratchpad/1
++    if (caller.filename) {
++      let path = caller.filename.split('/');
++      if (path[path.length - 1].match(/\./)) {
++        parts.push(path[path.length - 1])
++      } else {
++        parts.push(caller.filename);
++      }
++    }
++
++    // Might not be called from a function; might be top-level
++    if (caller.name) {
++      parts.push(caller.name + '()');
++    }
++
++    parts.push('line ' + caller.lineNumber + ': ');
++
++    return parts.join(' ');
++  },
++
++  _generateLogMessage: function _generateLogMessage(severity, argList) {
+     let strings = [];
+-
+-    // XXX bug 770418 - args look like flattened array, not list of strings
+-
+-    args.forEach(function(arg) {
+-      if (typeof arg === 'string') {
+-        strings.push(arg);
+-      } else if (typeof arg === 'undefined') {
+-        strings.push('undefined');
+-      } else if (arg === null) {
++    argList.forEach(function(arg) {
++      if (arg === null) {
+         strings.push('null');
+       } else {
+-        try {
+-          strings.push(JSON.stringify(arg, null, 2));
+-        } catch(err) {
+-          strings.push("<<something>>");
++        switch(typeof arg) {
++          case 'string':
++            strings.push(arg);
++            break;
++          case 'undefined':
++            strings.push('undefined');
++            break;
++          case 'function':
++            strings.push('<<function>>');
++            break;
++          case 'object':
++            try {
++              strings.push(JSON.stringify(arg, null, 2));
++            } catch(err) {
++              strings.push('<<object>>');
++            }
++            break;
++          default:
++            try {
++              strings.push(arg.toString());
++            } catch(err) {
++              strings.push('<<something>>');
++            }
++            break;
+         }
+       }
+     });
+-    return 'Identity ' + aPrefix + ': ' + strings.join(' ');
++    return strings.join(' ');
+   },
+ 
+   /**
+    * log() - utility function to print a list of arbitrary things
+    *
+    * Enable with about:config pref toolkit.identity.debug
+    */
+-  log: function log(aPrefix, ...args) {
+-    if (!this._debug) {
++  log: function log(...argList) {
++    if (!this._enabled) {
+       return;
+     }
+-    let output = this._generateLogMessage(aPrefix, args);
++    let output = this._generatePrefix() + this._generateLogMessage('info', argList);
++
++    // print to the shell console and the browser error console
+     dump(output + "\n");
+-
+-    // Additionally, make the output visible in the Error Console
+     Services.console.logStringMessage(output);
+   },
+ 
++  warning: function Logger_warning(...argList) {
++    if (!this._enabled) {
++      return;
++    }
++
++    let output = this._generatePrefix() + this._generateLogMessage('warning', argList);
++  },
++
+   /**
+-   * reportError() - report an error through component utils as well as
++   * error() - report an error through component utils as well as
+    * our log function
+    */
+-  reportError: function reportError(aPrefix, ...aArgs) {
+-    let prefix = aPrefix + ' ERROR';
++  error: function Logger_error(...argList) {
++    if (!this._enabled) {
++      return;
++    }
+ 
+     // Report the error in the browser
+-    let output = this._generateLogMessage(aPrefix, aArgs);
++    let output = this._generatePrefix() + this._generateLogMessage('error', argList);
+     Cu.reportError(output);
++
++    // print to the console
+     dump("ERROR: " + output + "\n");
++    dump("   traceback follows:\n");
+     for (let frame = Components.stack.caller; frame; frame = frame.caller) {
+       dump(frame + "\n");
+     }
+   }
+-
+ };
+ 
+-this.Logger = new IdentityLogger();
++/**
++ * let logger = getLogger('my component', 'toolkit.foo.debug');
++ * logger.log("I would like", 42, "pies", {'and-some': 'object'});
++ */
++
++let _loggers = {};
++
++this.getLogger = function(aIdentifier, aEnablingPref) {
++  let key = aIdentifier;
++  if (aEnablingPref) {
++    key = key + '-' + aEnablingPref;
++  }
++  if (!_loggers[key]) {
++    _loggers[key] = new Logger(aIdentifier, aEnablingPref);
++  }
++  return _loggers[key];
++}
+diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIdentity.jsm
+--- a/toolkit/identity/MinimalIdentity.jsm
++++ b/toolkit/identity/MinimalIdentity.jsm
+@@ -14,34 +14,25 @@
+  */
+ 
+ "use strict";
+ 
+ this.EXPORTED_SYMBOLS = ["IdentityService"];
+ 
+ const Cu = Components.utils;
+ const Ci = Components.interfaces;
+-const Cc = Components.classes;
+-const Cr = Components.results;
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+-Cu.import("resource://gre/modules/identity/LogUtils.jsm");
+ Cu.import("resource://gre/modules/identity/IdentityUtils.jsm");
+ 
+-XPCOMUtils.defineLazyModuleGetter(this,
+-                                  "jwcrypto",
+-                                  "resource://gre/modules/identity/jwcrypto.jsm");
+-
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["minimal core"].concat(aMessageArgs));
+-}
+-function reportError(...aMessageArgs) {
+-  Logger.reportError.apply(Logger, ["core"].concat(aMessageArgs));
+-}
++XPCOMUtils.defineLazyGetter(this, "logger", function () {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
+ 
+ function makeMessageObject(aRpCaller) {
+   let options = {};
+ 
+   options.id = aRpCaller.id;
+   options.origin = aRpCaller.origin;
+ 
+   // loggedInUser can be undefined, null, or a string
+@@ -57,64 +48,48 @@ function makeMessageObject(aRpCaller) {
+         && option[0] !== '_'
+         && typeof aRpCaller[option] !== 'function') {
+       options[option] = aRpCaller[option];
+     }
+   });
+ 
+   if (! (options.id && options.origin)) {
+     let err = "id and origin required in relying-party message";
+-    reportError(err);
++    logger.error(err);
+     throw new Error(err);
+   }
+ 
+   return options;
+ }
+ 
+ function IDService() {
+   Services.obs.addObserver(this, "quit-application-granted", false);
+-  // Services.obs.addObserver(this, "identity-auth-complete", false);
+ 
+   // simplify, it's one object
+   this.RP = this;
+   this.IDP = this;
+ 
+   // keep track of flows
+   this._rpFlows = {};
+   this._authFlows = {};
+   this._provFlows = {};
+ }
+ 
+ IDService.prototype = {
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsISupports, Ci.nsIObserver]),
+ 
+-  observe: function observe(aSubject, aTopic, aData) {
++  observe: function IDService_observe(aSubject, aTopic, aData) {
+     switch (aTopic) {
+       case "quit-application-granted":
+         Services.obs.removeObserver(this, "quit-application-granted");
+-        // Services.obs.removeObserver(this, "identity-auth-complete");
+         break;
+     }
+   },
+ 
+   /**
+-   * Parse an email into username and domain if it is valid, else return null
+-   */
+-  parseEmail: function parseEmail(email) {
+-    var match = email.match(/^([^@]+)@([^@^/]+.[a-z]+)$/);
+-    if (match) {
+-      return {
+-        username: match[1],
+-        domain: match[2]
+-      };
+-    }
+-    return null;
+-  },
+-
+-  /**
+    * Register a listener for a given windowID as a result of a call to
+    * navigator.id.watch().
+    *
+    * @param aCaller
+    *        (Object)  an object that represents the caller document, and
+    *                  is expected to have properties:
+    *                  - id (unique, e.g. uuid)
+    *                  - loggedInUser (string or null)
+@@ -123,36 +98,38 @@ IDService.prototype = {
+    *                  and a bunch of callbacks
+    *                  - doReady()
+    *                  - doLogin()
+    *                  - doLogout()
+    *                  - doError()
+    *                  - doCancel()
+    *
+    */
+-  watch: function watch(aRpCaller) {
++  watch: function IDService_watch(aRpCaller) {
+     // store the caller structure and notify the UI observers
+     this._rpFlows[aRpCaller.id] = aRpCaller;
+ 
++    logger.log("IdentityService watch got caller: " + JSON.stringify(aRpCaller, null, 2));
++
+     let options = makeMessageObject(aRpCaller);
+-    log("sending identity-controller-watch:", options);
++    logger.log("sending identity-controller-watch:", options);
+     Services.obs.notifyObservers({wrappedJSObject: options},"identity-controller-watch", null);
+   },
+ 
+   /**
+    * Initiate a login with user interaction as a result of a call to
+    * navigator.id.request().
+    *
+    * @param aRPId
+    *        (integer)  the id of the doc object obtained in .watch()
+    *
+    * @param aOptions
+    *        (Object)  options including privacyPolicy, termsOfService
+    */
+-  request: function request(aRPId, aOptions) {
++  request: function IDService_request(aRPId, aOptions) {
+     let rp = this._rpFlows[aRPId];
+ 
+     // Notify UX to display identity picker.
+     // Pass the doc id to UX so it can pass it back to us later.
+     let options = makeMessageObject(rp);
+     objectCopy(aOptions, options);
+     Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-request", null);
+   },
+@@ -160,258 +137,98 @@ IDService.prototype = {
+   /**
+    * Invoked when a user wishes to logout of a site (for instance, when clicking
+    * on an in-content logout button).
+    *
+    * @param aRpCallerId
+    *        (integer)  the id of the doc object obtained in .watch()
+    *
+    */
+-  logout: function logout(aRpCallerId) {
++  logout: function IDService_logout(aRpCallerId) {
+     let rp = this._rpFlows[aRpCallerId];
+ 
+     let options = makeMessageObject(rp);
+     Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-logout", null);
+   },
+ 
+   /*
+    * once the UI-and-display-logic components have received
+    * notifications, they call back with direct invocation of the
+    * following functions (doLogin, doLogout, or doReady)
+    */
+ 
+-  doLogin: function doLogin(aRpCallerId, aAssertion, aInternalParams) {
++  doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
+     let rp = this._rpFlows[aRpCallerId];
+     if (!rp) {
+-      dump("WARNING: doLogin found no rp to go with callerId " + aRpCallerId + "\n");
++      logger.error("WARNING: doLogin found no rp for callerId", aRpCallerId);
+       return;
+     }
+ 
+     rp.doLogin(aAssertion, aInternalParams);
+   },
+ 
+-  doLogout: function doLogout(aRpCallerId) {
++  doLogout: function IDService_doLogout(aRpCallerId) {
+     let rp = this._rpFlows[aRpCallerId];
+     if (!rp) {
+-      dump("WARNING: doLogout found no rp to go with callerId " + aRpCallerId + "\n");
++      logger.error("WARNING: doLogout found no rp for callerId", aRpCallerId);
+       return;
+     }
+ 
+     rp.doLogout();
+   },
+ 
+-  doReady: function doReady(aRpCallerId) {
++  doReady: function IDService_doReady(aRpCallerId) {
+     let rp = this._rpFlows[aRpCallerId];
+     if (!rp) {
+-      dump("WARNING: doReady found no rp to go with callerId " + aRpCallerId + "\n");
++      logger.error("WARNING: doReady found no rp for callerId ", aRpCallerId);
+       return;
+     }
+ 
+     rp.doReady();
+   },
+ 
+-  doCancel: function doCancel(aRpCallerId) {
++  doCancel: function IDService_doCancel(aRpCallerId) {
+     let rp = this._rpFlows[aRpCallerId];
+     if (!rp) {
+-      dump("WARNING: doCancel found no rp to go with callerId " + aRpCallerId + "\n");
++      logger.error("WARNING: doCancel found no rp for callerId ", aRpCallerId);
+       return;
+     }
+ 
+     rp.doCancel();
+   },
+ 
+-
+-  /*
+-   * XXX Bug 804229: Implement Identity Provider Functions
+-   *
+-   * Stubs for Identity Provider functions follow
++  /**
++   * IDP functions are taken care of by the dialog.  The DOM should never
++   * be calling these methods on this service.  So if it does, use the 
++   * logger.error function to give a stack trace.
+    */
+ 
+-  /**
+-   * the provisioning iframe sandbox has called navigator.id.beginProvisioning()
+-   *
+-   * @param aCaller
+-   *        (object)  the iframe sandbox caller with all callbacks and
+-   *                  other information.  Callbacks include:
+-   *                  - doBeginProvisioningCallback(id, duration_s)
+-   *                  - doGenKeyPairCallback(pk)
+-   */
+-  beginProvisioning: function beginProvisioning(aCaller) {
++  beginProvisioning: function IDService_beginProvisioning(context) {
++    logger.error("Not implemented");
+   },
+ 
+-  /**
+-   * the provisioning iframe sandbox has called
+-   * navigator.id.raiseProvisioningFailure()
+-   *
+-   * @param aProvId
+-   *        (int)  the identifier of the provisioning flow tied to that sandbox
+-   * @param aReason
+-   */
+-  raiseProvisioningFailure: function raiseProvisioningFailure(aProvId, aReason) {
+-    reportError("Provisioning failure", aReason);
++  genKeyPair: function IDService_genKeyPair(id) {
++    logger.error("Not implemented");
+   },
+ 
+-  /**
+-   * When navigator.id.genKeyPair is called from provisioning iframe sandbox.
+-   * Generates a keypair for the current user being provisioned.
+-   *
+-   * @param aProvId
+-   *        (int)  the identifier of the provisioning caller tied to that sandbox
+-   *
+-   * It is an error to call genKeypair without receiving the callback for
+-   * the beginProvisioning() call first.
+-   */
+-  genKeyPair: function genKeyPair(aProvId) {
++  registerCertificate: function IDService_registerCertificate(id, cert) {
++    logger.error("Not implemented");
+   },
+ 
+-  /**
+-   * When navigator.id.registerCertificate is called from provisioning iframe
+-   * sandbox.
+-   *
+-   * Sets the certificate for the user for which a certificate was requested
+-   * via a preceding call to beginProvisioning (and genKeypair).
+-   *
+-   * @param aProvId
+-   *        (integer) the identifier of the provisioning caller tied to that
+-   *                  sandbox
+-   *
+-   * @param aCert
+-   *        (String)  A JWT representing the signed certificate for the user
+-   *                  being provisioned, provided by the IdP.
+-   */
+-  registerCertificate: function registerCertificate(aProvId, aCert) {
++  raiseProvisioningFailure: function IDService_raiseProvisioningFailure(id, reason) {
++    logger.error("Not implemented");
+   },
+ 
+-  /**
+-   * The authentication frame has called navigator.id.beginAuthentication
+-   *
+-   * IMPORTANT: the aCaller is *always* non-null, even if this is called from
+-   * a regular content page. We have to make sure, on every DOM call, that
+-   * aCaller is an expected authentication-flow identifier. If not, we throw
+-   * an error or something.
+-   *
+-   * @param aCaller
+-   *        (object)  the authentication caller
+-   *
+-   */
+-  beginAuthentication: function beginAuthentication(aCaller) {
++  beginAuthentication: function IDService_beginAuthentication(context) {
++    logger.error("Not implemented");
+   },
+ 
+-  /**
+-   * The auth frame has called navigator.id.completeAuthentication
+-   *
+-   * @param aAuthId
+-   *        (int)  the identifier of the authentication caller tied to that sandbox
+-   *
+-   */
+-  completeAuthentication: function completeAuthentication(aAuthId) {
++  completeAuthentication: function IDService_completeAuthentication(id) {
++    logger.error("Not implemented");
+   },
+ 
+-  /**
+-   * The auth frame has called navigator.id.cancelAuthentication
+-   *
+-   * @param aAuthId
+-   *        (int)  the identifier of the authentication caller
+-   *
+-   */
+-  cancelAuthentication: function cancelAuthentication(aAuthId) {
+-  },
+-
+-  // methods for chrome and add-ons
+-
+-  /**
+-   * Discover the IdP for an identity
+-   *
+-   * @param aIdentity
+-   *        (string) the email we're logging in with
+-   *
+-   * @param aCallback
+-   *        (function) callback to invoke on completion
+-   *                   with first-positional parameter the error.
+-   */
+-  _discoverIdentityProvider: function _discoverIdentityProvider(aIdentity, aCallback) {
+-    // XXX bug 767610 - validate email address call
+-    // When that is available, we can remove this custom parser
+-    var parsedEmail = this.parseEmail(aIdentity);
+-    if (parsedEmail === null) {
+-      return aCallback("Could not parse email: " + aIdentity);
+-    }
+-    log("_discoverIdentityProvider: identity:", aIdentity, "domain:", parsedEmail.domain);
+-
+-    this._fetchWellKnownFile(parsedEmail.domain, function fetchedWellKnown(err, idpParams) {
+-      // idpParams includes the pk, authorization url, and
+-      // provisioning url.
+-
+-      // XXX bug 769861 follow any authority delegations
+-      // if no well-known at any point in the delegation
+-      // fall back to browserid.org as IdP
+-      return aCallback(err, idpParams);
+-    });
+-  },
+-
+-  /**
+-   * Fetch the well-known file from the domain.
+-   *
+-   * @param aDomain
+-   *
+-   * @param aScheme
+-   *        (string) (optional) Protocol to use.  Default is https.
+-   *                 This is necessary because we are unable to test
+-   *                 https.
+-   *
+-   * @param aCallback
+-   *
+-   */
+-  _fetchWellKnownFile: function _fetchWellKnownFile(aDomain, aCallback, aScheme='https') {
+-    // XXX bug 769854 make tests https and remove aScheme option
+-    let url = aScheme + '://' + aDomain + "/.well-known/browserid";
+-    log("_fetchWellKnownFile:", url);
+-
+-    // this appears to be a more successful way to get at xmlhttprequest (which supposedly will close with a window
+-    let req = Cc["@mozilla.org/xmlextras/xmlhttprequest;1"]
+-                .createInstance(Ci.nsIXMLHttpRequest);
+-
+-    // XXX bug 769865 gracefully handle being off-line
+-    // XXX bug 769866 decide on how to handle redirects
+-    req.open("GET", url, true);
+-    req.responseType = "json";
+-    req.mozBackgroundRequest = true;
+-    req.onload = function _fetchWellKnownFile_onload() {
+-      if (req.status < 200 || req.status >= 400) {
+-        log("_fetchWellKnownFile", url, ": server returned status:", req.status);
+-        return aCallback("Error");
+-      }
+-      try {
+-        let idpParams = req.response;
+-
+-        // Verify that the IdP returned a valid configuration
+-        if (! (idpParams.provisioning &&
+-            idpParams.authentication &&
+-            idpParams['public-key'])) {
+-          let errStr= "Invalid well-known file from: " + aDomain;
+-          log("_fetchWellKnownFile:", errStr);
+-          return aCallback(errStr);
+-        }
+-
+-        let callbackObj = {
+-          domain: aDomain,
+-          idpParams: idpParams,
+-        };
+-        log("_fetchWellKnownFile result: ", callbackObj);
+-        // Yay.  Valid IdP configuration for the domain.
+-        return aCallback(null, callbackObj);
+-
+-      } catch (err) {
+-        reportError("_fetchWellKnownFile", "Bad configuration from", aDomain, err);
+-        return aCallback(err.toString());
+-      }
+-    };
+-    req.onerror = function _fetchWellKnownFile_onerror() {
+-      log("_fetchWellKnownFile", "ERROR:", req.status, req.statusText);
+-      log("ERROR: _fetchWellKnownFile:", err);
+-      return aCallback("Error");
+-    };
+-    req.send(null);
+-  },
+-
++  cancelAuthentication: function IDService_cancelAuthentication(id) {
++    logger.error("Not implemented");
++  }
+ };
+ 
+ this.IdentityService = new IDService();
++
