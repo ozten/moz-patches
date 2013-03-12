@@ -4,7 +4,7 @@
 diff --git a/browser/base/content/browser-identity.js b/browser/base/content/browser-identity.js
 --- a/browser/base/content/browser-identity.js
 +++ b/browser/base/content/browser-identity.js
-@@ -21,43 +21,56 @@ function IdentityShim() {
+@@ -21,43 +21,63 @@ function IdentityShim() {
    this.isLoaded = false;
  }
  
@@ -13,8 +13,10 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
      addMessageListener('identity-delegate-watch', this);
      addMessageListener('identity-delegate-request', this);
      addMessageListener('identity-delegate-logout', this);
-+    addMessageListener('identity-delegate-signin', this);
-+    addMessageListener('identity-delegate-createUser', this);
++
++    addMessageListener('identity-delegate-signIn', this);
++    addMessageListener('identity-delegate-signOut', this);
++    addMessageListener('identity-delegate-createAccount', this);
      sendAsyncMessage('identity-delegate-loaded');
      logger.log('init().  sent identity-delegate-complete');
      this.isLoaded = true;
@@ -25,8 +27,10 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
        removeMessageListener('identity-delegate-watch', this);
        removeMessageListener('identity-delegate-request', this);
        removeMessageListener('identity-delegate-logout', this);
-+      removeMessageListener('identity-delegate-signin', this);
-+      removeMessageListener('identity-delegate-createUser', this);
++
++      removeMessageListener('identity-delegate-signIn', this);
++      removeMessageListener('identity-delegate-signOut', this);
++      removeMessageListener('identity-delegate-createAccount', this);
        sendAsyncMessage('identity-delegate-complete', null);
        logger.log('uninit().  sent identity-delegate-complete');
        this.isLoaded = false;
@@ -49,11 +53,14 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +        this.logout(options);
          break;
 +
-+      case 'identity-delegate-signin':
-+        this.signin(options);
++      case 'identity-delegate-signIn':
++        this.signIn(options);
 +        break;
-+      case 'identity-delegate-createUser':
-+        this.createUser(options);
++      case 'identity-delegate-signOut':
++        this.signOut(options);
++        break;
++      case 'identity-delegate-createAccount':
++        this.createAccount(options);
 +        break;
 +  
        default:
@@ -64,7 +71,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  
    _identityDoMethod: function IdentityShim__identityDoMethod(message) {
      sendAsyncMessage('identity-service-doMethod', message);
-@@ -119,16 +132,61 @@ IdentityShim.prototype = {
+@@ -119,16 +139,80 @@ IdentityShim.prototype = {
        let BrowserID = content.wrappedJSObject.BrowserID;
        let callback = function() {
          this._identityDoMethod({method: 'logout', _internal: options._internal});
@@ -75,49 +82,68 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
      }
 +  },
 +
-+  signin: function IdentityShim_signin(options) {
++  /*
++   * Sign in to browser
++   */
++  signIn: function IdentityShim_signIn(options) {
++    logger.log("signin with options", options);
 +    let email = options.email;
 +    let password = options.password;
 +    let origin = options.origin;
-+    if (email && password && origin) {
-+      logger.log("try to signin", email, "->", origin);
-+      let stringifiedOptions = JSON.stringify(options);
-+      let BrowserID = content.wrappedJSObject.BrowserID;
 +
-+      let callback = function(assertion, internalParams) {
-+        internalParams = internalParams || {};
-+        if (assertion) {
-+          logger.log("got assertion");
-+          this._identityDoMethod({
-+            method: 'login',
-+            assertion: assertion,
-+            _internal: options._internal,
-+            _internalParams: internalParams});
-+      }.bind(this);;
++    logger.log("try to signin", email, "->", origin);
++    let stringifiedOptions = JSON.stringify(options);
++    let BrowserID = content.wrappedJSObject.BrowserID;
 +
-+      BrowserID.internal.signin(
-+          email, password, origin, 
-+          callback, stringifiedOptions);
-+    }
++    let callback = function(assertion, internalParams) {
++      internalParams = internalParams || {};
++      if (assertion) {
++        logger.log("got assertion");
++        this._identityDoMethod({
++          method: 'signIn',
++          assertion: assertion,
++          _internal: options._internal,
++          _internalParams: internalParams});
++    }.bind(this);
++
++    BrowserID.internal.signIn(email, password, origin, callback, stringifiedOptions);
 +  },
 +
-+  createUser: function IdentityShim_createUser(options) {
++  /*
++   * Sign out of browser
++   */
++
++  signOut: function IdentityShim_signOut(options) {
++    logger.log("signout with options", options);
++    let BrowserID = content.wrappedJSObject.BrowserID;
++
++    let callback = function() {
++      this._identityDoMethod({method: 'signOut', _internal: options._internal});
++      this._close();
++    }
++
++    BrowserID.internal.signOut(options.origin);
++  },
++
++  /*
++   * Create user from browser
++   */
++  createAccount: function IdentityShim_createAccount(options) {
++    logger.log("create user with options", options);
 +    let email = options.email;
 +    let password = options.password;
++    let BrowserID = content.wrappedJSObject.BrowserID;
++
 +    // XXX what about unverified here ...
-+    if (email && password) {
-+      logger.log("authenticate", email);
-+      let BrowserID = content.wrappedJSObject.BrowserID;
++    let callback = function(success) {
++      this._identityDoMethod({
++        method: 'createAccount',
++        email: email,
++        success: success
++      });
++    }.bind(this);
 +
-+      let callback = function(success) {
-+        this._identityDoMethod({
-+          method: 'createUser',
-+          success: success
-+        });
-+      }.bind(this);
-+
-+      BrowserID.internal.createUser(email, password, callback);
-+    }
++    BrowserID.internal.createAccount(email, password, callback);
    }
  };
  
@@ -126,3 +152,191 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  addEventListener('DOMContentLoaded', function(e) {
    content.addEventListener('load', function(e) {
      logger.log('content loaded');
+diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
+--- a/browser/modules/SignInToWebsite.jsm
++++ b/browser/modules/SignInToWebsite.jsm
+@@ -315,23 +315,31 @@ Pipe.prototype = {
+ 
+ this.SignInToWebsiteUX = {
+   init: function SignInToWebsiteUX_init() {
+     this.contexts = {};
+     Services.obs.addObserver(this, 'identity-controller-watch', false);
+     Services.obs.addObserver(this, 'identity-controller-request', false);
+     Services.obs.addObserver(this, 'identity-controller-logout', false);
+     Services.obs.addObserver(this, 'identity-controller-canceled', false);
++
++    Services.obs.addObserver(this, 'identity-controller-signIn', false);
++    Services.obs.addObserver(this, 'identity-controller-signOut', false);
++    Services.obs.addObserver(this, 'identity-controller-createAccount', false);
+   },
+ 
+   uninit: function SignInToWebsiteUX_uninit() {
+     Services.obs.removeObserver(this, 'identity-controller-watch');
+     Services.obs.removeObserver(this, 'identity-controller-request');
+     Services.obs.removeObserver(this, 'identity-controller-logout');
+     Services.obs.removeObserver(this, 'identity-controller-canceled');
++
++    Services.obs.addObserver(this, 'identity-controller-signIn');
++    Services.obs.addObserver(this, 'identity-controller-signOut');
++    Services.obs.addObserver(this, 'identity-controller-createAccount');
+   },
+ 
+   observe: function SignInToWebsiteUX_observe(aSubject, aTopic, aData) {
+     logger.log('controller observed:', aTopic);
+     // XXX need to detect page unload of any of our flows
+     // XXX we get strings from xul, and objects from elsewhere
+     let rpOptions = {};
+     if (aSubject) {
+@@ -362,16 +370,30 @@ this.SignInToWebsiteUX = {
+       case 'identity-controller-request':
+         this.doRequest(options);
+         break;
+ 
+       case 'identity-controller-logout':
+         this.doLogout(options);
+         break;
+ 
++      case 'identity-controller-signIn':
++        this.doSignIn(options);
++        break;
++
++      case 'identity-controller-signOut':
++        this.doSignOut(options);
++        break;
++
++      case 'identity-controller-createAccount':
++        this.doCreateAccount(options);
++        break;
++
++      
++
+       default:
+         logger.error('SignInToWebsiteUX', 'Unknown observer notification:', aTopic);
+         break;
+     }
+   },
+ 
+   serviceDoMethod: function SignInToWebsiteUX_doMethod(aMessage, aId) {
+     logger.log('serviceDoMethod received:', aMessage);
+@@ -391,16 +413,28 @@ this.SignInToWebsiteUX = {
+       case 'logout':
+         IdentityService.doLogout(aId);
+         break;
+ 
+       case 'cancel':
+         IdentityService.doCancel(aId);
+         break;
+ 
++      case 'signIn':
++        IdentityService.doSignIn(aId, aMessage.assertion);
++        break;
++
++      case 'signOut':
++        IdentityService.doSignOut(aId);
++        break;
++
++      case 'createAccount':
++        IdentityService.doCreateAccount(aMessage.email);
++        break;
++
+       default:
+         logger.error('Unknown identity method: ' + aMessage.method);
+         break;
+     }
+   },
+ 
+   cleanUp: function SignInToWebsiteUX_cleanUp(aId) {
+     let context = this.contexts[aId];
+@@ -448,10 +482,29 @@ this.SignInToWebsiteUX = {
+     aOptions.showUI = true;
+     this.delegate(aOptions);
+   },
+ 
+   doLogout: function SignInToWebsiteUX_doLogout(aOptions) {
+     aOptions.message = 'identity-delegate-logout';
+     aOptions.showUI = false;
+     this.delegate(aOptions);
+-  }
++  },
++
++  doSignIn: function SignInToWebsiteUX_doSignIn(aOptions) {
++    aOptions.message = 'identity-delegate-signIn';
++    aOptions.showUI = false;
++    this.delegate(aOptions);
++  },
++
++  doSignOut: function SignInToWebsiteUX_doSignOut(aOptions) {
++    aOptions.message = 'identity-delegate-signOut';
++    aOptions.showUI = false;
++    this.delegate(aOptions);
++  },
++
++  doCreateAccount: function SignInToWebsiteUX_doCreateAccount(aOptions) {
++    aOptions.message = 'identity-delegate-createAccount';
++    aOptions.showUI = false;
++    this.delegate(aOptions);
++  },
++
+ };
+diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIdentity.jsm
+--- a/toolkit/identity/MinimalIdentity.jsm
++++ b/toolkit/identity/MinimalIdentity.jsm
+@@ -144,16 +144,29 @@ IDService.prototype = {
+    */
+   logout: function IDService_logout(aRpCallerId) {
+     let rp = this._rpFlows[aRpCallerId];
+ 
+     let options = makeMessageObject(rp);
+     Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-logout", null);
+   },
+ 
++  signIn: function IDService_signIn(aEmail, aPassword) {
++    logger.log("implement me");
++  },
++
++  signOut: function IDService_signOut(aOrigin) {
++    // is that right?
++    logger.log("implement me");
++  },
++
++  createAccount: function IDService_createAccount(aEmail, aPassword) {
++    logger.log("implement me");
++  },
++
+   /*
+    * once the UI-and-display-logic components have received
+    * notifications, they call back with direct invocation of the
+    * following functions (doLogin, doLogout, or doReady)
+    */
+ 
+   doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
+     let rp = this._rpFlows[aRpCallerId];
+@@ -190,16 +203,28 @@ IDService.prototype = {
+     if (!rp) {
+       logger.error("WARNING: doCancel found no rp for callerId ", aRpCallerId);
+       return;
+     }
+ 
+     rp.doCancel();
+   },
+ 
++  doSignIn: function IDService_doSignIn(aRpCallerId, aAssertion, aInternalParams) {
++    logger.log("w00t! now do something with this assertion:", aAssertion);
++  },
++
++  doSignOut: function IDService_doSignOut(aRpCallerId) {
++    logger.log("yay! caller", aRpCallerId, "was signed out by persona");
++  },
++
++  doCreateAccount: function IDService_doCreateAccount(aEmail) {
++    logger.log("holy cow. created", aEmail);
++  },
++
+   /**
+    * IDP functions are taken care of by the dialog.  The DOM should never
+    * be calling these methods on this service.  So if it does, use the 
+    * logger.error function to give a stack trace.
+    */
+ 
+   beginProvisioning: function IDService_beginProvisioning(context) {
+     logger.error("Not implemented");
