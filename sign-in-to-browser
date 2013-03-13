@@ -299,7 +299,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIdentity.jsm
 --- a/toolkit/identity/MinimalIdentity.jsm
 +++ b/toolkit/identity/MinimalIdentity.jsm
-@@ -144,16 +144,43 @@ IDService.prototype = {
+@@ -144,16 +144,47 @@ IDService.prototype = {
     */
    logout: function IDService_logout(aRpCallerId) {
      let rp = this._rpFlows[aRpCallerId];
@@ -326,9 +326,13 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-signIn", null);
 +  },
 +
-+  signOut: function IDService_signOut(aOrigin) {
-+    // is that right?
-+    logger.log("implement me");
++  signOut: function IDService_signOut(aRpCallerId) {
++    let rp = this._rpFlows[aRpCallerId];
++    if (!rp) {
++      logger.error("No flow with id", aRpCallerId);
++    }
++    let options = makeMessageObject(rp);
++    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-signOut", null);
 +  },
 +
 +  createAccount: function IDService_createAccount(aEmail, aPassword) {
@@ -343,7 +347,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
  
    doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
      let rp = this._rpFlows[aRpCallerId];
-@@ -190,16 +217,28 @@ IDService.prototype = {
+@@ -190,16 +221,35 @@ IDService.prototype = {
      if (!rp) {
        logger.error("WARNING: doCancel found no rp for callerId ", aRpCallerId);
        return;
@@ -353,7 +357,14 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
    },
  
 +  doSignIn: function IDService_doSignIn(aRpCallerId, aAssertion, aInternalParams) {
-+    logger.log("w00t! now do something with this assertion:", aAssertion);
++    let rp = this._rpFlows[aRpCallerId];
++    if (!rp) {
++      logger.error("no flow for id", aRpCallerId);
++    }
++    logger.log("signed in with assertion", aAssertion);
++    if (typeof rp.onSignIn === 'function') {
++      rp.onSignIn(aAssertion, aInternalParams);
++    }
 +  },
 +
 +  doSignOut: function IDService_doSignOut(aRpCallerId) {
