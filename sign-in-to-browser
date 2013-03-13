@@ -71,7 +71,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  
    _identityDoMethod: function IdentityShim__identityDoMethod(message) {
      sendAsyncMessage('identity-service-doMethod', message);
-@@ -119,16 +139,82 @@ IdentityShim.prototype = {
+@@ -119,16 +139,84 @@ IdentityShim.prototype = {
        let BrowserID = content.wrappedJSObject.BrowserID;
        let callback = function() {
          this._identityDoMethod({method: 'logout', _internal: options._internal});
@@ -132,20 +132,22 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +    let email = options.email;
 +    let password = options.password;
 +    let origin = options.origin;
++    let stringifiedOptions = JSON.stringify(options);
 +    let BrowserID = content.wrappedJSObject.BrowserID;
 +
-+    // XXX what about unverified here ...
-+    let callback = function(assertion) {
++    let callback = function(assertion, internalParams) {
 +      this._identityDoMethod({
 +        method: 'createAccount',
 +        email: email,
 +        origin: origin,
-+        assertion: assertion,
-+        success: success
++        _internal: options._internal,
++        _internalParams: internalParams,
++        assertion: assertion
 +      });
 +    }.bind(this);
 +
-+    BrowserID.internal.createAccount(email, password, origin, callback);
++    BrowserID.internal.createAccount(
++        email, password, origin, callback, stringifiedOptions);
    }
  };
  
@@ -154,6 +156,16 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  addEventListener('DOMContentLoaded', function(e) {
    content.addEventListener('load', function(e) {
      logger.log('content loaded');
+@@ -138,9 +226,8 @@ addEventListener('DOMContentLoaded', fun
+ });
+ 
+ content.addEventListener('beforeunload', function(e) {
+   if (this.shim) {
+     this.shim.uninit();
+   }
+ });
+ 
+-
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
@@ -368,7 +380,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIdentity.jsm
 --- a/toolkit/identity/MinimalIdentity.jsm
 +++ b/toolkit/identity/MinimalIdentity.jsm
-@@ -144,16 +144,64 @@ IDService.prototype = {
+@@ -144,16 +144,57 @@ IDService.prototype = {
     */
    logout: function IDService_logout(aRpCallerId) {
      let rp = this._rpFlows[aRpCallerId];
@@ -380,20 +392,17 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +  /**
 +   * signIn to browser; callback with assertion on success or null
 +   */
-+  signIn: function IDService_signIn(aEmail, aPassword, aOrigin, aCallback) {
++  signIn: function IDService_signIn(aOptions, aCallback) {
 +    let id = getRandomId();
 +    let rp = {
 +      id: id,
-+      origin: aOrigin,
++      origin: aOptions.origin,
 +      onSignIn: aCallback
 +    };
 +    this._rpFlows[id] = rp;
 +
-+    let options = {
-+      id: id,
-+      email: aEmail,
-+      password: aPassword
-+    };
++    let options = makeMessageObject(rp);
++    objectCopy(aOptions, options);
 +    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-signIn", null);
 +  },
 +
@@ -407,21 +416,17 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-signOut", null);
 +  },
 +
-+  createAccount: function IDService_createAccount(aEmail, aPassword, aOrigin, aCallback) {
++  createAccount: function IDService_createAccount(aOptions, aCallback) {
 +    let id = getRandomId();
 +    let rp = {
 +      id: id,
-+      email: aEmail,
-+      origin: aOrigin,
++      origin: aOptions.origin,
 +      onCreateAccount: aCallback
 +    };
 +    this._rpFlows[id] = rp;
-+    let options = {
-+      id: id,
-+      origin: aOrigin,
-+      email: aEmail,
-+      password: aPassword
-+    };
++
++    let options = makeMessageObject(rp);
++    objectCopy(aOptions, options);
 +    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-createAccount", null);
 +  },
 +
@@ -433,7 +438,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
  
    doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
      let rp = this._rpFlows[aRpCallerId];
-@@ -190,16 +238,47 @@ IDService.prototype = {
+@@ -190,16 +231,54 @@ IDService.prototype = {
      if (!rp) {
        logger.error("WARNING: doCancel found no rp for callerId ", aRpCallerId);
        return;
@@ -471,6 +476,13 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +      }
 +      delete(this._rpFlows[aRpCallerId]);
 +    }
++  },
++
++  doFoo: function foFoo() {
++    let wm = Components.classes["@mozilla.org/appshell/window-mediator;1"]
++                   .getService(Components.interfaces.nsIWindowMediator);
++    let mainWindow = wm.getMostRecentWindow("navigator:browser");
++    mainWindow.gBrowser.addTab("chrome://browser/components/identity/SignInToBrowser.html");
 +  },
 +
    /**
