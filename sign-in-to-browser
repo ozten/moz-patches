@@ -154,6 +154,37 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
+@@ -63,25 +63,25 @@ function ResizeWatcher(iframe) {
+ }
+ 
+ ResizeWatcher.prototype = {
+   start: function ResizeWatcher_start() {
+     this.stop(); // just in case...
+     let doc = this._iframe.contentDocument;
+ 
+     this._mutationObserver = new this._iframe.contentWindow.MutationObserver(
+-      function(mutations) { 
+-        sizePanelToContent(this._iframe); 
++      function(mutations) {
++        sizePanelToContent(this._iframe);
+       }.bind(this));
+ 
+     // Observe anything that causes the size to change.
+     let config = {
+-      attributes: true, 
+-      characterData: true, 
+-      childList: true, 
++      attributes: true,
++      characterData: true,
++      childList: true,
+       subtree: true
+     };
+ 
+     this._mutationObserver.observe(doc, config);
+ 
+     // and since this may be setup after the load event has fired we do an
+     // initial resize now.
+     sizePanelToContent(this._iframe);
 @@ -184,16 +184,17 @@ HostFrame.prototype = {
    },
  
@@ -172,7 +203,25 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
      this._iframe.setAttribute('mozbrowser', true);
      this._iframe.setAttribute('mozframetype', 'content');
-@@ -315,23 +316,31 @@ Pipe.prototype = {
+@@ -204,16 +205,17 @@ HostFrame.prototype = {
+ 
+     // implement a dynamic resize watcher a la Social API
+     this._iframe.style.height = "440px";
+     this._iframe.style.width = "300px";
+ 
+     aOptions.iframe = this._iframe;
+ 
+     if (aOptions.showUI) {
++      logger.log("show ui");
+       // synchronous, so we can call _injectShim below with no race condition
+       requestUI(aOptions);
+       this._resizeWatcher = new ResizeWatcher(this._iframe);
+     } else {
+       hiddenDoc.documentElement.appendChild(this._iframe);
+     }
+     this._injectShim(this._iframe);
+   },
+@@ -315,23 +317,31 @@ Pipe.prototype = {
  
  this.SignInToWebsiteUX = {
    init: function SignInToWebsiteUX_init() {
@@ -204,7 +253,26 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
      // XXX we get strings from xul, and objects from elsewhere
      let rpOptions = {};
      if (aSubject) {
-@@ -362,16 +371,30 @@ this.SignInToWebsiteUX = {
+@@ -342,17 +352,17 @@ this.SignInToWebsiteUX = {
+       }
+     }
+     if (!rpOptions.id) {
+       logger.error('Got a message with no RP id');
+       return;
+     }
+ 
+     let rpId = rpOptions.id;
+-    let UI = getUIForWindowID(rpId);
++    //let UI = getUIForWindowID(rpId);
+ 
+     let options = {
+       id: rpOptions.id,
+       rpOptions: rpOptions
+     };
+ 
+     switch (aTopic) {
+       case 'identity-controller-watch':
+@@ -362,16 +372,28 @@ this.SignInToWebsiteUX = {
        case 'identity-controller-request':
          this.doRequest(options);
          break;
@@ -225,8 +293,6 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +        this.doCreateAccount(options);
 +        break;
 +
-+      
-+
        default:
          logger.error('SignInToWebsiteUX', 'Unknown observer notification:', aTopic);
          break;
@@ -235,7 +301,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
    serviceDoMethod: function SignInToWebsiteUX_doMethod(aMessage, aId) {
      logger.log('serviceDoMethod received:', aMessage);
-@@ -391,16 +414,28 @@ this.SignInToWebsiteUX = {
+@@ -391,16 +413,28 @@ this.SignInToWebsiteUX = {
        case 'logout':
          IdentityService.doLogout(aId);
          break;
@@ -264,7 +330,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
    cleanUp: function SignInToWebsiteUX_cleanUp(aId) {
      let context = this.contexts[aId];
-@@ -448,10 +483,30 @@ this.SignInToWebsiteUX = {
+@@ -448,10 +482,30 @@ this.SignInToWebsiteUX = {
      aOptions.showUI = true;
      this.delegate(aOptions);
    },
@@ -299,7 +365,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIdentity.jsm
 --- a/toolkit/identity/MinimalIdentity.jsm
 +++ b/toolkit/identity/MinimalIdentity.jsm
-@@ -144,16 +144,47 @@ IDService.prototype = {
+@@ -144,16 +144,62 @@ IDService.prototype = {
     */
    logout: function IDService_logout(aRpCallerId) {
      let rp = this._rpFlows[aRpCallerId];
@@ -318,6 +384,8 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +      origin: aOrigin,
 +      onSignIn: aCallback
 +    };
++    this._rpFlows[id] = rp;
++
 +    let options = {
 +      id: id,
 +      email: aEmail,
@@ -326,17 +394,30 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-signIn", null);
 +  },
 +
-+  signOut: function IDService_signOut(aRpCallerId) {
++  signOut: function IDService_signOut(aRpCallerId, aCallback) {
 +    let rp = this._rpFlows[aRpCallerId];
 +    if (!rp) {
 +      logger.error("No flow with id", aRpCallerId);
 +    }
++    rp.onSignOut = aCallback;
 +    let options = makeMessageObject(rp);
 +    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-signOut", null);
 +  },
 +
-+  createAccount: function IDService_createAccount(aEmail, aPassword) {
-+    logger.log("implement me");
++  createAccount: function IDService_createAccount(aEmail, aPassword, aCallback) {
++    let id = getRandomId();
++    let rp = {
++      id: id,
++      email: aEmail,
++      onCreateAccount: aCallback
++    };
++    this._rpFlows[id] = rp;
++    let options = {
++      id: id,
++      email: aEmail,
++      password: aPassword
++    };
++    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-createAccount", null);
 +  },
 +
    /*
@@ -347,7 +428,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
  
    doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
      let rp = this._rpFlows[aRpCallerId];
-@@ -190,16 +221,35 @@ IDService.prototype = {
+@@ -190,16 +236,47 @@ IDService.prototype = {
      if (!rp) {
        logger.error("WARNING: doCancel found no rp for callerId ", aRpCallerId);
        return;
@@ -368,11 +449,23 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +  },
 +
 +  doSignOut: function IDService_doSignOut(aRpCallerId) {
-+    logger.log("yay! caller", aRpCallerId, "was signed out by persona");
++    let rp = this._rpFlows[aRpCallerId];
++    if (rp) {
++      if (typeof rp.onSignOut === 'function') {
++        rp.onSignOut(true);
++      }
++      delete(this._rpFlows[aRpCallerId]);
++    }
 +  },
 +
-+  doCreateAccount: function IDService_doCreateAccount(aEmail) {
-+    logger.log("holy cow. created", aEmail);
++  doCreateAccount: function IDService_doCreateAccount(aRpCallerId) {
++    let rp = this._rpFlows[aRpCallerId];
++    if (rp) {
++      if (typeof rp.onCreateAccount === 'function') {
++        rp.onCreateAccount(true);
++      }
++      delete(this._rpFlows[aRpCallerId]);
++    }
 +  },
 +
    /**
