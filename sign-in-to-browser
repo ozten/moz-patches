@@ -145,7 +145,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +      });
 +    }.bind(this);
 +
-+    BrowserID.internal.createAccount(email, password, callback);
++    BrowserID.internal.createAccount(email, password, origin, callback);
    }
  };
  
