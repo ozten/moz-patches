@@ -71,7 +71,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  
    _identityDoMethod: function IdentityShim__identityDoMethod(message) {
      sendAsyncMessage('identity-service-doMethod', message);
-@@ -119,16 +139,80 @@ IdentityShim.prototype = {
+@@ -119,16 +139,79 @@ IdentityShim.prototype = {
        let BrowserID = content.wrappedJSObject.BrowserID;
        let callback = function() {
          this._identityDoMethod({method: 'logout', _internal: options._internal});
@@ -97,13 +97,12 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +
 +    let callback = function(assertion, internalParams) {
 +      internalParams = internalParams || {};
-+      if (assertion) {
-+        logger.log("got assertion");
-+        this._identityDoMethod({
-+          method: 'signIn',
-+          assertion: assertion,
-+          _internal: options._internal,
-+          _internalParams: internalParams});
++      logger.log("got assertion");
++      this._identityDoMethod({
++        method: 'signIn',
++        assertion: assertion,
++        _internal: options._internal,
++        _internalParams: internalParams});
 +    }.bind(this);
 +
 +    BrowserID.internal.signIn(email, password, origin, callback, stringifiedOptions);
@@ -155,7 +154,25 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
-@@ -315,23 +315,31 @@ Pipe.prototype = {
+@@ -184,16 +184,17 @@ HostFrame.prototype = {
+   },
+ 
+   /*
+    * create an iframe and insert it into aOptions.  If showUI is
+    * true, attach the iframe to a xul panel in the popup notification.
+    * Otherwise attach to a hidden document.
+    */
+   _createIframe: function HostFrame_createIframe(aOptions) {
++    logger.log("options:", aOptions);
+     let srcURI = aOptions.showUI ? kIdentityScreen : kIdentityFrame;
+     logger.log('showUI is', aOptions.showUI, 'so iframe src =', srcURI);
+ 
+     let hiddenDoc = Services.appShell.hiddenDOMWindow.document;
+     this._iframe = hiddenDoc.createElementNS('http://www.w3.org/1999/xhtml', 'iframe');
+ 
+     this._iframe.setAttribute('mozbrowser', true);
+     this._iframe.setAttribute('mozframetype', 'content');
+@@ -315,23 +316,31 @@ Pipe.prototype = {
  
  this.SignInToWebsiteUX = {
    init: function SignInToWebsiteUX_init() {
@@ -187,7 +204,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
      // XXX we get strings from xul, and objects from elsewhere
      let rpOptions = {};
      if (aSubject) {
-@@ -362,16 +370,30 @@ this.SignInToWebsiteUX = {
+@@ -362,16 +371,30 @@ this.SignInToWebsiteUX = {
        case 'identity-controller-request':
          this.doRequest(options);
          break;
@@ -218,7 +235,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
    serviceDoMethod: function SignInToWebsiteUX_doMethod(aMessage, aId) {
      logger.log('serviceDoMethod received:', aMessage);
-@@ -391,16 +413,28 @@ this.SignInToWebsiteUX = {
+@@ -391,16 +414,28 @@ this.SignInToWebsiteUX = {
        case 'logout':
          IdentityService.doLogout(aId);
          break;
@@ -247,7 +264,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
    cleanUp: function SignInToWebsiteUX_cleanUp(aId) {
      let context = this.contexts[aId];
-@@ -448,10 +482,29 @@ this.SignInToWebsiteUX = {
+@@ -448,10 +483,30 @@ this.SignInToWebsiteUX = {
      aOptions.showUI = true;
      this.delegate(aOptions);
    },
@@ -260,6 +277,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +  },
 +
 +  doSignIn: function SignInToWebsiteUX_doSignIn(aOptions) {
++    logger.log("delegating signin:" , aOptions);
 +    aOptions.message = 'identity-delegate-signIn';
 +    aOptions.showUI = false;
 +    this.delegate(aOptions);
@@ -281,7 +299,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIdentity.jsm
 --- a/toolkit/identity/MinimalIdentity.jsm
 +++ b/toolkit/identity/MinimalIdentity.jsm
-@@ -144,16 +144,29 @@ IDService.prototype = {
+@@ -144,16 +144,43 @@ IDService.prototype = {
     */
    logout: function IDService_logout(aRpCallerId) {
      let rp = this._rpFlows[aRpCallerId];
@@ -290,8 +308,22 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
      Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-logout", null);
    },
  
-+  signIn: function IDService_signIn(aEmail, aPassword) {
-+    logger.log("implement me");
++  /**
++   * signIn to browser; callback with assertion on success or null
++   */
++  signIn: function IDService_signIn(aEmail, aPassword, aOrigin, aCallback) {
++    let id = getRandomId();
++    let rp = {
++      id: id,
++      origin: aOrigin,
++      onSignIn: aCallback
++    };
++    let options = {
++      id: id,
++      email: aEmail,
++      password: aPassword
++    };
++    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-signIn", null);
 +  },
 +
 +  signOut: function IDService_signOut(aOrigin) {
@@ -311,7 +343,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
  
    doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
      let rp = this._rpFlows[aRpCallerId];
-@@ -190,16 +203,28 @@ IDService.prototype = {
+@@ -190,16 +217,28 @@ IDService.prototype = {
      if (!rp) {
        logger.error("WARNING: doCancel found no rp for callerId ", aRpCallerId);
        return;
