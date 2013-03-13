@@ -319,7 +319,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +        break;
 +
 +      case 'createAccount':
-+        IdentityService.doCreateAccount(aMessage.email);
++        IdentityService.doCreateAccount(aId);
 +        break;
 +
        default:
