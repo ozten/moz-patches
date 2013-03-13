@@ -71,7 +71,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  
    _identityDoMethod: function IdentityShim__identityDoMethod(message) {
      sendAsyncMessage('identity-service-doMethod', message);
-@@ -119,16 +139,84 @@ IdentityShim.prototype = {
+@@ -119,16 +139,76 @@ IdentityShim.prototype = {
        let BrowserID = content.wrappedJSObject.BrowserID;
        let callback = function() {
          this._identityDoMethod({method: 'logout', _internal: options._internal});
@@ -87,17 +87,12 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +   */
 +  signIn: function IdentityShim_signIn(options) {
 +    logger.log("signin with options", options);
-+    let email = options.email;
-+    let password = options.password;
-+    let origin = options.origin;
-+
-+    logger.log("try to signin", email, "->", origin);
 +    let stringifiedOptions = JSON.stringify(options);
 +    let BrowserID = content.wrappedJSObject.BrowserID;
 +
 +    let callback = function(assertion, internalParams) {
 +      internalParams = internalParams || {};
-+      logger.log("got assertion");
++      logger.log("got assertion", assertion);
 +      this._identityDoMethod({
 +        method: 'signIn',
 +        assertion: assertion,
@@ -105,7 +100,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +        _internalParams: internalParams});
 +    }.bind(this);
 +
-+    BrowserID.internal.signIn(email, password, origin, callback, stringifiedOptions);
++    BrowserID.internal.signIn(stringifiedOptions, callback);
 +  },
 +
 +  /*
@@ -121,7 +116,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +      this._close();
 +    }
 +
-+    BrowserID.internal.signOut(options.origin);
++    BrowserID.internal.signOut(options.origin, callback);
 +  },
 +
 +  /*
@@ -129,25 +124,22 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +   */
 +  createAccount: function IdentityShim_createAccount(options) {
 +    logger.log("create user with options", options);
-+    let email = options.email;
-+    let password = options.password;
-+    let origin = options.origin;
 +    let stringifiedOptions = JSON.stringify(options);
 +    let BrowserID = content.wrappedJSObject.BrowserID;
 +
 +    let callback = function(assertion, internalParams) {
++      logger.log("got assertion", assertion);
 +      this._identityDoMethod({
++        id: options.id,
 +        method: 'createAccount',
-+        email: email,
-+        origin: origin,
++        assertion: assertion,
++        email: options.email,
++        origin: options.origin,
 +        _internal: options._internal,
-+        _internalParams: internalParams,
-+        assertion: assertion
-+      });
++        _internalParams: internalParams});
 +    }.bind(this);
 +
-+    BrowserID.internal.createAccount(
-+        email, password, origin, callback, stringifiedOptions);
++    BrowserID.internal.createAccount(stringifiedOptions, callback);
    }
  };
  
@@ -156,7 +148,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  addEventListener('DOMContentLoaded', function(e) {
    content.addEventListener('load', function(e) {
      logger.log('content loaded');
-@@ -138,9 +226,8 @@ addEventListener('DOMContentLoaded', fun
+@@ -138,9 +218,8 @@ addEventListener('DOMContentLoaded', fun
  });
  
  content.addEventListener('beforeunload', function(e) {
