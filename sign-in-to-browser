@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 5722c4346dfe92e584957433ca2d05029004016c
+# Parent 7abb56b3bbb7400d5387d53dfed35d0acf32eaca
 
 diff --git a/browser/base/content/browser-identity.js b/browser/base/content/browser-identity.js
 --- a/browser/base/content/browser-identity.js
@@ -71,7 +71,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  
    _identityDoMethod: function IdentityShim__identityDoMethod(message) {
      sendAsyncMessage('identity-service-doMethod', message);
-@@ -119,16 +139,79 @@ IdentityShim.prototype = {
+@@ -119,16 +139,82 @@ IdentityShim.prototype = {
        let BrowserID = content.wrappedJSObject.BrowserID;
        let callback = function() {
          this._identityDoMethod({method: 'logout', _internal: options._internal});
@@ -131,13 +131,16 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +    logger.log("create user with options", options);
 +    let email = options.email;
 +    let password = options.password;
++    let origin = options.origin;
 +    let BrowserID = content.wrappedJSObject.BrowserID;
 +
 +    // XXX what about unverified here ...
-+    let callback = function(success) {
++    let callback = function(assertion) {
 +      this._identityDoMethod({
 +        method: 'createAccount',
 +        email: email,
++        origin: origin,
++        assertion: assertion,
 +        success: success
 +      });
 +    }.bind(this);
@@ -319,7 +322,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +        break;
 +
 +      case 'createAccount':
-+        IdentityService.doCreateAccount(aId);
++        IdentityService.doCreateAccount(aId, aMessage.assertion);
 +        break;
 +
        default:
@@ -365,7 +368,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIdentity.jsm
 --- a/toolkit/identity/MinimalIdentity.jsm
 +++ b/toolkit/identity/MinimalIdentity.jsm
-@@ -144,16 +144,62 @@ IDService.prototype = {
+@@ -144,16 +144,64 @@ IDService.prototype = {
     */
    logout: function IDService_logout(aRpCallerId) {
      let rp = this._rpFlows[aRpCallerId];
@@ -404,16 +407,18 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-signOut", null);
 +  },
 +
-+  createAccount: function IDService_createAccount(aEmail, aPassword, aCallback) {
++  createAccount: function IDService_createAccount(aEmail, aPassword, aOrigin, aCallback) {
 +    let id = getRandomId();
 +    let rp = {
 +      id: id,
 +      email: aEmail,
++      origin: aOrigin,
 +      onCreateAccount: aCallback
 +    };
 +    this._rpFlows[id] = rp;
 +    let options = {
 +      id: id,
++      origin: aOrigin,
 +      email: aEmail,
 +      password: aPassword
 +    };
@@ -428,7 +433,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
  
    doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
      let rp = this._rpFlows[aRpCallerId];
-@@ -190,16 +236,47 @@ IDService.prototype = {
+@@ -190,16 +238,47 @@ IDService.prototype = {
      if (!rp) {
        logger.error("WARNING: doCancel found no rp for callerId ", aRpCallerId);
        return;
@@ -458,11 +463,11 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +    }
 +  },
 +
-+  doCreateAccount: function IDService_doCreateAccount(aRpCallerId) {
++  doCreateAccount: function IDService_doCreateAccount(aRpCallerId, aAssertion) {
 +    let rp = this._rpFlows[aRpCallerId];
 +    if (rp) {
 +      if (typeof rp.onCreateAccount === 'function') {
-+        rp.onCreateAccount(true);
++        rp.onCreateAccount(aAssertion);
 +      }
 +      delete(this._rpFlows[aRpCallerId]);
 +    }
