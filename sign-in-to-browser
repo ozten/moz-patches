@@ -149,7 +149,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  
    _identityDoMethod: function IdentityShim__identityDoMethod(message) {
      sendAsyncMessage('identity-service-doMethod', message);
-@@ -119,16 +139,78 @@ IdentityShim.prototype = {
+@@ -119,16 +139,79 @@ IdentityShim.prototype = {
        let BrowserID = content.wrappedJSObject.BrowserID;
        let callback = function() {
          this._identityDoMethod({method: 'logout', _internal: options._internal});
@@ -189,13 +189,14 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +  signOut: function IdentityShim_signOut(options) {
 +    logger.log("signout with options", options);
 +    let BrowserID = content.wrappedJSObject.BrowserID;
++    let stringifiedOptions = JSON.stringify(options);
 +
 +    let callback = function() {
 +      this._identityDoMethod({method: 'signOut', _internal: options._internal});
 +      this._close();
-+    }
++    }.bind(this);
 +
-+    BrowserID.internal.signOut(options.origin, callback);
++    BrowserID.internal.signOut(stringifiedOptions, callback);
 +  },
 +
 +  /*
@@ -228,7 +229,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  addEventListener('DOMContentLoaded', function(e) {
    content.addEventListener('load', function(e) {
      logger.log('content loaded');
-@@ -138,9 +220,8 @@ addEventListener('DOMContentLoaded', fun
+@@ -138,9 +221,8 @@ addEventListener('DOMContentLoaded', fun
  });
  
  content.addEventListener('beforeunload', function(e) {
