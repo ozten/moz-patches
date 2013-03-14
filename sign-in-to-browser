@@ -230,7 +230,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +   */
 +  getIdentity: function IdentityShim_getIdentity(options) {
 +    let stringifiedOptions = JSON.stringify(options);
-+    let callback = function shim_getIdentityCallback(assertion, internalParams) {
++    let callback = function shim_getIdentityCallback(err, assertion, internalParams) {
 +      logger.log("got identity:", assertion);
 +      internalParams = internalParams || {};
 +      this._identityDoMethod({
@@ -241,12 +241,12 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +      this._close();
 +    }.bind(this);
 +
-+    content.wrappedJSObject.BrowserID.internal.get(
++    content.wrappedJSObject.BrowserID.internal.getIdentity(
 +      options.origin,
 +      callback,
 +      stringifiedOptions
 +    );
-+    logger.log("called internal get");
++    logger.log("called internal getIdentity");
 +  },
 +
 +  /*
