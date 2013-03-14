@@ -154,7 +154,26 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  
    _identityDoMethod: function IdentityShim__identityDoMethod(message) {
      sendAsyncMessage('identity-service-doMethod', message);
-@@ -86,27 +111,24 @@ IdentityShim.prototype = {
+@@ -66,17 +91,17 @@ IdentityShim.prototype = {
+   _close: function IdentityShim__close() {
+     this.uninit();
+   },
+ 
+   watch: function IdentityShim_watch(options) {
+     logger.log('doInternalWatch: isLoaded:', this.isLoaded, 'options:', options);
+     if (options) {
+       let BrowserID = content.wrappedJSObject.BrowserID;
+-      let callback = function(aParams, aInternalParams) {
++      let callback = function shim_watchCallback(aParams, aInternalParams) {
+         this._identityDoMethod(aParams);
+         if (aParams.method === 'ready') {
+           this._close();
+         }
+       }.bind(this);
+ 
+       BrowserID.internal.watch(
+         callback,
+@@ -86,49 +111,133 @@ IdentityShim.prototype = {
          }
        );
      }
@@ -164,8 +183,9 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
      logger.log('doInternalRequest: isLoaded:', this.isLoaded, 'options:', options);
      if (options) {
 -      var stringifiedOptions = JSON.stringify(options);
+-      let callback = function(assertion, internalParams) {
 +      let stringifiedOptions = JSON.stringify(options);
-       let callback = function(assertion, internalParams) {
++      let callback = function shim_requestCallback(assertion, internalParams) {
          internalParams = internalParams || {};
 -        if (assertion) {
 -          logger.log("got assertion");
@@ -188,9 +208,15 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
          callback,
          stringifiedOptions
        );
-@@ -119,16 +141,102 @@ IdentityShim.prototype = {
+     }
+   },
+ 
+   logout: function IdentityShim_logout(options) {
+     logger.log('doInternalLogout: isLoaded:', this.isLoaded, 'options:', options);
+     if (options) {
        let BrowserID = content.wrappedJSObject.BrowserID;
-       let callback = function() {
+-      let callback = function() {
++      let callback = function shim_logoutCallback() {
          this._identityDoMethod({method: 'logout', _internal: options._internal});
          this._close();
        }.bind(this);
@@ -203,9 +229,9 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +   * Get identity for browser
 +   */
 +  getIdentity: function IdentityShim_getIdentity(options) {
-+    logger.log("get identity with options", options);
 +    let stringifiedOptions = JSON.stringify(options);
-+    let callback = function(assertion, internalParams) {
++    let callback = function shim_getIdentityCallback(assertion, internalParams) {
++      logger.log("got identity:", assertion);
 +      internalParams = internalParams || {};
 +      this._identityDoMethod({
 +        method: 'getIdentity',
@@ -220,6 +246,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +      callback,
 +      stringifiedOptions
 +    );
++    logger.log("called internal get");
 +  },
 +
 +  /*
@@ -230,7 +257,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +    let stringifiedOptions = JSON.stringify(options);
 +    let BrowserID = content.wrappedJSObject.BrowserID;
 +
-+    let callback = function(err, assertion, internalParams) {
++    let callback = function shim_signInCallback(err, assertion, internalParams) {
 +      internalParams = internalParams || {};
 +      logger.log("got assertion", assertion);
 +      this._identityDoMethod({
@@ -253,7 +280,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +    let BrowserID = content.wrappedJSObject.BrowserID;
 +    let stringifiedOptions = JSON.stringify(options);
 +
-+    let callback = function() {
++    let callback = function shim_signOutCallback() {
 +      this._identityDoMethod({method: 'signOut', _internal: options._internal});
 +      this._close();
 +    }.bind(this);
@@ -269,7 +296,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +    let stringifiedOptions = JSON.stringify(options);
 +    let BrowserID = content.wrappedJSObject.BrowserID;
 +
-+    let callback = function(err, assertion, internalParams) {
++    let callback = function shim_createAccountCallback(err, assertion, internalParams) {
 +      logger.log("got assertion", assertion);
 +      this._identityDoMethod({
 +        id: options.id,
@@ -291,7 +318,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  addEventListener('DOMContentLoaded', function(e) {
    content.addEventListener('load', function(e) {
      logger.log('content loaded');
-@@ -138,9 +246,8 @@ addEventListener('DOMContentLoaded', fun
+@@ -138,9 +247,8 @@ addEventListener('DOMContentLoaded', fun
  });
  
  content.addEventListener('beforeunload', function(e) {
