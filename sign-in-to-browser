@@ -627,7 +627,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
    this.IDP = this;
  
    // keep track of flows
-@@ -144,16 +173,80 @@ IDService.prototype = {
+@@ -144,16 +173,82 @@ IDService.prototype = {
     */
    logout: function IDService_logout(aRpCallerId) {
      let rp = this._rpFlows[aRpCallerId];
@@ -677,11 +677,13 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +
 +  signOut: function IDService_signOut(aCallback) {
 +    let info = getWindowInfo();
-+    let rp = this._rpFlows[info.id];
-+    if (!rp) {
-+      logger.error("No flow with id", aRpCallerId);
-+    }
-+    rp.onSignOut = aCallback;
++    let rp = {
++      id: info.id,
++      origin: info.origin,
++      onSignOut: aCallback
++    };
++    this._rpFlows[info.id] = rp;
++
 +    let options = makeMessageObject(rp);
 +    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-signOut", null);
 +  },
@@ -708,7 +710,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
  
    doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
      let rp = this._rpFlows[aRpCallerId];
-@@ -190,16 +283,65 @@ IDService.prototype = {
+@@ -190,16 +285,65 @@ IDService.prototype = {
      if (!rp) {
        logger.error("WARNING: doCancel found no rp for callerId ", aRpCallerId);
        return;
