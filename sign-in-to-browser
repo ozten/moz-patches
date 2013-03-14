@@ -82,7 +82,7 @@ new file mode 100644
 diff --git a/browser/base/content/browser-identity.js b/browser/base/content/browser-identity.js
 --- a/browser/base/content/browser-identity.js
 +++ b/browser/base/content/browser-identity.js
-@@ -21,43 +21,63 @@ function IdentityShim() {
+@@ -21,43 +21,68 @@ function IdentityShim() {
    this.isLoaded = false;
  }
  
@@ -92,6 +92,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
      addMessageListener('identity-delegate-request', this);
      addMessageListener('identity-delegate-logout', this);
 +
++    addMessageListener('identity-delegate-getIdentity', this);
 +    addMessageListener('identity-delegate-signIn', this);
 +    addMessageListener('identity-delegate-signOut', this);
 +    addMessageListener('identity-delegate-createAccount', this);
@@ -106,6 +107,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
        removeMessageListener('identity-delegate-request', this);
        removeMessageListener('identity-delegate-logout', this);
 +
++      removeMessageListener('identity-delegate-getIdentity', this);
 +      removeMessageListener('identity-delegate-signIn', this);
 +      removeMessageListener('identity-delegate-signOut', this);
 +      removeMessageListener('identity-delegate-createAccount', this);
@@ -131,6 +133,9 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +        this.logout(options);
          break;
 +
++      case 'identity-delegate-getIdentity':
++        this.getIdentity(options);
++        break;
 +      case 'identity-delegate-signIn':
 +        this.signIn(options);
 +        break;
@@ -149,7 +154,41 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  
    _identityDoMethod: function IdentityShim__identityDoMethod(message) {
      sendAsyncMessage('identity-service-doMethod', message);
-@@ -119,16 +139,79 @@ IdentityShim.prototype = {
+@@ -86,27 +111,24 @@ IdentityShim.prototype = {
+         }
+       );
+     }
+   },
+ 
+   request: function IdentityShim_request(options) {
+     logger.log('doInternalRequest: isLoaded:', this.isLoaded, 'options:', options);
+     if (options) {
+-      var stringifiedOptions = JSON.stringify(options);
++      let stringifiedOptions = JSON.stringify(options);
+       let callback = function(assertion, internalParams) {
+         internalParams = internalParams || {};
+-        if (assertion) {
+-          logger.log("got assertion");
+-          this._identityDoMethod({
+-            method: 'login',
+-            assertion: assertion,
+-            _internal: options._internal,
+-            _internalParams: internalParams});
+-        }
++        this._identityDoMethod({
++          method: 'login',
++          assertion: assertion,
++          _internal: options._internal,
++          _internalParams: internalParams});
+         this._close();
+       }.bind(this);
+ 
+       content.wrappedJSObject.BrowserID.internal.get(
+         options.origin,
+         callback,
+         stringifiedOptions
+       );
+@@ -119,16 +141,102 @@ IdentityShim.prototype = {
        let BrowserID = content.wrappedJSObject.BrowserID;
        let callback = function() {
          this._identityDoMethod({method: 'logout', _internal: options._internal});
@@ -158,6 +197,29 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  
        BrowserID.internal.logout(options.origin, callback);
      }
++  },
++
++  /*
++   * Get identity for browser
++   */
++  getIdentity: function IdentityShim_getIdentity(options) {
++    logger.log("get identity with options", options);
++    let stringifiedOptions = JSON.stringify(options);
++    let callback = function(assertion, internalParams) {
++      internalParams = internalParams || {};
++      this._identityDoMethod({
++        method: 'getIdentity',
++        assertion: assertion,
++        _internal: options._internal,
++        _internalParams: internalParams});
++      this._close();
++    }.bind(this);
++
++    content.wrappedJSObject.BrowserID.internal.get(
++      options.origin,
++      callback,
++      stringifiedOptions
++    );
 +  },
 +
 +  /*
@@ -229,7 +291,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  addEventListener('DOMContentLoaded', function(e) {
    content.addEventListener('load', function(e) {
      logger.log('content loaded');
-@@ -138,9 +221,8 @@ addEventListener('DOMContentLoaded', fun
+@@ -138,9 +246,8 @@ addEventListener('DOMContentLoaded', fun
  });
  
  content.addEventListener('beforeunload', function(e) {
@@ -331,7 +393,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
      }
      this._injectShim(this._iframe);
    },
-@@ -315,23 +317,31 @@ Pipe.prototype = {
+@@ -315,23 +317,33 @@ Pipe.prototype = {
  
  this.SignInToWebsiteUX = {
    init: function SignInToWebsiteUX_init() {
@@ -341,6 +403,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
      Services.obs.addObserver(this, 'identity-controller-logout', false);
      Services.obs.addObserver(this, 'identity-controller-canceled', false);
 +
++    Services.obs.addObserver(this, 'identity-controller-getIdentity', false);
 +    Services.obs.addObserver(this, 'identity-controller-signIn', false);
 +    Services.obs.addObserver(this, 'identity-controller-signOut', false);
 +    Services.obs.addObserver(this, 'identity-controller-createAccount', false);
@@ -352,6 +415,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
      Services.obs.removeObserver(this, 'identity-controller-logout');
      Services.obs.removeObserver(this, 'identity-controller-canceled');
 +
++    Services.obs.addObserver(this, 'identity-controller-getIdentity');
 +    Services.obs.addObserver(this, 'identity-controller-signIn');
 +    Services.obs.addObserver(this, 'identity-controller-signOut');
 +    Services.obs.addObserver(this, 'identity-controller-createAccount');
@@ -363,7 +427,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
      // XXX we get strings from xul, and objects from elsewhere
      let rpOptions = {};
      if (aSubject) {
-@@ -342,17 +352,17 @@ this.SignInToWebsiteUX = {
+@@ -342,17 +354,17 @@ this.SignInToWebsiteUX = {
        }
      }
      if (!rpOptions.id) {
@@ -382,7 +446,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
      switch (aTopic) {
        case 'identity-controller-watch':
-@@ -362,16 +372,28 @@ this.SignInToWebsiteUX = {
+@@ -362,16 +374,32 @@ this.SignInToWebsiteUX = {
        case 'identity-controller-request':
          this.doRequest(options);
          break;
@@ -391,6 +455,10 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
          this.doLogout(options);
          break;
  
++      case 'identity-controller-getIdentity':
++        this.doGetIdentity(options);
++        break;
++
 +      case 'identity-controller-signIn':
 +        this.doSignIn(options);
 +        break;
@@ -411,7 +479,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
    serviceDoMethod: function SignInToWebsiteUX_doMethod(aMessage, aId) {
      logger.log('serviceDoMethod received:', aMessage);
-@@ -391,16 +413,28 @@ this.SignInToWebsiteUX = {
+@@ -391,16 +419,32 @@ this.SignInToWebsiteUX = {
        case 'logout':
          IdentityService.doLogout(aId);
          break;
@@ -420,6 +488,10 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
          IdentityService.doCancel(aId);
          break;
  
++      case 'getIdentity':
++        IdentityService.doGetIdentity(aId);
++        break;
++
 +      case 'signIn':
 +        IdentityService.doSignIn(aId, aMessage.assertion);
 +        break;
@@ -440,7 +512,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
    cleanUp: function SignInToWebsiteUX_cleanUp(aId) {
      let context = this.contexts[aId];
-@@ -448,10 +482,30 @@ this.SignInToWebsiteUX = {
+@@ -448,10 +492,37 @@ this.SignInToWebsiteUX = {
      aOptions.showUI = true;
      this.delegate(aOptions);
    },
@@ -450,6 +522,13 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
      aOptions.showUI = false;
      this.delegate(aOptions);
 -  }
++  },
++
++  doGetIdentity: function SignInToWebsiteUX_doGetIdentity(aOptions) {
++    logger.log("delegating getIdentity:" , aOptions);
++    aOptions.message = 'identity-delegate-getIdentity';
++    aOptions.showUI = false;
++    this.delegate(aOptions);
 +  },
 +
 +  doSignIn: function SignInToWebsiteUX_doSignIn(aOptions) {
@@ -475,7 +554,53 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIdentity.jsm
 --- a/toolkit/identity/MinimalIdentity.jsm
 +++ b/toolkit/identity/MinimalIdentity.jsm
-@@ -144,16 +144,57 @@ IDService.prototype = {
+@@ -55,16 +55,45 @@ function makeMessageObject(aRpCaller) {
+     let err = "id and origin required in relying-party message";
+     logger.error(err);
+     throw new Error(err);
+   }
+ 
+   return options;
+ }
+ 
++function getWindowInfo() {
++  /*
++  let someWindow = Services.wm.getMostRecentWindow('navigator:browser');
++  let windowUtils = someWindow
++    .QueryInterface(Ci.nsIInterfaceRequestor)
++    .getInterface(Ci.nsIDOMWindowUtils);
++
++  let id = windowUtils.outerWindowID;
++  */
++
++  let wm = Components.classes["@mozilla.org/appshell/window-mediator;1"]
++                       .getService(Components.interfaces.nsIWindowMediator);
++  let recentWindow = wm.getMostRecentWindow("navigator:browser");
++
++  //let origin = recentWindow.content.document.location || 'resource://your-agent';
++  //logger.log("found origin:", origin);
++
++  let id = recentWindow
++    .content
++    .QueryInterface(Ci.nsIInterfaceRequestor)
++    .getInterface(Ci.nsIDOMWindowUtils)
++    .outerWindowID;
++
++  return({
++    origin: 'resource://your-agent',
++    id: id
++  });
++}
++
+ function IDService() {
+   Services.obs.addObserver(this, "quit-application-granted", false);
+ 
+   // simplify, it's one object
+   this.RP = this;
+   this.IDP = this;
+ 
+   // keep track of flows
+@@ -144,16 +173,80 @@ IDService.prototype = {
     */
    logout: function IDService_logout(aRpCallerId) {
      let rp = this._rpFlows[aRpCallerId];
@@ -485,24 +610,47 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
    },
  
 +  /**
++   * Sign In To Browser functions:
++   *   getIdentity()
++   *   signIn()
++   *   signOut()
++   *   createAccount()
++   */
++
++  getIdentity: function IDService_getIdentity(aOptions, aCallback) {
++    let info = getWindowInfo();
++    let rp = {
++      origin: info.origin,
++      id: info.id,
++      onGetIdentity: aCallback
++    };
++    this._rpFlows[info.id] = rp;
++
++    let options = makeMessageObject(rp);
++    objectCopy(aOptions, options);
++    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-getIdentity", null);
++  },
++
++  /**
 +   * signIn to browser; callback with assertion on success or null
 +   */
 +  signIn: function IDService_signIn(aOptions, aCallback) {
-+    let id = getRandomId();
++    let info = getWindowInfo();
 +    let rp = {
-+      id: id,
-+      origin: aOptions.origin,
++      id: info.id,
++      origin: info.origin,
 +      onSignIn: aCallback
 +    };
-+    this._rpFlows[id] = rp;
++    this._rpFlows[info.id] = rp;
 +
 +    let options = makeMessageObject(rp);
 +    objectCopy(aOptions, options);
 +    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-signIn", null);
 +  },
 +
-+  signOut: function IDService_signOut(aRpCallerId, aCallback) {
-+    let rp = this._rpFlows[aRpCallerId];
++  signOut: function IDService_signOut(aCallback) {
++    let info = getWindowInfo();
++    let rp = this._rpFlows[info.id];
 +    if (!rp) {
 +      logger.error("No flow with id", aRpCallerId);
 +    }
@@ -512,13 +660,13 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +  },
 +
 +  createAccount: function IDService_createAccount(aOptions, aCallback) {
-+    let id = getRandomId();
++    let info = getWindowInfo();
 +    let rp = {
-+      id: id,
-+      origin: aOptions.origin,
++      id: info.id,
++      origin: info.origin,
 +      onCreateAccount: aCallback
 +    };
-+    this._rpFlows[id] = rp;
++    this._rpFlows[info.id] = rp;
 +
 +    let options = makeMessageObject(rp);
 +    objectCopy(aOptions, options);
@@ -533,7 +681,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
  
    doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
      let rp = this._rpFlows[aRpCallerId];
-@@ -190,16 +231,54 @@ IDService.prototype = {
+@@ -190,16 +283,65 @@ IDService.prototype = {
      if (!rp) {
        logger.error("WARNING: doCancel found no rp for callerId ", aRpCallerId);
        return;
@@ -542,6 +690,17 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
      rp.doCancel();
    },
  
++  doGetIdentity: function IDService_doGetIdentity(aRpCallerId, aAssertion, aInternalParams) {
++    let rp = this._rpFlows[aRpCallerId];
++    if (!rp) {
++      logger.error("no flow for id", aRpCallerId);
++    }
++    logger.log("got identity with assertion", aAssertion);
++    if (typeof rp.onGetIdentity === 'function') {
++      rp.onGetIdentity(aAssertion, aInternalParams);
++    }
++  },
++
 +  doSignIn: function IDService_doSignIn(aRpCallerId, aAssertion, aInternalParams) {
 +    let rp = this._rpFlows[aRpCallerId];
 +    if (!rp) {
