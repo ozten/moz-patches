@@ -516,7 +516,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
          break;
  
 +      case 'getIdentity':
-+        IdentityService.doGetIdentity(aId);
++        IdentityService.doGetIdentity(aId, aMessage.assertion);
 +        break;
 +
 +      case 'signIn':
@@ -710,8 +710,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
  
    doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
      let rp = this._rpFlows[aRpCallerId];
-@@ -190,16 +285,65 @@ IDService.prototype = {
-     if (!rp) {
+@@ -191,16 +286,68 @@ IDService.prototype = {
        logger.error("WARNING: doCancel found no rp for callerId ", aRpCallerId);
        return;
      }
@@ -719,6 +718,9 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
      rp.doCancel();
    },
  
+   /**
++   * If no identity could be acquired, request that the user sign in
++   */
 +  doGetIdentity: function IDService_doGetIdentity(aRpCallerId, aAssertion, aInternalParams) {
 +    let rp = this._rpFlows[aRpCallerId];
 +    if (!rp) {
@@ -768,7 +770,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +    mainWindow.gBrowser.addTab("chrome://browser/components/identity/SignInToBrowser.html");
 +  },
 +
-   /**
++  /**
     * IDP functions are taken care of by the dialog.  The DOM should never
     * be calling these methods on this service.  So if it does, use the 
     * logger.error function to give a stack trace.
@@ -776,3 +778,4 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
  
    beginProvisioning: function IDService_beginProvisioning(context) {
      logger.error("Not implemented");
+   },
