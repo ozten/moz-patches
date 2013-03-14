@@ -1,6 +1,84 @@
 # HG changeset patch
 # Parent 7abb56b3bbb7400d5387d53dfed35d0acf32eaca
 
+diff --git a/browser/base/content/browser-id-createAccount.html b/browser/base/content/browser-id-createAccount.html
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/browser-id-createAccount.html
+@@ -0,0 +1,34 @@
++<html>
++  <head>
++    <title>Create Account</title>
++  </head>
++  <body>
++    <!-- create a persona account -->
++    <form>
++      <input type='text' id='email'/>
++      <input type='password' id='password'/>
++      <input type='submit' id='submit'/>
++    </form>
++
++    <script type="text/javascript;version=1.8">
++      Components.utils.import('resource://gre/modules/identity/MinimalIdentity.jsm');
++      let origin = 'resource://some-kind-of-robot';
++      let submit = document.getElementById('submit');
++      let email = document.getElementById('email');
++      let password = document.getElementById('password');
++
++      submit.addEventListener('click', function(evt) {
++        evt.preventDefault();
++        IdentityService.createAccount({
++          email: email.value,
++          password: password.value,
++          origin: origin,
++          allowUnverified: true}, 
++          function(assertion) {
++            alert("created account and signed in!  Assertion is " + (assertion === null ? null : typeof assertion));
++          }
++        );
++      });
++    </script>
++  </body>
++</html>
+diff --git a/browser/base/content/browser-id-signIn.html b/browser/base/content/browser-id-signIn.html
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/browser-id-signIn.html
+@@ -0,0 +1,34 @@
++<html>
++  <head>
++    <title>Sign In</title>
++  </head>
++  <body>
++    <!-- sign in with persona account -->
++    <form>
++      <input type='text' id='email'/>
++      <input type='password' id='password'/>
++      <input type='submit' id='submit'/>
++    </form>
++
++    <script type="text/javascript;version=1.8">
++      Components.utils.import('resource://gre/modules/identity/MinimalIdentity.jsm');
++      let origin = 'resource://some-kind-of-robot';
++      let submit = document.getElementById('submit');
++      let email = document.getElementById('email');
++      let password = document.getElementById('password');
++
++      submit.addEventListener('click', function(evt) {
++        evt.preventDefault();
++        IdentityService.signIn({
++          email: email.value,
++          password: password.value,
++          origin: origin,
++          allowUnverified: true}, 
++          function(assertion) {
++            alert("signed in! Assertion is " + (assertion === null ? null : typeof assertion));
++          }
++        );
++      });
++    </script>
++  </body>
++</html>
 diff --git a/browser/base/content/browser-identity.js b/browser/base/content/browser-identity.js
 --- a/browser/base/content/browser-identity.js
 +++ b/browser/base/content/browser-identity.js
@@ -71,7 +149,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  
    _identityDoMethod: function IdentityShim__identityDoMethod(message) {
      sendAsyncMessage('identity-service-doMethod', message);
-@@ -119,16 +139,76 @@ IdentityShim.prototype = {
+@@ -119,16 +139,78 @@ IdentityShim.prototype = {
        let BrowserID = content.wrappedJSObject.BrowserID;
        let callback = function() {
          this._identityDoMethod({method: 'logout', _internal: options._internal});
@@ -90,12 +168,13 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +    let stringifiedOptions = JSON.stringify(options);
 +    let BrowserID = content.wrappedJSObject.BrowserID;
 +
-+    let callback = function(assertion, internalParams) {
++    let callback = function(err, assertion, internalParams) {
 +      internalParams = internalParams || {};
 +      logger.log("got assertion", assertion);
 +      this._identityDoMethod({
 +        method: 'signIn',
 +        assertion: assertion,
++        error: err,
 +        _internal: options._internal,
 +        _internalParams: internalParams});
 +    }.bind(this);
@@ -127,10 +206,11 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +    let stringifiedOptions = JSON.stringify(options);
 +    let BrowserID = content.wrappedJSObject.BrowserID;
 +
-+    let callback = function(assertion, internalParams) {
++    let callback = function(err, assertion, internalParams) {
 +      logger.log("got assertion", assertion);
 +      this._identityDoMethod({
 +        id: options.id,
++        error: err,
 +        method: 'createAccount',
 +        assertion: assertion,
 +        email: options.email,
@@ -148,7 +228,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  addEventListener('DOMContentLoaded', function(e) {
    content.addEventListener('load', function(e) {
      logger.log('content loaded');
-@@ -138,9 +218,8 @@ addEventListener('DOMContentLoaded', fun
+@@ -138,9 +220,8 @@ addEventListener('DOMContentLoaded', fun
  });
  
  content.addEventListener('beforeunload', function(e) {
@@ -158,6 +238,28 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  });
  
 -
+diff --git a/browser/base/jar.mn b/browser/base/jar.mn
+--- a/browser/base/jar.mn
++++ b/browser/base/jar.mn
+@@ -56,16 +56,18 @@ browser.jar:
+ #endif
+         content/browser/aboutRobots-icon.png          (content/aboutRobots-icon.png)
+         content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
+         content/browser/aboutSocialError.xhtml        (content/aboutSocialError.xhtml)
+ *       content/browser/browser.css                   (content/browser.css)
+ *       content/browser/browser.js                    (content/browser.js)
+ *       content/browser/browser.xul                   (content/browser.xul)
+         content/browser/browser-identity.js           (content/browser-identity.js)
++        content/browser/browser-id-signIn.html        (content/browser-id-signIn.html)
++        content/browser/browser-id-createAccount.html (content/browser-id-createAccount.html)
+ *       content/browser/browser-tabPreviews.xml       (content/browser-tabPreviews.xml)
+         content/browser/content.js                    (content/content.js)
+         content/browser/newtab/newTab.xul             (content/newtab/newTab.xul)
+ *       content/browser/newtab/newTab.js              (content/newtab/newTab.js)
+         content/browser/newtab/newTab.css             (content/newtab/newTab.css)
+         content/browser/newtab/preload.xhtml          (content/newtab/preload.xhtml)
+ *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
+ *       content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
