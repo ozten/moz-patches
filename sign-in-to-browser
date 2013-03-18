@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 7abb56b3bbb7400d5387d53dfed35d0acf32eaca
+# Parent d6c75f77ac7f535889f6927902a4057b0c2e3f65
 
 diff --git a/browser/base/content/browser-id-createAccount.html b/browser/base/content/browser-id-createAccount.html
 new file mode 100644
@@ -173,7 +173,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  
        BrowserID.internal.watch(
          callback,
-@@ -86,49 +111,133 @@ IdentityShim.prototype = {
+@@ -86,28 +111,25 @@ IdentityShim.prototype = {
          }
        );
      }
@@ -186,28 +186,26 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 -      let callback = function(assertion, internalParams) {
 +      let stringifiedOptions = JSON.stringify(options);
 +      let callback = function shim_requestCallback(assertion, internalParams) {
+         logger.log("received assertion:", assertion);
          internalParams = internalParams || {};
 -        if (assertion) {
 -          logger.log("got assertion");
--          this._identityDoMethod({
--            method: 'login',
--            assertion: assertion,
--            _internal: options._internal,
--            _internalParams: internalParams});
+           this._identityDoMethod({
+             method: 'login',
+             assertion: assertion,
+             _internal: options._internal,
+             _internalParams: internalParams});
 -        }
-+        this._identityDoMethod({
-+          method: 'login',
-+          assertion: assertion,
-+          _internal: options._internal,
-+          _internalParams: internalParams});
          this._close();
        }.bind(this);
  
+       logger.log('call get() with origin', options.origin, ', callback', callback, ', and options', stringifiedOptions);
        content.wrappedJSObject.BrowserID.internal.get(
          options.origin,
          callback,
          stringifiedOptions
-       );
+@@ -115,23 +137,110 @@ IdentityShim.prototype = {
+       logger.log('called get()');
      }
    },
  
@@ -318,7 +316,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  addEventListener('DOMContentLoaded', function(e) {
    content.addEventListener('load', function(e) {
      logger.log('content loaded');
-@@ -138,9 +247,8 @@ addEventListener('DOMContentLoaded', fun
+@@ -141,9 +250,8 @@ addEventListener('DOMContentLoaded', fun
  });
  
  content.addEventListener('beforeunload', function(e) {
@@ -442,10 +440,10 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
      Services.obs.removeObserver(this, 'identity-controller-logout');
      Services.obs.removeObserver(this, 'identity-controller-canceled');
 +
-+    Services.obs.addObserver(this, 'identity-controller-getIdentity');
-+    Services.obs.addObserver(this, 'identity-controller-signIn');
-+    Services.obs.addObserver(this, 'identity-controller-signOut');
-+    Services.obs.addObserver(this, 'identity-controller-createAccount');
++    Services.obs.removeObserver(this, 'identity-controller-getIdentity');
++    Services.obs.removeObserver(this, 'identity-controller-signIn');
++    Services.obs.removeObserver(this, 'identity-controller-signOut');
++    Services.obs.removeObserver(this, 'identity-controller-createAccount');
    },
  
    observe: function SignInToWebsiteUX_observe(aSubject, aTopic, aData) {
@@ -539,7 +537,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
    cleanUp: function SignInToWebsiteUX_cleanUp(aId) {
      let context = this.contexts[aId];
-@@ -448,10 +492,37 @@ this.SignInToWebsiteUX = {
+@@ -449,10 +493,37 @@ this.SignInToWebsiteUX = {
      aOptions.showUI = true;
      this.delegate(aOptions);
    },
@@ -581,8 +579,8 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIdentity.jsm
 --- a/toolkit/identity/MinimalIdentity.jsm
 +++ b/toolkit/identity/MinimalIdentity.jsm
-@@ -55,16 +55,45 @@ function makeMessageObject(aRpCaller) {
-     let err = "id and origin required in relying-party message";
+@@ -57,16 +57,45 @@ function makeMessageObject(aRpCaller) {
+     let err = "id and origin required in relying-party message: " + JSON.stringify(options);
      logger.error(err);
      throw new Error(err);
    }
@@ -627,13 +625,13 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
    this.IDP = this;
  
    // keep track of flows
-@@ -144,16 +173,82 @@ IDService.prototype = {
-    */
-   logout: function IDService_logout(aRpCallerId) {
-     let rp = this._rpFlows[aRpCallerId];
- 
-     let options = makeMessageObject(rp);
-     Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-logout", null);
+@@ -170,16 +199,82 @@ IDService.prototype = {
+     Object.keys(this._rpFlows).forEach(function(key) {
+       if (this._rpFlows[key]._mm === messageManager) {
+         logger.log("child process shutdown for rp", key, "- deleting flow");
+         delete this._rpFlows[key];
+       }
+     }, this);
    },
  
 +  /**
@@ -710,17 +708,17 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
  
    doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
      let rp = this._rpFlows[aRpCallerId];
-@@ -191,16 +286,68 @@ IDService.prototype = {
-       logger.error("WARNING: doCancel found no rp for callerId ", aRpCallerId);
+@@ -214,12 +309,62 @@ IDService.prototype = {
+   doCancel: function IDService_doCancel(aRpCallerId) {
+     let rp = this._rpFlows[aRpCallerId];
+     if (!rp) {
+       dump("WARNING: doCancel found no rp to go with callerId " + aRpCallerId + "\n");
        return;
      }
  
      rp.doCancel();
-   },
- 
-   /**
-+   * If no identity could be acquired, request that the user sign in
-+   */
++  },
++
 +  doGetIdentity: function IDService_doGetIdentity(aRpCallerId, aAssertion, aInternalParams) {
 +    let rp = this._rpFlows[aRpCallerId];
 +    if (!rp) {
@@ -763,19 +761,13 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +    }
 +  },
 +
-+  doFoo: function foFoo() {
++  doFoo: function doFoo() {
 +    let wm = Components.classes["@mozilla.org/appshell/window-mediator;1"]
 +                   .getService(Components.interfaces.nsIWindowMediator);
 +    let mainWindow = wm.getMostRecentWindow("navigator:browser");
 +    mainWindow.gBrowser.addTab("chrome://browser/components/identity/SignInToBrowser.html");
-+  },
+   }
 +
-+  /**
-    * IDP functions are taken care of by the dialog.  The DOM should never
-    * be calling these methods on this service.  So if it does, use the 
-    * logger.error function to give a stack trace.
-    */
+ };
  
-   beginProvisioning: function IDService_beginProvisioning(context) {
-     logger.error("Not implemented");
-   },
+ this.IdentityService = new IDService();
