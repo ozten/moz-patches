@@ -1,11 +1,11 @@
 # HG changeset patch
-# Parent 0e7639e3bdfbe56b5e788f234cafb3c5074954cc
+# Parent b2636816c7fdd53110d877c57d7fcbb1c4396bdc
 
 diff --git a/browser/base/content/browser-identity.js b/browser/base/content/browser-identity.js
 new file mode 100644
 --- /dev/null
 +++ b/browser/base/content/browser-identity.js
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,149 @@
 +/* -*- Mode: js2; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- /
 +/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 +/* This Source Code Form is subject to the terms of the Mozilla Public
@@ -101,6 +101,7 @@ new file mode 100644
 +    if (options) {
 +      var stringifiedOptions = JSON.stringify(options);
 +      let callback = function(assertion, internalParams) {
++        logger.log("received assertion:", assertion);
 +        internalParams = internalParams || {};
 +        if (assertion) {
 +          logger.log("got assertion");
@@ -113,11 +114,13 @@ new file mode 100644
 +        this._close();
 +      }.bind(this);
 +
++      logger.log('call get() with origin', options.origin, ', callback', callback, ', and options', stringifiedOptions);
 +      content.wrappedJSObject.BrowserID.internal.get(
 +        options.origin,
 +        callback,
 +        stringifiedOptions
 +      );
++      logger.log('called get()');
 +    }
 +  },
 +
@@ -155,7 +158,7 @@ new file mode 100644
 diff --git a/browser/base/content/browser.css b/browser/base/content/browser.css
 --- a/browser/base/content/browser.css
 +++ b/browser/base/content/browser.css
-@@ -270,36 +270,16 @@ panel[noactions] > richlistbox > richlis
+@@ -271,36 +271,16 @@ panel[noactions] > richlistbox > richlis
  #urlbar[pageproxystate="invalid"] > #urlbar-icons > .urlbar-icon:not(#go-button),
  #urlbar[pageproxystate="valid"] > #urlbar-icons > #go-button,
  #urlbar[pageproxystate="invalid"][focused="true"] > #urlbar-go-button ~ toolbarbutton,
@@ -192,7 +195,7 @@ diff --git a/browser/base/content/browser.css b/browser/base/content/browser.css
  #back-button > .toolbarbutton-menu-dropmarker,
  #forward-button > .toolbarbutton-menu-dropmarker {
    display: none;
-@@ -361,26 +341,16 @@ window[chromehidden~="toolbar"] toolbar:
+@@ -362,26 +342,16 @@ window[chromehidden~="toolbar"] toolbar:
    overflow-y: visible !important;
  }
  
@@ -552,7 +555,7 @@ diff --git a/browser/base/jar.mn b/browser/base/jar.mn
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
-@@ -1,247 +1,457 @@
+@@ -1,247 +1,458 @@
  /* This Source Code Form is subject to the terms of the Mozilla Public
   * License, v. 2.0. If a copy of the MPL was not distributed with this file,
   * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -1189,6 +1192,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 -    if (requestNot)
 -      chromeWin.PopupNotifications.remove(requestNot);
 +  doRequest: function SignInToWebsiteUX_doRequest(aOptions) {
++    logger.log("request:", aOptions);
 +    aOptions.message = 'identity-delegate-request';
 +    aOptions.showUI = true;
 +    this.delegate(aOptions);
@@ -1259,8 +1263,8 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
  
    doError: function(msg) {
 -    log("Provisioning ERROR: " + msg);
-+    logger.warning("Provisioning ERROR: " + msg);
-   },
++    logger.warning(msg);
+   }
  };
  
  function IDPAuthenticationContext(aID, aOrigin, aTargetMM) {
@@ -1268,7 +1272,7 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
    this._origin = aOrigin;
    this._mm = aTargetMM;
  }
-@@ -79,79 +72,83 @@ IDPAuthenticationContext.prototype = {
+@@ -79,61 +72,63 @@ IDPAuthenticationContext.prototype = {
    doBeginAuthenticationCallback: function IDPAC_doBeginAuthCB(aIdentity) {
      let message = new IDDOMMessage({id: this.id});
      message.identity = aIdentity;
@@ -1278,8 +1282,8 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
  
    doError: function IDPAC_doError(msg) {
 -    log("Authentication ERROR: " + msg);
-+    logger.warning("Authentication ERROR: " + msg);
-   },
++    logger.warning(msg);
+   }
  };
  
  function RPWatchContext(aOptions, aTargetMM) {
@@ -1305,7 +1309,7 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
  RPWatchContext.prototype = {
    doLogin: function RPWatchContext_onlogin(aAssertion, aMaybeInternalParams) {
 -    log("doLogin: " + this.id);
-+    logger.log("doLogin: " + this.id);
++    logger.log("login id: " + this.id);
      let message = new IDDOMMessage({id: this.id, assertion: aAssertion});
      if (aMaybeInternalParams) {
        message._internalParams = aMaybeInternalParams;
@@ -1315,32 +1319,30 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
  
    doLogout: function RPWatchContext_onlogout() {
 -    log("doLogout: " + this.id);
-+    logger.log("doLogout: " + this.id);
++    logger.log("logout id: " + this.id);
      let message = new IDDOMMessage({id: this.id});
      this._mm.sendAsyncMessage("Identity:RP:Watch:OnLogout", message);
    },
  
    doReady: function RPWatchContext_onready() {
 -    log("doReady: " + this.id);
-+    logger.log("doReady: " + this.id);
++    logger.log("ready id: " + this.id);
      let message = new IDDOMMessage({id: this.id});
      this._mm.sendAsyncMessage("Identity:RP:Watch:OnReady", message);
    },
  
    doCancel: function RPWatchContext_oncancel() {
 -    log("doCancel: " + this.id);
-+    logger.log("doCancel: " + this.id);
++    logger.log("cancel id: " + this.id);
      let message = new IDDOMMessage({id: this.id});
      this._mm.sendAsyncMessage("Identity:RP:Watch:OnCancel", message);
    },
  
    doError: function RPWatchContext_onerror(aMessage) {
--    log("doError: " + aMessage);
-+    logger.warning("doError:", aMessage);
+     log("doError: " + aMessage);
    }
  };
- 
- this.DOMIdentity = {
+@@ -142,16 +137,18 @@ this.DOMIdentity = {
    // nsIMessageListener
    receiveMessage: function DOMIdentity_receiveMessage(aMessage) {
      let msg = aMessage.json;
@@ -1349,19 +1351,19 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
      // used to send replies back to the proper window.
      let targetMM = aMessage.target;
  
-+    //logger.log("received message:", aMessage.name);
++    logger.log("received:", aMessage.name);
 +
      switch (aMessage.name) {
        // RP
        case "Identity:RP:Watch":
          this._watch(msg, targetMM);
          break;
-       case "Identity:RP:Request":
-         this._request(msg);
+       case "Identity:RP:Unwatch":
+         this._unwatch(msg, targetMM);
          break;
-@@ -201,16 +198,17 @@ this.DOMIdentity = {
-              "Identity:IDP:CompleteAuthentication",
-              "Identity:IDP:AuthenticationFailure"],
+@@ -212,16 +209,17 @@ this.DOMIdentity = {
+              "Identity:RP:Unwatch",
+              "child-process-shutdown"],
  
    // Private.
    _init: function DOMIdentity__init() {
@@ -1377,7 +1379,7 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
        ppmm.addMessageListener(message, this);
      }
    },
-@@ -218,26 +216,28 @@ this.DOMIdentity = {
+@@ -229,26 +227,28 @@ this.DOMIdentity = {
    _unsubscribeListeners: function DOMIdentity__unsubscribeListeners() {
      for (let message of this.messages) {
        ppmm.removeMessageListener(message, this);
@@ -1407,8 +1409,8 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
      IdentityService.RP.watch(context);
    },
  
-   _request: function DOMIdentity__request(message) {
-     IdentityService.RP.request(message.id, message);
+   _unwatch: function DOMIdentity_unwatch(message, targetMM) {
+     IdentityService.RP.unwatch(message.id, targetMM);
 diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
 --- a/dom/identity/nsDOMIdentity.js
 +++ b/dom/identity/nsDOMIdentity.js
@@ -1645,8 +1647,8 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
        case "Identity:RP:Watch:OnLogin":
          // Do we have a watcher?
          if (!this._rpWatcher) {
--          dump("WARNING: Received OnLogin message, but there is no RP watcher\n");
-+          error("WARNING: Received OnLogin message, but there is no RP watcher");
+-          this._log("WARNING: Received OnLogin message, but there is no RP watcher");
++          logger.warning("Received OnLogin message, but there is no RP watcher");
            return;
          }
  
@@ -1661,8 +1663,8 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
        case "Identity:RP:Watch:OnLogout":
          // Do we have a watcher?
          if (!this._rpWatcher) {
--          dump("WARNING: Received OnLogout message, but there is no RP watcher\n");
-+          error("WARNING: Received OnLogout message, but there is no RP watcher");
+-          this._log("WARNING: Received OnLogout message, but there is no RP watcher");
++          logger.warning("Received OnLogout message, but there is no RP watcher");
            return;
          }
  
@@ -1673,8 +1675,8 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
        case "Identity:RP:Watch:OnReady":
          // Do we have a watcher?
          if (!this._rpWatcher) {
--          dump("WARNING: Received OnReady message, but there is no RP watcher\n");
-+          error("WARNING: Received OnReady message, but there is no RP watcher");
+-          this._log("WARNING: Received OnReady message, but there is no RP watcher");
++          logger.warning("Received OnReady message, but there is no RP watcher");
            return;
          }
  
@@ -1685,8 +1687,8 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
        case "Identity:RP:Watch:OnCancel":
          // Do we have a watcher?
          if (!this._rpWatcher) {
--          dump("WARNING: Received OnCancel message, but there is no RP watcher\n");
-+          error("WARNING: Received OnCancel message, but there is no RP watcher");
+-          this._log("WARNING: Received OnCancel message, but there is no RP watcher");
++          logger.warning("Received OnCancel message, but there is no RP watcher");
            return;
          }
  
@@ -1716,7 +1718,26 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      function genPropDesc(value) {
        return {
          enumerable: true, configurable: true, writable: true, value: value
-@@ -583,17 +590,17 @@ nsDOMIdentityInternal.prototype = {
+@@ -520,17 +527,17 @@ nsDOMIdentity.prototype = {
+ 
+     // window origin
+     message.origin = this._origin;
+ 
+     return message;
+   },
+ 
+   uninit: function DOMIdentity_uninit() {
+-    this._log("nsDOMIdentity uninit()");
++    logger.log("unwatch", this._id);
+     this._identityInternal._mm.sendAsyncMessage(
+       "Identity:RP:Unwatch",
+       { id: this._id }
+     );
+   }
+ 
+ };
+ 
+@@ -593,17 +600,17 @@ nsDOMIdentityInternal.prototype = {
  
      this._identity._init(aWindow);
  
@@ -1735,16 +1756,12 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
        "Identity:ResetState",
        "Identity:RP:Watch:OnLogin",
        "Identity:RP:Watch:OnLogout",
-@@ -605,27 +612,20 @@ nsDOMIdentityInternal.prototype = {
-     ];
-     this._messages.forEach((function(msgName) {
-       this._mm.addMessageListener(msgName, this);
-     }).bind(this));
+@@ -618,24 +625,16 @@ nsDOMIdentityInternal.prototype = {
+     }, this);
  
      // Setup observers so we can remove message listeners.
      Services.obs.addObserver(this, "inner-window-destroyed", false);
  
-+    logger.log("return");
      return this._identity;
    },
  
@@ -2098,15 +2115,15 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
    options.origin = aRpCaller.origin;
  
    // loggedInUser can be undefined, null, or a string
-@@ -57,64 +48,48 @@ function makeMessageObject(aRpCaller) {
-         && option[0] !== '_'
-         && typeof aRpCaller[option] !== 'function') {
+@@ -59,64 +50,48 @@ function makeMessageObject(aRpCaller) {
        options[option] = aRpCaller[option];
      }
    });
  
-   if (! (options.id && options.origin)) {
-     let err = "id and origin required in relying-party message";
+   // check validity of message structure
+   if ((typeof options.id === 'undefined') ||
+       (typeof options.origin === 'undefined')) {
+     let err = "id and origin required in relying-party message: " + JSON.stringify(options);
 -    reportError(err);
 +    logger.error(err);
      throw new Error(err);
@@ -2165,7 +2182,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
     *                  is expected to have properties:
     *                  - id (unique, e.g. uuid)
     *                  - loggedInUser (string or null)
-@@ -123,36 +98,38 @@ IDService.prototype = {
+@@ -125,51 +100,51 @@ IDService.prototype = {
     *                  and a bunch of callbacks
     *                  - doReady()
     *                  - doLogin()
@@ -2179,12 +2196,27 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
      // store the caller structure and notify the UI observers
      this._rpFlows[aRpCaller.id] = aRpCaller;
  
-+    logger.log("IdentityService watch got caller: " + JSON.stringify(aRpCaller, null, 2));
-+
      let options = makeMessageObject(aRpCaller);
 -    log("sending identity-controller-watch:", options);
 +    logger.log("sending identity-controller-watch:", options);
      Services.obs.notifyObservers({wrappedJSObject: options},"identity-controller-watch", null);
+   },
+ 
+   /*
+    * The RP has gone away; remove handles to the hidden iframe.
+    * It's probable that the frame will already have been cleaned up.
+    */
+-  unwatch: function unwatch(aRpId, aTargetMM) {
++  unwatch: function IDService_unwatch(aRpId, aTargetMM) {
+     let rp = this._rpFlows[aRpId];
+     let options = makeMessageObject({
+       id: aRpId,
+       origin: rp.origin,
+       messageManager: aTargetMM
+     });
+-    log("sending identity-controller-unwatch for id", options.id, options.origin);
++    logger.log("sending identity-controller-unwatch for id", options.id, options.origin);
+     Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-unwatch", null);
    },
  
    /**
@@ -2207,7 +2239,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
      objectCopy(aOptions, options);
      Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-request", null);
    },
-@@ -160,258 +137,98 @@ IDService.prototype = {
+@@ -177,269 +152,74 @@ IDService.prototype = {
    /**
     * Invoked when a user wishes to logout of a site (for instance, when clicking
     * on an in-content logout button).
@@ -2224,6 +2256,19 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
      Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-logout", null);
    },
  
+-  childProcessShutdown: function childProcessShutdown(messageManager) {
++  childProcessShutdown: function IDService_childProcessShutdown(messageManager) {
+     let options = makeMessageObject({messageManager: messageManager, id: null, origin: null});
+     Services.obs.notifyObservers({wrappedJSObject: options}, "identity-child-process-shutdown", null);
+     Object.keys(this._rpFlows).forEach(function(key) {
+       if (this._rpFlows[key]._mm === messageManager) {
+-        log("child process shutdown for rp", key, "- deleting flow");
++        logger.log("child process shutdown for rp", key, "- deleting flow");
+         delete this._rpFlows[key];
+       }
+     }, this);
+   },
+ 
    /*
     * once the UI-and-display-logic components have received
     * notifications, they call back with direct invocation of the
@@ -2234,8 +2279,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +  doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
      let rp = this._rpFlows[aRpCallerId];
      if (!rp) {
--      dump("WARNING: doLogin found no rp to go with callerId " + aRpCallerId + "\n");
-+      logger.error("WARNING: doLogin found no rp for callerId", aRpCallerId);
+       dump("WARNING: doLogin found no rp to go with callerId " + aRpCallerId + "\n");
        return;
      }
  
@@ -2246,8 +2290,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +  doLogout: function IDService_doLogout(aRpCallerId) {
      let rp = this._rpFlows[aRpCallerId];
      if (!rp) {
--      dump("WARNING: doLogout found no rp to go with callerId " + aRpCallerId + "\n");
-+      logger.error("WARNING: doLogout found no rp for callerId", aRpCallerId);
+       dump("WARNING: doLogout found no rp to go with callerId " + aRpCallerId + "\n");
        return;
      }
  
@@ -2258,8 +2301,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +  doReady: function IDService_doReady(aRpCallerId) {
      let rp = this._rpFlows[aRpCallerId];
      if (!rp) {
--      dump("WARNING: doReady found no rp to go with callerId " + aRpCallerId + "\n");
-+      logger.error("WARNING: doReady found no rp for callerId ", aRpCallerId);
+       dump("WARNING: doReady found no rp to go with callerId " + aRpCallerId + "\n");
        return;
      }
  
@@ -2270,25 +2312,20 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +  doCancel: function IDService_doCancel(aRpCallerId) {
      let rp = this._rpFlows[aRpCallerId];
      if (!rp) {
--      dump("WARNING: doCancel found no rp to go with callerId " + aRpCallerId + "\n");
-+      logger.error("WARNING: doCancel found no rp for callerId ", aRpCallerId);
+       dump("WARNING: doCancel found no rp to go with callerId " + aRpCallerId + "\n");
        return;
      }
  
      rp.doCancel();
-   },
- 
+-  },
+-
 -
 -  /*
 -   * XXX Bug 804229: Implement Identity Provider Functions
 -   *
 -   * Stubs for Identity Provider functions follow
-+  /**
-+   * IDP functions are taken care of by the dialog.  The DOM should never
-+   * be calling these methods on this service.  So if it does, use the 
-+   * logger.error function to give a stack trace.
-    */
- 
+-   */
+-
 -  /**
 -   * the provisioning iframe sandbox has called navigator.id.beginProvisioning()
 -   *
@@ -2299,10 +2336,8 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 -   *                  - doGenKeyPairCallback(pk)
 -   */
 -  beginProvisioning: function beginProvisioning(aCaller) {
-+  beginProvisioning: function IDService_beginProvisioning(context) {
-+    logger.error("Not implemented");
-   },
- 
+-  },
+-
 -  /**
 -   * the provisioning iframe sandbox has called
 -   * navigator.id.raiseProvisioningFailure()
@@ -2313,10 +2348,8 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 -   */
 -  raiseProvisioningFailure: function raiseProvisioningFailure(aProvId, aReason) {
 -    reportError("Provisioning failure", aReason);
-+  genKeyPair: function IDService_genKeyPair(id) {
-+    logger.error("Not implemented");
-   },
- 
+-  },
+-
 -  /**
 -   * When navigator.id.genKeyPair is called from provisioning iframe sandbox.
 -   * Generates a keypair for the current user being provisioned.
@@ -2328,10 +2361,8 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 -   * the beginProvisioning() call first.
 -   */
 -  genKeyPair: function genKeyPair(aProvId) {
-+  registerCertificate: function IDService_registerCertificate(id, cert) {
-+    logger.error("Not implemented");
-   },
- 
+-  },
+-
 -  /**
 -   * When navigator.id.registerCertificate is called from provisioning iframe
 -   * sandbox.
@@ -2348,10 +2379,8 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 -   *                  being provisioned, provided by the IdP.
 -   */
 -  registerCertificate: function registerCertificate(aProvId, aCert) {
-+  raiseProvisioningFailure: function IDService_raiseProvisioningFailure(id, reason) {
-+    logger.error("Not implemented");
-   },
- 
+-  },
+-
 -  /**
 -   * The authentication frame has called navigator.id.beginAuthentication
 -   *
@@ -2365,10 +2394,8 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 -   *
 -   */
 -  beginAuthentication: function beginAuthentication(aCaller) {
-+  beginAuthentication: function IDService_beginAuthentication(context) {
-+    logger.error("Not implemented");
-   },
- 
+-  },
+-
 -  /**
 -   * The auth frame has called navigator.id.completeAuthentication
 -   *
@@ -2377,10 +2404,8 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 -   *
 -   */
 -  completeAuthentication: function completeAuthentication(aAuthId) {
-+  completeAuthentication: function IDService_completeAuthentication(id) {
-+    logger.error("Not implemented");
-   },
- 
+-  },
+-
 -  /**
 -   * The auth frame has called navigator.id.cancelAuthentication
 -   *
@@ -2488,10 +2513,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 -    req.send(null);
 -  },
 -
-+  cancelAuthentication: function IDService_cancelAuthentication(id) {
-+    logger.error("Not implemented");
 +  }
  };
  
  this.IdentityService = new IDService();
-+
