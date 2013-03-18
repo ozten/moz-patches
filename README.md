@@ -1,4 +1,4 @@
-Patches should apply to mozilla-central in this order:
+Patches should apply to mozilla-central b2636816c7fd in this order:
 
 ```shell
 > hg qapplied
