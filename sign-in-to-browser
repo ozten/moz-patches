@@ -5,16 +5,20 @@ diff --git a/browser/base/content/browser-id-createAccount.html b/browser/base/c
 new file mode 100644
 --- /dev/null
 +++ b/browser/base/content/browser-id-createAccount.html
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,38 @@
 +<html>
 +  <head>
 +    <title>Create Account</title>
 +  </head>
 +  <body>
-+    <!-- create a persona account -->
++    <h1>Create an Account</h1>
++
 +    <form>
++      <label>Email</label>
 +      <input type='text' id='email'/>
++      <label>Password</label>
 +      <input type='password' id='password'/>
++
 +      <input type='submit' id='submit'/>
 +    </form>
 +
@@ -379,7 +383,26 @@ diff --git a/browser/base/jar.mn b/browser/base/jar.mn
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
-@@ -178,16 +178,17 @@ HostFrame.prototype = {
+@@ -11,16 +11,18 @@ const Ci = Components.interfaces;
+ const Cu = Components.utils;
+ 
+ Cu.import('resource://gre/modules/Services.jsm');
+ Cu.import('resource://gre/modules/XPCOMUtils.jsm');
+ Cu.import('resource://gre/modules/identity/IdentityUtils.jsm');
+ 
+ const kIdentityScreen = 'https://picl.personatest.org/sign_in#NATIVE';
+ const kIdentityFrame = 'https://picl.personatest.org/communication_iframe';
++//const kIdentityScreen = 'http://127.0.0.1:10002/sign_in#NATIVE';
++//const kIdentityFrame = 'http://127.0.0.1:10002/communication_iframe';
+ const kIdentityShim = 'chrome://browser/content/browser-identity.js';
+ 
+ const PANEL_MIN_HEIGHT = 440;
+ const PANEL_MIN_WIDTH = 300;
+ 
+ XPCOMUtils.defineLazyModuleGetter(this, 'IdentityService',
+                                   'resource://gre/modules/identity/MinimalIdentity.jsm');
+ 
+@@ -178,16 +180,17 @@ HostFrame.prototype = {
    },
  
    /*
@@ -397,7 +420,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
      this._iframe.setAttribute('mozbrowser', true);
      this._iframe.setAttribute('mozframetype', 'content');
-@@ -198,16 +199,17 @@ HostFrame.prototype = {
+@@ -198,16 +201,17 @@ HostFrame.prototype = {
  
      // implement a dynamic resize watcher a la Social API
      this._iframe.style.height = "440px";
@@ -415,7 +438,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
      }
      this._injectShim(this._iframe);
    },
-@@ -303,23 +305,35 @@ Pipe.prototype = {
+@@ -303,23 +307,35 @@ Pipe.prototype = {
  
  this.SignInToWebsiteUX = {
    init: function SignInToWebsiteUX_init() {
@@ -451,7 +474,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
      // XXX we get strings from xul, and objects from elsewhere
      let rpOptions = {};
      if (aSubject) {
-@@ -330,17 +344,17 @@ this.SignInToWebsiteUX = {
+@@ -330,17 +346,17 @@ this.SignInToWebsiteUX = {
        }
      }
      if (!rpOptions.id) {
@@ -470,7 +493,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
      switch (aTopic) {
        case 'identity-controller-watch':
-@@ -350,16 +364,36 @@ this.SignInToWebsiteUX = {
+@@ -350,16 +366,36 @@ this.SignInToWebsiteUX = {
        case 'identity-controller-request':
          this.doRequest(options);
          break;
@@ -507,7 +530,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
    serviceDoMethod: function SignInToWebsiteUX_doMethod(aMessage, aId) {
      logger.log('serviceDoMethod received:', aMessage);
-@@ -379,16 +413,36 @@ this.SignInToWebsiteUX = {
+@@ -379,16 +415,36 @@ this.SignInToWebsiteUX = {
        case 'logout':
          IdentityService.doLogout(aId);
          break;
@@ -544,7 +567,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
    cleanUp: function SignInToWebsiteUX_cleanUp(aId) {
      let context = this.contexts[aId];
-@@ -436,10 +490,43 @@ this.SignInToWebsiteUX = {
+@@ -436,10 +492,43 @@ this.SignInToWebsiteUX = {
      aOptions.showUI = true;
      this.delegate(aOptions);
    },
@@ -638,7 +661,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
    this.IDP = this;
  
    // keep track of flows
-@@ -170,16 +199,96 @@ IDService.prototype = {
+@@ -170,16 +199,97 @@ IDService.prototype = {
      Object.keys(this._rpFlows).forEach(function(key) {
        if (this._rpFlows[key]._mm === messageManager) {
          logger.log("child process shutdown for rp", key, "- deleting flow");
@@ -700,11 +723,12 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
 +    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-signOut", null);
 +  },
 +
-+  accountExists: function IDService_accountExists(aEmail, aCallback) {
++  accountExists: function IDService_accountExists(aOptions, aCallback) {
 +    let info = getWindowInfo();
 +    let rp = {
 +      id: info.id,
-+      email: aEmail,
++      email: aOptions.email,
++      origin: 'dummy-origin',
 +      onAccountExists: aCallback
 +    };
 +    this._rpFlows[info.id] = rp;
@@ -735,7 +759,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
  
    doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
      let rp = this._rpFlows[aRpCallerId];
-@@ -214,12 +323,72 @@ IDService.prototype = {
+@@ -214,12 +324,72 @@ IDService.prototype = {
    doCancel: function IDService_doCancel(aRpCallerId) {
      let rp = this._rpFlows[aRpCallerId];
      if (!rp) {
