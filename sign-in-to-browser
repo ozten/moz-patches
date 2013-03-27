@@ -20,7 +20,7 @@ new file mode 100644
 +    <!-- create a persona account or sign in with an existing one -->
 +    <div id='wrapper'>
 +      <div id="hAlign" class="display_always" style="display: block;">
-+        <div id='vAlign'>
++        <div id='vAlign' style='height: 343px;'>
 +
 +            <form id="signUpForm" class="cf authform">
 +             <div id='sign-in-box'>
@@ -66,7 +66,7 @@ new file mode 100644
 +      // XXX make lazy
 +      Components.utils.import('resource://gre/modules/identity/MinimalIdentity.jsm');
 +
-+      let origin = 'resource://the-browser';
++      let origin = 'https://firefox.com';
 +      let email_input = document.getElementById('email');
 +      let password_input = document.getElementById('password');
 +      let next_button = document.getElementById('next');
@@ -480,21 +480,17 @@ diff --git a/browser/base/jar.mn b/browser/base/jar.mn
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
-@@ -9,18 +9,20 @@ this.EXPORTED_SYMBOLS = ['SignInToWebsit
- const Cc = Components.classes;
- const Ci = Components.interfaces;
+@@ -11,16 +11,18 @@ const Ci = Components.interfaces;
  const Cu = Components.utils;
  
  Cu.import('resource://gre/modules/Services.jsm');
  Cu.import('resource://gre/modules/XPCOMUtils.jsm');
  Cu.import('resource://gre/modules/identity/IdentityUtils.jsm');
  
--const kIdentityScreen = 'https://picl.personatest.org/sign_in#NATIVE';
--const kIdentityFrame = 'https://picl.personatest.org/communication_iframe';
-+//const kIdentityScreen = 'https://picl.personatest.org/sign_in#NATIVE';
-+//const kIdentityFrame = 'https://picl.personatest.org/communication_iframe';
-+const kIdentityScreen = 'http://127.0.0.1:10002/sign_in#NATIVE';
-+const kIdentityFrame = 'http://127.0.0.1:10002/communication_iframe';
+ const kIdentityScreen = 'https://picl.personatest.org/sign_in#NATIVE';
+ const kIdentityFrame = 'https://picl.personatest.org/communication_iframe';
++//const kIdentityScreen = 'http://127.0.0.1:10002/sign_in#NATIVE';
++//const kIdentityFrame = 'http://127.0.0.1:10002/communication_iframe';
  const kIdentityShim = 'chrome://browser/content/browser-identity.js';
  
  const PANEL_MIN_HEIGHT = 440;
