@@ -2,54 +2,11 @@
 # Parent 84bdc241128448aab011592c1fff6b18fcbc23b9
 try: -b o -p macosx64 -u none -t none
 
-diff --git a/browser/base/content/browser-id-createAccount.html b/browser/base/content/browser-id-createAccount.html
-new file mode 100644
---- /dev/null
-+++ b/browser/base/content/browser-id-createAccount.html
-@@ -0,0 +1,38 @@
-+<html>
-+  <head>
-+    <title>Create Account</title>
-+  </head>
-+  <body>
-+    <h1>Create an Account</h1>
-+
-+    <form>
-+      <label>Email</label>
-+      <input type='text' id='email'/>
-+      <label>Password</label>
-+      <input type='password' id='password'/>
-+
-+      <input type='submit' id='submit'/>
-+    </form>
-+
-+    <script type="text/javascript;version=1.8">
-+      Components.utils.import('resource://gre/modules/identity/MinimalIdentity.jsm');
-+      let origin = 'resource://some-kind-of-robot';
-+      let submit = document.getElementById('submit');
-+      let email = document.getElementById('email');
-+      let password = document.getElementById('password');
-+
-+      submit.addEventListener('click', function(evt) {
-+        evt.preventDefault();
-+        IdentityService.createAccount({
-+          email: email.value,
-+          password: password.value,
-+          origin: origin,
-+          allowUnverified: true}, 
-+          function(assertion) {
-+            alert("created account and signed in!  Assertion is " + (assertion === null ? null : typeof assertion));
-+          }
-+        );
-+      });
-+    </script>
-+  </body>
-+</html>
 diff --git a/browser/base/content/browser-id-signIn.html b/browser/base/content/browser-id-signIn.html
 new file mode 100644
 --- /dev/null
 +++ b/browser/base/content/browser-id-signIn.html
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,152 @@
 +<html>
 +  <head>
 +    <title>Sign In</title>
@@ -62,44 +19,46 @@ new file mode 100644
 +
 +    <!-- create a persona account or sign in with an existing one -->
 +    <div id='wrapper'>
-+      <div id='vAlign'>
++      <div id="hAlign" class="display_always" style="display: block;">
++        <div id='vAlign'>
 +
-+          <form id="signUpForm" class="cf authform">
-+           <div id='sign-in-box'>
-+           <h1 id="title">Sign In To Your Browser</h1>
-+           <ul>
-+             <li>
-+               <label>To sign in with Persona, please enter your email address.</label>
-+               <input type='text' id='email'/>
-+             </li>
++            <form id="signUpForm" class="cf authform">
++             <div id='sign-in-box'>
++             <h1 id="title">Sign In To Your Browser</h1>
++             <ul>
++               <li>
++                 <label>To sign in with Persona, please enter your email address.</label>
++                 <input type='text' id='email'/>
++               </li>
 +  
-+             <li id='password-entry' class='hidden'>
-+               <label id='password-old' class='hidden'>Password</label>
-+               <label id='password-new' class='hidden'>
-+                 Your email address is new to us. 
-+                 Please create a password to use with Persona.
-+               </label>
-+               <input type='password' id='password' autocomplete='off'/>
-+             </li>   
-+            </ul>
++               <li id='password-entry' class='hidden'>
++                 <label id='password-old' class='hidden'>Password</label>
++                 <label id='password-new' class='hidden'>
++                   Your email address is new to us. 
++                   Please create a password to use with Persona.
++                 </label>
++                 <input type='password' id='password' autocomplete='off'/>
++               </li>   
++              </ul>
 +
-+            <div class='submit cf forminputs start'>
-+              <button id='next'>Next</button>
-+            </div>
-+            <div class='submit cf forminputs'>
-+              <button id='signIn' class='hidden'>Sign In</button>
-+              <button id='create' class='hidden'>Create Account</button>
-+            </div>
-+            </div>
++              <div class='submit cf forminputs start'>
++                <button id='next'>Next</button>
++              </div>
++              <div class='submit cf forminputs'>
++                <button id='signIn' class='hidden'>Sign In</button>
++                <button id='create' class='hidden'>Create Account</button>
++              </div>
++              </div>
 +
-+            <div id='signed-in-box' class='hidden'>
-+              <h1>Great Success!</h1> 
-+              <p>You are signed in to your browser with Persona.</p>
-+              <p>You may close this tab now.</p>
-+            </div>
-+          </form>
++              <div id='signed-in-box' class='hidden'>
++                <h1>Great Success!</h1> 
++                <p>You are signed in to your browser with Persona.</p>
++                <p>You may close this tab now.</p>
++              </div>
++            </form>
 +
-+     </div>
++       </div>
++      </div>
 +    </div>
 +
 +
@@ -803,7 +762,27 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
    this.IDP = this;
  
    // keep track of flows
-@@ -170,16 +199,97 @@ IDService.prototype = {
+@@ -115,16 +144,19 @@ IDService.prototype = {
+   },
+ 
+   /*
+    * The RP has gone away; remove handles to the hidden iframe.
+    * It's probable that the frame will already have been cleaned up.
+    */
+   unwatch: function IDService_unwatch(aRpId, aTargetMM) {
+     let rp = this._rpFlows[aRpId];
++    if (!rp) {
++      logger.warning("No rp with id", aRpId);
++    }
+     let options = makeMessageObject({
+       id: aRpId,
+       origin: rp.origin,
+       messageManager: aTargetMM
+     });
+     logger.log("sending identity-controller-unwatch for id", options.id, options.origin);
+     Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-unwatch", null);
+   },
+@@ -170,16 +202,97 @@ IDService.prototype = {
      Object.keys(this._rpFlows).forEach(function(key) {
        if (this._rpFlows[key]._mm === messageManager) {
          logger.log("child process shutdown for rp", key, "- deleting flow");
@@ -901,7 +880,7 @@ diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIden
  
    doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
      let rp = this._rpFlows[aRpCallerId];
-@@ -214,12 +324,72 @@ IDService.prototype = {
+@@ -214,12 +327,72 @@ IDService.prototype = {
    doCancel: function IDService_doCancel(aRpCallerId) {
      let rp = this._rpFlows[aRpCallerId];
      if (!rp) {
