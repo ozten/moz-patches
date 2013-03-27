@@ -1,6 +1,7 @@
 # HG changeset patch
+# User Jed Parsons <jparsons@mozilla.com>
+# Date Wed Mar 27 16:45:38 2013 -0700
 # Parent 84bdc241128448aab011592c1fff6b18fcbc23b9
-try: -b o -p macosx64 -u none -t none
 
 diff --git a/browser/base/content/browser-id-signIn.html b/browser/base/content/browser-id-signIn.html
 new file mode 100644
@@ -458,7 +459,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -56,16 +56,18 @@ browser.jar:
+@@ -56,16 +56,17 @@ browser.jar:
  #endif
          content/browser/aboutRobots-icon.png          (content/aboutRobots-icon.png)
          content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
@@ -468,7 +469,6 @@ diff --git a/browser/base/jar.mn b/browser/base/jar.mn
  *       content/browser/browser.xul                   (content/browser.xul)
          content/browser/browser-identity.js           (content/browser-identity.js)
 +        content/browser/browser-id-signIn.html        (content/browser-id-signIn.html)
-+        content/browser/browser-id-createAccount.html (content/browser-id-createAccount.html)
  *       content/browser/browser-tabPreviews.xml       (content/browser-tabPreviews.xml)
          content/browser/content.js                    (content/content.js)
          content/browser/newtab/newTab.xul             (content/newtab/newTab.xul)
