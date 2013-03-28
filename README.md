@@ -6,8 +6,16 @@ https://vimeo.com/62828580
 
 ## Downloading
 
-Until these land in nightlies, you can download the patches an apply them
-to mozilla-central in this order:
+You can download try builds of these for MacOSX, Linux, and Windows here:
+
+http://ftp.mozilla.org/pub/mozilla.org/firefox/try-builds/jparsons@mozilla.com-c4ea7c9d58ae/
+
+Those builds are packaged like Firefox nightlies, so you just need to download
+and install them.  No compiling necessary.
+
+## Building
+
+If you want to compile and play, the patches apply to mozilla-central in this order:
 
 ```shell
 > hg qapplied
