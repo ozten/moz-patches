@@ -1,7 +1,8 @@
 # HG changeset patch
 # User Jed Parsons <jparsons@mozilla.com>
-# Date Wed Mar 27 16:45:38 2013 -0700
-# Parent 84bdc241128448aab011592c1fff6b18fcbc23b9
+# Date Thu Mar 28 17:34:30 2013 -0700
+# Parent 8bceff91236f2f4e04563fece68044acc37a687d
+This patch pushed to try: https://tbpl.mozilla.org/?tree=Try&rev=f424d76fb3a1
 
 diff --git a/browser/base/content/browser-id-signIn.html b/browser/base/content/browser-id-signIn.html
 new file mode 100644
@@ -65,7 +66,7 @@ new file mode 100644
 +
 +    <script type="text/javascript;version=1.8">
 +      // XXX make lazy
-+      Components.utils.import('resource://gre/modules/identity/MinimalIdentity.jsm');
++      Components.utils.import('resource://gre/modules/identity/IdentityService.jsm');
 +
 +      let origin = 'https://firefox.com';
 +      let email_input = document.getElementById('email');
@@ -497,7 +498,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  const PANEL_MIN_WIDTH = 300;
  
  XPCOMUtils.defineLazyModuleGetter(this, 'IdentityService',
-                                   'resource://gre/modules/identity/MinimalIdentity.jsm');
+                                   'resource://gre/modules/identity/IdentityService.jsm');
  
 @@ -178,16 +180,17 @@ HostFrame.prototype = {
    },
@@ -709,243 +710,3 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +  },
 +
  };
-diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/MinimalIdentity.jsm
---- a/toolkit/identity/MinimalIdentity.jsm
-+++ b/toolkit/identity/MinimalIdentity.jsm
-@@ -57,16 +57,45 @@ function makeMessageObject(aRpCaller) {
-     let err = "id and origin required in relying-party message: " + JSON.stringify(options);
-     logger.error(err);
-     throw new Error(err);
-   }
- 
-   return options;
- }
- 
-+function getWindowInfo() {
-+  /*
-+  let someWindow = Services.wm.getMostRecentWindow('navigator:browser');
-+  let windowUtils = someWindow
-+    .QueryInterface(Ci.nsIInterfaceRequestor)
-+    .getInterface(Ci.nsIDOMWindowUtils);
-+
-+  let id = windowUtils.outerWindowID;
-+  */
-+
-+  let wm = Components.classes["@mozilla.org/appshell/window-mediator;1"]
-+                       .getService(Components.interfaces.nsIWindowMediator);
-+  let recentWindow = wm.getMostRecentWindow("navigator:browser");
-+
-+  //let origin = recentWindow.content.document.location || 'resource://your-agent';
-+  //logger.log("found origin:", origin);
-+
-+  let id = recentWindow
-+    .content
-+    .QueryInterface(Ci.nsIInterfaceRequestor)
-+    .getInterface(Ci.nsIDOMWindowUtils)
-+    .outerWindowID;
-+
-+  return({
-+    origin: 'resource://your-agent',
-+    id: id
-+  });
-+}
-+
- function IDService() {
-   Services.obs.addObserver(this, "quit-application-granted", false);
- 
-   // simplify, it's one object
-   this.RP = this;
-   this.IDP = this;
- 
-   // keep track of flows
-@@ -115,16 +144,19 @@ IDService.prototype = {
-   },
- 
-   /*
-    * The RP has gone away; remove handles to the hidden iframe.
-    * It's probable that the frame will already have been cleaned up.
-    */
-   unwatch: function IDService_unwatch(aRpId, aTargetMM) {
-     let rp = this._rpFlows[aRpId];
-+    if (!rp) {
-+      logger.warning("No rp with id", aRpId);
-+    }
-     let options = makeMessageObject({
-       id: aRpId,
-       origin: rp.origin,
-       messageManager: aTargetMM
-     });
-     logger.log("sending identity-controller-unwatch for id", options.id, options.origin);
-     Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-unwatch", null);
-   },
-@@ -170,16 +202,97 @@ IDService.prototype = {
-     Object.keys(this._rpFlows).forEach(function(key) {
-       if (this._rpFlows[key]._mm === messageManager) {
-         logger.log("child process shutdown for rp", key, "- deleting flow");
-         delete this._rpFlows[key];
-       }
-     }, this);
-   },
- 
-+  /**
-+   * Sign In To Browser functions:
-+   *   getIdentity()
-+   *   signIn()
-+   *   signOut()
-+   *   accountExists()
-+   *   createAccount()
-+   */
-+
-+  getIdentity: function IDService_getIdentity(aOptions, aCallback) {
-+    let info = getWindowInfo();
-+    let rp = {
-+      origin: info.origin,
-+      id: info.id,
-+      onGetIdentity: aCallback
-+    };
-+    this._rpFlows[info.id] = rp;
-+
-+    let options = makeMessageObject(rp);
-+    objectCopy(aOptions, options);
-+    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-getIdentity", null);
-+  },
-+
-+  /**
-+   * signIn to browser; callback with assertion on success or null
-+   */
-+  signIn: function IDService_signIn(aOptions, aCallback) {
-+    let info = getWindowInfo();
-+    let rp = {
-+      id: info.id,
-+      origin: info.origin,
-+      onSignIn: aCallback
-+    };
-+    this._rpFlows[info.id] = rp;
-+
-+    let options = makeMessageObject(rp);
-+    objectCopy(aOptions, options);
-+    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-signIn", null);
-+  },
-+
-+  signOut: function IDService_signOut(aCallback) {
-+    let info = getWindowInfo();
-+    let rp = {
-+      id: info.id,
-+      origin: info.origin,
-+      onSignOut: aCallback
-+    };
-+    this._rpFlows[info.id] = rp;
-+
-+    let options = makeMessageObject(rp);
-+    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-signOut", null);
-+  },
-+
-+  accountExists: function IDService_accountExists(aOptions, aCallback) {
-+    let info = getWindowInfo();
-+    let rp = {
-+      id: info.id,
-+      email: aOptions.email,
-+      origin: 'dummy-origin',
-+      onAccountExists: aCallback
-+    };
-+    this._rpFlows[info.id] = rp;
-+
-+    let options = makeMessageObject(rp);
-+    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-accountExists", null);
-+  },
-+
-+  createAccount: function IDService_createAccount(aOptions, aCallback) {
-+    let info = getWindowInfo();
-+    let rp = {
-+      id: info.id,
-+      origin: info.origin,
-+      onCreateAccount: aCallback
-+    };
-+    this._rpFlows[info.id] = rp;
-+
-+    let options = makeMessageObject(rp);
-+    objectCopy(aOptions, options);
-+    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-createAccount", null);
-+  },
-+
-   /*
-    * once the UI-and-display-logic components have received
-    * notifications, they call back with direct invocation of the
-    * following functions (doLogin, doLogout, or doReady)
-    */
- 
-   doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
-     let rp = this._rpFlows[aRpCallerId];
-@@ -214,12 +327,72 @@ IDService.prototype = {
-   doCancel: function IDService_doCancel(aRpCallerId) {
-     let rp = this._rpFlows[aRpCallerId];
-     if (!rp) {
-       dump("WARNING: doCancel found no rp to go with callerId " + aRpCallerId + "\n");
-       return;
-     }
- 
-     rp.doCancel();
-+  },
-+
-+  doGetIdentity: function IDService_doGetIdentity(aRpCallerId, aAssertion, aInternalParams) {
-+    let rp = this._rpFlows[aRpCallerId];
-+    if (!rp) {
-+      logger.error("no flow for id", aRpCallerId);
-+    }
-+    logger.log("got identity with assertion", aAssertion);
-+    if (typeof rp.onGetIdentity === 'function') {
-+      rp.onGetIdentity(aAssertion, aInternalParams);
-+    }
-+  },
-+
-+  doSignIn: function IDService_doSignIn(aRpCallerId, aAssertion, aInternalParams) {
-+    let rp = this._rpFlows[aRpCallerId];
-+    if (!rp) {
-+      logger.error("no flow for id", aRpCallerId);
-+    }
-+    logger.log("signed in with assertion", aAssertion);
-+    if (typeof rp.onSignIn === 'function') {
-+      rp.onSignIn(aAssertion, aInternalParams);
-+    }
-+  },
-+
-+  doSignOut: function IDService_doSignOut(aRpCallerId) {
-+    let rp = this._rpFlows[aRpCallerId];
-+    if (rp) {
-+      if (typeof rp.onSignOut === 'function') {
-+        rp.onSignOut(true);
-+      }
-+      delete(this._rpFlows[aRpCallerId]);
-+    }
-+  },
-+
-+  doAccountExists: function IDService_doAccountExists(aRpCallerId, aExists) {
-+    let rp = this._rpFlows[aRpCallerId];
-+    if (rp) {
-+      if (typeof rp.onAccountExists === 'function') {
-+        rp.onAccountExists(aExists);
-+      }
-+      delete(this._rpFlows[aRpCallerId]);
-+    }
-+  },
-+
-+  doCreateAccount: function IDService_doCreateAccount(aRpCallerId, aAssertion) {
-+    let rp = this._rpFlows[aRpCallerId];
-+    if (rp) {
-+      if (typeof rp.onCreateAccount === 'function') {
-+        rp.onCreateAccount(aAssertion);
-+      }
-+      delete(this._rpFlows[aRpCallerId]);
-+    }
-+  },
-+
-+  doFoo: function doFoo() {
-+    let wm = Components.classes["@mozilla.org/appshell/window-mediator;1"]
-+                   .getService(Components.interfaces.nsIWindowMediator);
-+    let mainWindow = wm.getMostRecentWindow("navigator:browser");
-+    mainWindow.gBrowser.addTab("chrome://browser/components/identity/SignInToBrowser.html");
-   }
-+
- };
- 
- this.IdentityService = new IDService();
