@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 3929161966498532236c4862891c6afa633e456f
+# Parent f04bb353219d3a84fbf60411f10024cd72dbb946
 try: -b o -p macosx64,linux64,win32 -u none -t none
 
 diff --git a/browser/base/content/browser-id-signIn.html b/browser/base/content/browser-id-signIn.html
@@ -162,14 +162,14 @@ new file mode 100644
 diff --git a/browser/base/content/browser-identity.js b/browser/base/content/browser-identity.js
 --- a/browser/base/content/browser-identity.js
 +++ b/browser/base/content/browser-identity.js
-@@ -12,52 +12,93 @@
- let { classes: Cc, interfaces: Ci, utils: Cu } = Components;
- Cu.import('resource://gre/modules/XPCOMUtils.jsm');
- 
- XPCOMUtils.defineLazyGetter(this, "logger", function() {
+@@ -16,48 +16,89 @@ XPCOMUtils.defineLazyGetter(this, "logge
    Cu.import('resource://gre/modules/identity/LogUtils.jsm');
    return getLogger("Identity", "toolkit.identity.debug");
  });
+ 
+ function IdentityShim() {
+   this.isLoaded = false;
+ }
  
 +function parseResult(val) {
 +  if (typeof val === 'string') {
@@ -182,10 +182,6 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +  return val;
 +}
 +
- function IdentityShim() {
-   this.isLoaded = false;
- }
- 
  IdentityShim.prototype = {
    init: function IdentityShim_init() {
      addMessageListener('identity-delegate-watch', this);
@@ -252,14 +248,14 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +        break;
 +  
        default:
-         logger.error("received unexpected message:", aMessage.name);
+         //logger.error("received unexpected message:", aMessage.name);
          break;
      }
    },
  
    _identityDoMethod: function IdentityShim__identityDoMethod(message) {
      sendAsyncMessage('identity-service-doMethod', message);
-@@ -66,48 +107,45 @@ IdentityShim.prototype = {
+@@ -66,69 +107,174 @@ IdentityShim.prototype = {
    _close: function IdentityShim__close() {
      this.uninit();
    },
@@ -294,26 +290,28 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 -      let callback = function(assertion, internalParams) {
 +      let stringifiedOptions = JSON.stringify(options);
 +      let callback = function shim_requestCallback(assertion, internalParams) {
-         logger.log("received assertion:", assertion);
          internalParams = internalParams || {};
 -        if (assertion) {
 -          logger.log("got assertion");
-           this._identityDoMethod({
-             method: 'login',
-             assertion: assertion,
-             _internal: options._internal,
-             _internalParams: internalParams});
+-          this._identityDoMethod({
+-            method: 'login',
+-            assertion: assertion,
+-            _internal: options._internal,
+-            _internalParams: internalParams});
 -        }
++        this._identityDoMethod({
++          method: 'login',
++          assertion: assertion,
++          _internal: options._internal,
++          _internalParams: internalParams});
          this._close();
        }.bind(this);
  
-       logger.log('call get() with origin', options.origin, ', callback', callback, ', and options', stringifiedOptions);
        content.wrappedJSObject.BrowserID.internal.get(
          options.origin,
          callback,
          stringifiedOptions
-@@ -115,23 +153,131 @@ IdentityShim.prototype = {
-       logger.log('called get()');
+       );
      }
    },
  
@@ -445,7 +443,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
  addEventListener('DOMContentLoaded', function(e) {
    content.addEventListener('load', function(e) {
      logger.log('content loaded');
-@@ -141,9 +287,8 @@ addEventListener('DOMContentLoaded', fun
+@@ -138,9 +284,8 @@ addEventListener('DOMContentLoaded', fun
  });
  
  content.addEventListener('beforeunload', function(e) {
@@ -499,7 +497,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
                                    'resource://gre/modules/identity/IdentityService.jsm');
  
  XPCOMUtils.defineLazyGetter(this, "logger", function() {
-@@ -179,34 +182,35 @@ HostFrame.prototype = {
+@@ -179,16 +182,17 @@ HostFrame.prototype = {
  
    cleanUp: function HostFrame_cleanUp() {
      if (this._resizeWatcher) {
@@ -511,35 +509,16 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +    logger.log("options:", aOptions);
      let hiddenDoc = Services.appShell.hiddenDOMWindow.document;
      this._iframe = hiddenDoc.createElementNS('http://www.w3.org/1999/xhtml', 'iframe');
--    logger.log("create host iframe:", aOptions.src, "show ui?", aOptions.showUI);
  
      this._iframe.setAttribute('mozbrowser', true);
      this._iframe.setAttribute('mozframetype', 'content');
      this._iframe.setAttribute('type', 'content');
      this._iframe.setAttribute('remote', true);
      this._iframe.setAttribute('id', 'persona-host-frame');
-     this._iframe.setAttribute('src', aOptions.src);
- 
-     // implement a dynamic resize watcher a la Social API
-     this._iframe.style.height = "440px";
-     this._iframe.style.width = "300px";
- 
-     aOptions.iframe = this._iframe;
- 
-     if (!!aOptions.showUI) {
-+      logger.log("show ui");
-       // synchronous, so we can call _injectShim below with no race condition
-       requestUI(aOptions);
-       this._resizeWatcher = new ResizeWatcher(this._iframe);
-     } else {
-       hiddenDoc.documentElement.appendChild(this._iframe);
-     }
-     this._injectShim(this._iframe);
-   },
-@@ -305,23 +309,35 @@ Pipe.prototype = {
- 
+@@ -303,23 +307,35 @@ Pipe.prototype = {
  this.SignInToWebsiteUX = {
-   init: function SignInToWebsiteUX_init() {
+   init: function SignInToWebsiteUX_init(pipeConstructor) {
+     this.PipeConstructor = pipeConstructor || Pipe;
      this.contexts = {};
      Services.obs.addObserver(this, 'identity-controller-watch', false);
      Services.obs.addObserver(this, 'identity-controller-request', false);
@@ -572,7 +551,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
      // XXX we get strings from xul, and objects from elsewhere
      let rpOptions = {};
      if (aSubject) {
-@@ -332,17 +348,17 @@ this.SignInToWebsiteUX = {
+@@ -330,17 +346,17 @@ this.SignInToWebsiteUX = {
        }
      }
      if (!rpOptions.id) {
@@ -591,7 +570,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
      switch (aTopic) {
        case 'identity-controller-watch':
-@@ -352,16 +368,36 @@ this.SignInToWebsiteUX = {
+@@ -350,16 +366,36 @@ this.SignInToWebsiteUX = {
        case 'identity-controller-request':
          this.doRequest(options);
          break;
@@ -628,7 +607,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
    serviceDoMethod: function SignInToWebsiteUX_doMethod(aMessage, aId) {
      logger.log('serviceDoMethod received:', aMessage);
-@@ -381,16 +417,36 @@ this.SignInToWebsiteUX = {
+@@ -379,16 +415,36 @@ this.SignInToWebsiteUX = {
        case 'logout':
          IdentityService.doLogout(aId);
          break;
@@ -665,7 +644,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
    cleanUp: function SignInToWebsiteUX_cleanUp(aId) {
      let context = this.contexts[aId];
-@@ -444,10 +500,47 @@ this.SignInToWebsiteUX = {
+@@ -439,10 +495,47 @@ this.SignInToWebsiteUX = {
      this.delegate(aOptions);
    },
  

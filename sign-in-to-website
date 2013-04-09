@@ -636,7 +636,7 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 new file mode 100644
 --- /dev/null
 +++ b/browser/base/content/browser-identity.js
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,146 @@
 +/* -*- Mode: js2; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- /
 +/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 +/* This Source Code Form is subject to the terms of the Mozilla Public
@@ -693,7 +693,7 @@ new file mode 100644
 +        this.logout(aMessage.json);
 +        break;
 +      default:
-+        logger.error("received unexpected message:", aMessage.name);
++        //logger.error("received unexpected message:", aMessage.name);
 +        break;
 +    }
 +  },
@@ -732,7 +732,6 @@ new file mode 100644
 +    if (options) {
 +      var stringifiedOptions = JSON.stringify(options);
 +      let callback = function(assertion, internalParams) {
-+        logger.log("received assertion:", assertion);
 +        internalParams = internalParams || {};
 +        if (assertion) {
 +          logger.log("got assertion");
@@ -745,13 +744,11 @@ new file mode 100644
 +        this._close();
 +      }.bind(this);
 +
-+      logger.log('call get() with origin', options.origin, ', callback', callback, ', and options', stringifiedOptions);
 +      content.wrappedJSObject.BrowserID.internal.get(
 +        options.origin,
 +        callback,
 +        stringifiedOptions
 +      );
-+      logger.log('called get()');
 +    }
 +  },
 +
@@ -1186,7 +1183,7 @@ diff --git a/browser/base/jar.mn b/browser/base/jar.mn
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
-@@ -1,247 +1,453 @@
+@@ -1,247 +1,448 @@
  /* This Source Code Form is subject to the terms of the Mozilla Public
   * License, v. 2.0. If a copy of the MPL was not distributed with this file,
   * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -1387,15 +1384,15 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +      return;
 +    }
 +
-+    logger.log("options:", JSON.stringify(aOptions));
 +    this._createIframe(aOptions);
 +    let subject = {
 +      id: aOptions.id
 +    }
-+    Services.obs.notifyObservers(subject, 'identity-hostframe-ready', null);
-+    logger.log("created iframe");
-+    logger.log("sent observer message identity-hostframe-ready");
-+    aCallback && aCallback();
++    if (typeof aCallback === 'function') {
++      aCallback();
++    } else {
++      logger.error("No callback was given to getIframe");
++    }
    },
  
 -  observe: function SignInToWebsiteUX_observe(aSubject, aTopic, aData) {
@@ -1415,7 +1412,6 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +  _createIframe: function HostFrame_createIframe(aOptions) {
 +    let hiddenDoc = Services.appShell.hiddenDOMWindow.document;
 +    this._iframe = hiddenDoc.createElementNS('http://www.w3.org/1999/xhtml', 'iframe');
-+    logger.log("create host iframe:", aOptions.src, "show ui?", aOptions.showUI);
 +
 +    this._iframe.setAttribute('mozbrowser', true);
 +    this._iframe.setAttribute('mozframetype', 'content');
@@ -1442,8 +1438,8 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +
 +  _injectShim: function HostFrame_injectShim(aIframe) {
 +    let mm = aIframe.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader.messageManager;
++    logger.log("injecting browser-identity.js shim");
 +    mm.loadFrameScript('chrome://browser/content/browser-identity.js', true);
-+    logger.log('loaded frame script', 'chrome://browser/content/browser-identity.js');
 +  }
 +};
 +
@@ -1538,7 +1534,6 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 -  getIdentitiesForSite: function SignInToWebsiteUX_getIdentitiesForSite(aOrigin) {
 -    return IdentityService.RP.getIdentitiesForSite(aOrigin);
 +  _delegateLoaded: function pipe__delegateLoaded() {
-+    logger.log("delegate loaded. now send:", this.options.message);
 +    this.mm.sendAsyncMessage(this.options.message, this.options.rpOptions);
 +    // XXX maybe here ??
 +    //this.resizer = new ResizeWatcher();
@@ -1552,7 +1547,6 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 -    log("selectIdentity: rpId: ", aRpId, " identity: ", aIdentity);
 -    IdentityService.selectIdentity(aRpId, aIdentity);
 +  _delegateComplete: function pipe__delegateComplete() {
-+    logger.log("closing the delegate");
 +    this._close();
    },
  
@@ -1598,7 +1592,8 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +};
 +
 +this.SignInToWebsiteUX = {
-+  init: function SignInToWebsiteUX_init() {
++  init: function SignInToWebsiteUX_init(pipeConstructor) {
++    this.PipeConstructor = pipeConstructor || Pipe;
 +    this.contexts = {};
 +    Services.obs.addObserver(this, 'identity-controller-watch', false);
 +    Services.obs.addObserver(this, 'identity-controller-request', false);
@@ -1729,7 +1724,6 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +        context.hostFrame.cleanUp();
 +      }
 +      if (context.iframe && context.iframe.parentNode) {
-+        logger.log("removing iframe from parent node and deleting it");
 +        context.iframe.parentNode.removeChild(context.iframe);
 +        delete context.iframe;
 +      }
@@ -1747,7 +1741,6 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 -    let [chromeWin, browserEl] = this._getUIForWindowID(windowID);
 +  delegate: function SignInToWebsiteUX_delegate(aOptions) {
 +    let hostFrame = new HostFrame();
-+    logger.log("got new host frame", hostFrame);
 +    hostFrame.getIframe(aOptions, function() {
 +      // iframe has been added to aOptions
  
@@ -1779,8 +1772,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +      this.contexts[aOptions.id] = aOptions;
 +      this.contexts[aOptions.id].hostFrame = hostFrame;
 +
-+      let pipe = new Pipe(aOptions, this);
-+      logger.log("pipe.communicate()");
++      let pipe = new this.PipeConstructor(aOptions, this);
 +      pipe.communicate();
 +    }.bind(this));
    },
@@ -1864,7 +1856,7 @@ diff --git a/browser/modules/test/Makefile.in b/browser/modules/test/Makefile.in
 diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/test/browser_SignInToWebsite.js
 --- a/browser/modules/test/browser_SignInToWebsite.js
 +++ b/browser/modules/test/browser_SignInToWebsite.js
-@@ -1,549 +1,201 @@
+@@ -1,549 +1,215 @@
  /* Any copyright is dedicated to the Public Domain.
   * http://creativecommons.org/publicdomain/zero/1.0/ */
  
@@ -1910,11 +1902,6 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 +                                   "uuidGenerator",
 +                                   "@mozilla.org/uuid-generator;1",
 +                                   "nsIUUIDGenerator");
-+
-+XPCOMUtils.defineLazyGetter(this, "logger", function() {
-+  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
-+  return getLogger("Identity test", "toolkit.identity.debug");
-+});
  
  const TEST_ORIGIN = "https://example.com";
  const TEST_EMAIL = "user@example.com";
@@ -1987,7 +1974,6 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 +      hostFrame.getIframe(options, function() {
 +        ok(options.iframe !== null);
 +        ok(options.iframe.src === options.src);
-+        info("yay. made a frame with src " + options.iframe.src);
 +        runNextTest();
 +      });
 +    }
@@ -1999,13 +1985,12 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 +  {
 +    what: "we can delegate the persona watch() method",
 +    run: function run_testWatch() {
-+      makePipeDelegate('identity-delegate-watch', function(success) {
-+        info("yay");
-+        ok(success === true);
++      makePipeDelegate('identity-delegate-watch', function doMethodCallback(options, id) {
++        ok(options.method === 'ready');
 +        runNextTest();
 +      });
 +    }
-+  }
++  },
  
 -      // Check identity popup state
 -      let state = notification.identity;
@@ -2016,7 +2001,17 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 -      is(state.step, 0, "Step should be persisted with default value");
 -      is(state.rpId, outerWinId, "Check rpId");
 -      is(state.origin, TEST_ORIGIN, "Check origin");
--
++  {
++    what: "we can delegate the persona request() method",
++    run: function run_testRequest() {
++      makePipeDelegate('identity-delegate-request', function doMethodCallback(options, id) {
++        ok(options.method === 'login');
++        ok(options.assertion === "I like those shoes!");
++        runNextTest();
++      });
++    }
++  },
+ 
 -      is(notification.step, 0, "Should be on the new email step");
 -      is(notification.chooseEmailLink.hidden, true, "Identity list is empty so link to list view should be hidden");
 -      is(notification.addEmailLink.parentElement.hidden, true, "We are already on the email input step so choose email pane should be hidden");
@@ -2056,7 +2051,7 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 -
 -    onHidden: function(popup) { },
 -  },
--  {
+   {
 -    name: "test_request_optional",
 -
 -    run: function() {
@@ -2140,7 +2135,12 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 -                                   "identity-login-state-changed", TEST_EMAIL);
 -      executeSoon(function() {
 -        PopupNotifications.getNotification("identity-logged-in").anchorElement.click();
--      });
++    what: "we can delegate the persona logout() method",
++    run: function run_testLogout() {
++      makePipeDelegate('identity-delegate-logout', function doMethodCallback(options, id) {
++        ok(options.method === 'logout');
++        runNextTest();
+       });
 -    },
 -
 -    onShown: function(popup) {
@@ -2179,14 +2179,29 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 -
 -    onHidden: function(popup) {},
 -  },
++    }
++  }
  ];
  
 -function test_auth() {
 -  let notifyOptions = {
 -    provId: outerWinId,
 -    origin: TEST_ORIGIN,
--  };
--
++// Exercise the Pipe, HostFrame, and browser-identity.js shim.
++// Mocks the functionality of SignInToWebsite's delegate() method.  
++// Here, we delegatebrowserid method calls up to an iframe that 
++// mocks the persona internal_api calls.  
++function makePipeDelegate(aMessage, aCallback) {
++  let controller = mockController(aCallback);
++  let options = {
++    id: 42,
++    message: aMessage,
++    src: "http://example.org/browser/browser/modules/test/mock_personaIframe.html",
++    rpOptions: {
++      origin: TEST_ORIGIN
++    }
+   };
+ 
 -  Services.obs.addObserver(function() {
 -    // prepare to send auth-complete and close the window
 -    let winCloseObs = new WindowObserver(function(closedWin) {
@@ -2209,11 +2224,11 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 -                               "identity-auth", TEST_ORIGIN + "/auth");
 -}
 -
- function test() {
-   waitForExplicitFinish();
+-function test() {
+-  waitForExplicitFinish();
 -
-   registerCleanupFunction(cleanUp);
- 
+-  registerCleanupFunction(cleanUp);
+-
 -  let sitw = {};
 -  Components.utils.import("resource:///modules/SignInToWebsite.jsm", sitw);
 -
@@ -2233,43 +2248,21 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 -    Services.obs.notifyObservers(null, "test-identity-auth-window", aAuthId);
 -  };
 -
-   runNextTest();
- }
- 
+-  runNextTest();
+-}
+-
 -// Cleanup between tests
 -function resetState() {
 -  delete window.gIdentitySelected;
 -  delete IdentityService.IDP.authenticationFlowSet;
 -  IdentityService.reset();
-+let testNum = 0;
-+
-+function runNextTest() {
-+  if (tests.length) {
-+    testNum += 1;
-+    let test = tests.shift();
-+    info("[Test #" + testNum + "] Show that " + test.what);
-+    waitForFocus(test.run);
-+  } else {
-+    finish();
-+  }
-+};
-+
-+function cleanUp() {
-+  console.log("cleaned up");
- }
- 
+-}
+-
 -// Cleanup after all tests
 -function cleanUp() {
 -  info("cleanup");
 -  resetState();
-+function makePipeDelegate(aMessage, aCallback) {
-+  info("make pipe delegate for " + aMessage);
-+  let controller = mockController();
-+  let options = {
-+    message: aMessage,
-+    src: "http://example.org/browser/browser/modules/test/mock_personaIframe.html"
-+  };
- 
+-
 -  for (let topic in gActiveObservers)
 -    Services.obs.removeObserver(gActiveObservers[topic], topic);
 -  for (let eventName in gActiveListeners)
@@ -2302,10 +2295,8 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 -    else
 -      executeSoon(runNextTest);
 +  function gotIframe() {
-+    logger.log("got iframe in makePipeDelegate");
-+    options.onComplete = aCallback;
-+    let pipe = new Pipe(options, mockedController);
-+    logger.log("communicate with the pipe");
++    options.onComplete = function() {};
++    let pipe = new Pipe(options, controller);
 +    pipe.communicate();
    }
  
@@ -2313,8 +2304,7 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 -    function observer() {
 -      Services.obs.removeObserver(observer, "PopupNotifications-" + topic);
 -      delete gActiveObservers["PopupNotifications-" + topic];
-+  makeObserver('identity-hostframe-ready', gotIframe);
- 
+-
 -      info("[Test #" + gTestIndex + "] observer for " + topic + " called");
 -      nextTest[topic]();
 -      goNext();
@@ -2446,7 +2436,7 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 -    EventUtils.synthesizeKey("VK_ESCAPE", {});
 -  });
 +  let hostFrame = new HostFrame();
-+  hostFrame.getIframe(options);
++  hostFrame.getIframe(options, gotIframe);
  }
  
  function partial(fn) {
@@ -2492,12 +2482,13 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 -    }
 -    funcs[numCalls].apply(funcs[numCalls], arguments);
 -    numCalls += 1;
++// create a mock controller for use with a Pipe.
 +function mockController(aDoMethodFunc) {
 +  let mockedController = {};
 +  mockedController.serviceDoMethod = function mockController_doMethod(aOptions, aId) {
-+    info("mocked controller domethod: " + aOptions.method);
 +    aDoMethodFunc(aOptions, aId)
    };
++  return mockedController;
  }
  
 -function setupRPFlow(aIdentity) {
@@ -2517,14 +2508,12 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 +// this observer auto-removes itself after the observe function
 +// is called, so this is meant to observe only ONE event.
 +function makeObserver(aObserveTopic, aObserveFunc) {
-+  info("makeObserver: " + aObserveTopic);
 +  let observer = {
 +    // nsISupports provides type management in C++
 +    // nsIObserver is to be an observer
 +    QueryInterface: XPCOMUtils.generateQI([Ci.nsISupports, Ci.nsIObserver]),
 +
 +    observe: function (aSubject, aTopic, aData) {
-+      info("observed: " + aTopic, " while expecting " + aObserveTopic);
 +      if (aTopic == aObserveTopic) {
 +        aObserveFunc(aSubject, aTopic, aData);
 +        Services.obs.removeObserver(observer, aObserveTopic);
@@ -2543,18 +2532,39 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 -    }
 -    info(aObserveTopic);
 -    Services.ww.unregisterNotification(this);
--
++registerCleanupFunction(function cleanup() {
++  // nothing to clean up
++});
+ 
 -    SimpleTest.executeSoon(function() {
 -      let domWin = aSubject.QueryInterface(Ci.nsIDOMWindow);
 -      aCallback(domWin);
 -    });
 -  };
--}
++let testNum = 0;
++
++function runNextTest() {
++  if (tests.length) {
++    testNum += 1;
++    let test = tests.shift();
++    info("[Test #" + testNum + "] Show that " + test.what);
++    waitForFocus(test.run);
++  } else {
++    finish();
++  }
++};
++
++function test() {
++  waitForExplicitFinish();
++
++  runNextTest();
+ }
++
 diff --git a/browser/modules/test/mock_personaIframe.html b/browser/modules/test/mock_personaIframe.html
 new file mode 100644
 --- /dev/null
 +++ b/browser/modules/test/mock_personaIframe.html
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,33 @@
 +<html>
 +  <head>
 +    <title>Mock Persona IFrame</title>
@@ -2566,20 +2576,22 @@ new file mode 100644
 +    </div>
 +
 +    <script language="javascript">
-+      var BrowserID = { internal: {} };
-+      var internal = BrowserID.internal;
++      window.onload = function() {
++        window.BrowserID = { internal: {} };
++        var internal = BrowserID.internal;
 +
-+      internal.watch = function internal_get(options, callback, logger) {
-+        callback({method: 'ready'});
-+      };
++        internal.watch = function internal_watch(callback, options, logger) {
++          callback({method: 'ready'});
++        };
 +
-+      internal.get = function internal_get(origin, callback, options) {
-+        var assertion = "I like those shoes!";
-+        callback(assertion);
-+      };
++        internal.get = function internal_get(origin, callback, options) {
++          var assertion = "I like those shoes!";
++          callback(assertion);
++        };
 +
-+      internal.logout = function internal_logout(origin, callback) {
-+        callback({method: 'logout'});
++        internal.logout = function internal_logout(origin, callback) {
++          callback({method: 'logout'});
++        };
 +      };
 +    </script>
 +
