@@ -2567,7 +2567,7 @@ diff --git a/browser/modules/test/mock_personaIframe.html b/browser/modules/test
 new file mode 100644
 --- /dev/null
 +++ b/browser/modules/test/mock_personaIframe.html
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,34 @@
 +<html>
 +  <head>
 +    <meta charset="utf-8" />
@@ -2589,6 +2589,7 @@ new file mode 100644
 +        };
 +
 +        internal.get = function internal_get(origin, callback, options) {
++          var assertion = "I love your shoes!";
 +          callback(assertion);
 +        };
 +
@@ -3575,7 +3576,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      watch: 'r',
      request: 'r',
      logout: 'r',
-@@ -60,16 +66,17 @@ nsDOMIdentity.prototype = {
+@@ -60,22 +66,27 @@ nsDOMIdentity.prototype = {
      return true;
    },
  
@@ -3586,14 +3587,26 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
    watch: function nsDOMIdentity_watch(aOptions) {
 +    logger.log(aOptions);
      if (this._rpWatcher) {
-       throw new Error("navigator.id.watch was already called");
+-      throw new Error("navigator.id.watch was already called");
++      let err = "navigator.id.watch was already called";
++      logger.warning(err);
++      throw new Error(err);
      }
  
      if (!aOptions || typeof(aOptions) !== "object") {
-       throw new Error("options argument to watch is required");
+-      throw new Error("options argument to watch is required");
++      let err = "options argument to watch is required";
++      logger.warning(err);
++      throw new Error(err);
      }
  
-@@ -84,16 +91,17 @@ nsDOMIdentity.prototype = {
+     // Check for required callbacks
+     let requiredCallbacks = ["onlogin", "onlogout"];
+     for (let cbName of requiredCallbacks) {
+       if ((!(cbName in aOptions))
+           || typeof(aOptions[cbName]) !== "function") {
+            throw new Error(cbName + " callback is required.");
+@@ -84,16 +95,17 @@ nsDOMIdentity.prototype = {
  
      // Optional callback "onready"
      if (aOptions["onready"]
@@ -3611,7 +3624,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      // but code should be changed to use loggedInUser instead.
      checkRenamed(aOptions, "loggedInEmail", "loggedInUser");
      message["loggedInUser"] = aOptions["loggedInUser"];
-@@ -108,44 +116,45 @@ nsDOMIdentity.prototype = {
+@@ -108,44 +120,47 @@ nsDOMIdentity.prototype = {
        // See HTMLInputElement::IsValidEmailAddress
        if (aOptions["loggedInUser"].indexOf("@") == -1
            || aOptions["loggedInUser"].length > MAX_STRING_LENGTH) {
@@ -3628,6 +3641,8 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
    },
  
    request: function nsDOMIdentity_request(aOptions) {
++    aOptions = aOptions || {};
++
      let util = this._window.QueryInterface(Ci.nsIInterfaceRequestor)
                             .getInterface(Ci.nsIDOMWindowUtils);
  
@@ -3659,7 +3674,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
          if (!aOptions[propName] || aOptions[propName] === "undefined")
            continue;
          if (typeof(aOptions[propName]) !== "string") {
-@@ -166,16 +175,17 @@ nsDOMIdentity.prototype = {
+@@ -166,16 +181,17 @@ nsDOMIdentity.prototype = {
        }
      }
  
@@ -3677,7 +3692,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      }
  
      this._rpCalls++;
-@@ -238,72 +248,72 @@ nsDOMIdentity.prototype = {
+@@ -238,72 +254,72 @@ nsDOMIdentity.prototype = {
        onlogout: function get_onlogout() {},
        onready: function get_onready() {
          self.request(opts);
@@ -3755,7 +3770,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      }
      this._provisioningEnded = true;
  
-@@ -312,17 +322,17 @@ nsDOMIdentity.prototype = {
+@@ -312,17 +328,17 @@ nsDOMIdentity.prototype = {
      this._identityInternal._mm.sendAsyncMessage("Identity:IDP:ProvisioningFailure", message);
    },
  
@@ -3774,7 +3789,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      }
      if (!aCallback || typeof(aCallback) !== "function") {
        throw new Error("beginAuthentication callback is required.");
-@@ -400,54 +410,54 @@ nsDOMIdentity.prototype = {
+@@ -400,54 +416,54 @@ nsDOMIdentity.prototype = {
            return;
          }
          this._initializeState();
@@ -3833,7 +3848,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
          }
          break;
        case "Identity:IDP:CallBeginProvisioningCallback":
-@@ -457,20 +467,16 @@ nsDOMIdentity.prototype = {
+@@ -457,20 +473,16 @@ nsDOMIdentity.prototype = {
          this._callGenKeyPairCallback(msg);
          break;
        case "Identity:IDP:CallBeginAuthenticationCallback":
@@ -3854,7 +3869,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      function genPropDesc(value) {
        return {
          enumerable: true, configurable: true, writable: true, value: value
-@@ -520,17 +526,17 @@ nsDOMIdentity.prototype = {
+@@ -520,17 +532,17 @@ nsDOMIdentity.prototype = {
  
      // window origin
      message.origin = this._origin;
@@ -3873,7 +3888,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
  
  };
  
-@@ -593,17 +599,17 @@ nsDOMIdentityInternal.prototype = {
+@@ -593,17 +605,17 @@ nsDOMIdentityInternal.prototype = {
  
      this._identity._init(aWindow);
  
@@ -3892,7 +3907,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
        "Identity:ResetState",
        "Identity:RP:Watch:OnLogin",
        "Identity:RP:Watch:OnLogout",
-@@ -618,24 +624,16 @@ nsDOMIdentityInternal.prototype = {
+@@ -618,24 +630,16 @@ nsDOMIdentityInternal.prototype = {
      }, this);
  
      // Setup observers so we can remove message listeners.
@@ -3946,7 +3961,7 @@ diff --git a/dom/identity/tests/head_identity.js b/dom/identity/tests/head_ident
 new file mode 100644
 --- /dev/null
 +++ b/dom/identity/tests/head_identity.js
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,132 @@
 +/* Any copyright is dedicated to the Public Domain.
 + * http://creativecommons.org/publicdomain/zero/1.0/ */
 +
@@ -3961,6 +3976,7 @@ new file mode 100644
 +
 +SpecialPowers.setBoolPref("toolkit.identity.debug", true);
 +SpecialPowers.setBoolPref("dom.identity.enabled", true);
++SpecialPowers.setBoolPref("dom.identity.syntheticEventsOk", true);
 +
 +const DOMIdentity = Cu.import("resource://gre/modules/DOMIdentity.jsm")
 +                      .DOMIdentity;
@@ -4082,7 +4098,7 @@ diff --git a/dom/identity/tests/test_rp.html b/dom/identity/tests/test_rp.html
 new file mode 100644
 --- /dev/null
 +++ b/dom/identity/tests/test_rp.html
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,106 @@
 +<!DOCTYPE html>
 +<!-- Any copyright is dedicated to the Public Domain.
 +   - http://creativecommons.org/publicdomain/zero/1.0/ -->
@@ -4106,7 +4122,18 @@ new file mode 100644
 +
 +"use strict";
 +
-+SimpleTest.waitForExplicitFinish();
++const RP = Cu.import("resource://gre/modules/identity/IdentityService.jsm").IdentityService.RP;
++
++function resetAndNext() {
++  // Watch can only be called once per page.  So reset
++  // the state before moving on to the next test.
++  makeObserver("identity-DOM-state-reset", function stateReset() {
++    SimpleTest.executeSoon(next);
++  });
++
++  let context = RP._rpFlows[outerWinId];
++  DOMIdentity._resetFrameState(context);
++}
 +
 +let steps = [
 +  function nonExistentProp() {
@@ -4134,7 +4161,7 @@ new file mode 100644
 +
 +  function testWatch() {
 +    function onReady() {
-+      SimpleTest.executeSoon(next);
++      resetAndNext();
 +    }
 +    identity.watch({
 +      onlogin: function(){},
@@ -4144,25 +4171,34 @@ new file mode 100644
 +  },
 +
 +  function testLogout() {
-+    info("testing logout");
-+    info("now watch()");
 +    identity.watch({
 +      onlogin: function(){},
 +      onlogout: function() {
-+        SimpleTest.executeSoon(next);
++        resetAndNext();
 +      },
 +      onready: function() {
-+        info("we ready");
-+        info("ready with logout is", typeof identity.logout);
 +        identity.logout();
 +      }
 +    }); 
-+    info("did watch");
++  },
++
++  function testLogin() {
++    identity.watch({
++      onlogin: function(assertion) {
++        is(assertion, "I love your shoes!", "Get an assertion on request()");
++        resetAndNext();
++      },
++      onlogout: function() {},
++      onready: function() {
++        identity.request();
++      }
++    });
 +  },
 +
 +  finish_tests
 +];
 +
++SimpleTest.waitForExplicitFinish();
 +addLoadEvent(next);
 +</script>
 +</pre>
