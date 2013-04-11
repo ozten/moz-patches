@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent f04bb353219d3a84fbf60411f10024cd72dbb946
+# Parent 13f2e0451c545968f5eea735ad03de8ff00151f8
 try: -b o -p macosx64,linux64,win32 -u none -t none
 
 diff --git a/browser/base/content/browser-id-signIn.html b/browser/base/content/browser-id-signIn.html
@@ -473,7 +473,7 @@ diff --git a/browser/base/jar.mn b/browser/base/jar.mn
          content/browser/newtab/newTab.css             (content/newtab/newTab.css)
          content/browser/newtab/preload.xhtml          (content/newtab/preload.xhtml)
  *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
- *       content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
+         content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
@@ -644,14 +644,14 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
    cleanUp: function SignInToWebsiteUX_cleanUp(aId) {
      let context = this.contexts[aId];
-@@ -439,10 +495,47 @@ this.SignInToWebsiteUX = {
-     this.delegate(aOptions);
+@@ -442,10 +498,47 @@ this.SignInToWebsiteUX = {
    },
  
    doLogout: function SignInToWebsiteUX_doLogout(aOptions) {
      aOptions.message = 'identity-delegate-logout';
      aOptions.src = kHiddenPersonaIframe;
      aOptions.showUI = false;
+     logger.log("options:", aOptions);
      this.delegate(aOptions);
 -  }
 +  },

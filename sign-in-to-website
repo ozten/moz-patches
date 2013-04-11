@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent c232bec6974d05c3121012c4c49c6463299ec537
+# Parent 7b8ed29c6bc0126f8f5f704ff279e3608ea2d75e
 try: -b do -p all -u all -t none
 
 diff --git a/b2g/chrome/content/identity.js b/b2g/chrome/content/identity.js
@@ -823,14 +823,14 @@ diff --git a/browser/base/content/browser.css b/browser/base/content/browser.css
  #back-button > .toolbarbutton-menu-dropmarker,
  #forward-button > .toolbarbutton-menu-dropmarker {
    display: none;
-@@ -353,26 +333,16 @@ window[chromehidden~="toolbar"] toolbar:
-   overflow-y: visible !important;
+@@ -377,26 +357,16 @@ window[chromehidden~="toolbar"] toolbar:
+ #historySwipeAnimationCurrentPage {
+   background-image: -moz-element(#historySwipeAnimationCurrentPageSnapshot);
  }
  
- #sync-notifications notification {
-   -moz-binding: url("chrome://browser/content/sync/notification.xml#notification");
+ #historySwipeAnimationNextPage {
+   background-image: -moz-element(#historySwipeAnimationNextPageSnapshot);
  }
- %endif
  
 -/* Identity UI */
 -#identity-popup-content-box.unknownIdentity > #identity-popup-connectedToLabel ,
@@ -1179,11 +1179,11 @@ diff --git a/browser/base/jar.mn b/browser/base/jar.mn
          content/browser/newtab/newTab.css             (content/newtab/newTab.css)
          content/browser/newtab/preload.xhtml          (content/newtab/preload.xhtml)
  *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
- *       content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
+         content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
-@@ -1,247 +1,448 @@
+@@ -1,247 +1,451 @@
  /* This Source Code Form is subject to the terms of the Mozilla Public
   * License, v. 2.0. If a copy of the MPL was not distributed with this file,
   * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -1794,6 +1794,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +    aOptions.message = 'identity-delegate-watch';
 +    aOptions.src = kHiddenPersonaIframe;
 +    aOptions.showUI = false;
++    logger.log("options:", aOptions);
 +    this.delegate(aOptions);
    },
  
@@ -1812,6 +1813,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +    aOptions.message = 'identity-delegate-request';
 +    aOptions.src = kInteractivePersonaIframe;
 +    aOptions.showUI = true;
++    logger.log("options:", aOptions);
 +    this.delegate(aOptions);
    },
  
@@ -1819,6 +1821,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +    aOptions.message = 'identity-delegate-logout';
 +    aOptions.src = kHiddenPersonaIframe;
 +    aOptions.showUI = false;
++    logger.log("options:", aOptions);
 +    this.delegate(aOptions);
 +  }
  };
@@ -2567,6 +2570,7 @@ new file mode 100644
 @@ -0,0 +1,33 @@
 +<html>
 +  <head>
++    <meta charset="utf-8" />
 +    <title>Mock Persona IFrame</title>
 +  </head>
 +  <body>
@@ -2585,7 +2589,6 @@ new file mode 100644
 +        };
 +
 +        internal.get = function internal_get(origin, callback, options) {
-+          var assertion = "I like those shoes!";
 +          callback(assertion);
 +        };
 +
@@ -3914,6 +3917,258 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
    ),
  
    classInfo: XPCOMUtils.generateCI({
+diff --git a/dom/identity/tests/Makefile.in b/dom/identity/tests/Makefile.in
+new file mode 100644
+--- /dev/null
++++ b/dom/identity/tests/Makefile.in
+@@ -0,0 +1,20 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this file,
++# You can obtain one at http://mozilla.org/MPL/2.0/.
++
++DEPTH            = @DEPTH@
++topsrcdir        = @top_srcdir@
++srcdir           = @srcdir@
++VPATH            = @srcdir@
++
++relativesrcdir   = @relativesrcdir@
++
++include $(DEPTH)/config/autoconf.mk
++
++MOCHITEST_FILES = \
++  head_identity.js \
++  test_rp.html \
++  $(NULL)
++
++include $(topsrcdir)/config/rules.mk
++
+diff --git a/dom/identity/tests/head_identity.js b/dom/identity/tests/head_identity.js
+new file mode 100644
+--- /dev/null
++++ b/dom/identity/tests/head_identity.js
+@@ -0,0 +1,131 @@
++/* Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/ */
++
++"use strict";
++
++const Cc = SpecialPowers.Cc;
++const Ci = SpecialPowers.Ci;
++const Cu = SpecialPowers.Cu;
++
++const Services = Cu.import("resource://gre/modules/Services.jsm").Services;
++const XPCOMUtils = Cu.import('resource://gre/modules/XPCOMUtils.jsm').XPCOMUtils;
++
++SpecialPowers.setBoolPref("toolkit.identity.debug", true);
++SpecialPowers.setBoolPref("dom.identity.enabled", true);
++
++const DOMIdentity = Cu.import("resource://gre/modules/DOMIdentity.jsm")
++                      .DOMIdentity;
++
++let util = SpecialPowers.getDOMWindowUtils(window);
++let outerWinId = util.outerWindowID;
++
++const getLogger = Cu.import("resource://gre/modules/identity/LogUtils.jsm").getLogger;
++const logger = getLogger("Identity DOM test", "toolkit.identity.debug");
++
++const identity = navigator.id || navigator.mozId;
++
++const MOCK_INCLUDEJS = "http://example.org/browser/browser/modules/test/mock_personaIframe.html";
++const MOCK_IFRAME = "http://example.org/browser/browser/modules/test/mock_personaIframe.html";
++const MOCK_DIALOG = "http://example.org/browser/browser/modules/test/mock_personaIframe.html";
++
++let index = 0;
++
++// Intercept all requests to get the persona iframes and redirect
++// them to our local mock.
++function RequestListener() {
++  Services.obs.addObserver(this, "http-on-modify-request", false);
++  logger.log("Listening for http-on-modify-request");
++}
++
++RequestListener.prototype = {
++  observe: function observe(aSubject, aTopic, aData) {
++    if (aTopic === "http-on-modify-request") {
++      let channel = SpecialPowers.wrap(aSubject).QueryInterface(Ci.nsIHttpChannel);
++      let ioservice = Cc["@mozilla.org/network/io-service;1"]
++                        .getService(Ci.nsIIOService);
++      let src = channel.URI.spec;
++      let target = null;
++      if (src.match(/include.js/)) target = MOCK_INCLUDEJS;
++      if (src.match(/communication_iframe/)) target = MOCK_IFRAME;
++      if (src.match(/sign_in/)) target = MOCK_DIALOG;
++      if (target) {
++        let redirect = ioservice.newURI(target, null, null);
++        try {
++          logger.log("Intercepting http request and redirecting", src, "->", target);
++          channel.redirectTo(redirect);
++        } catch (err) {
++          do_throw("Redirect failed: " + err);
++        }
++      }
++    }
++  },
++
++  remove: function() {
++    Services.obs.removeObserver(this, "http-on-modify-request");
++  }
++};
++
++window.requestListener = new RequestListener();
++
++// mimicking callback funtionality for ease of testing
++// this observer auto-removes itself after the observe function
++// is called, so this is meant to observe only ONE event.
++function makeObserver(aObserveTopic, aObserveFunc) {
++  function observe(aSubject, aTopic, aData) {
++    if (aTopic == aObserveTopic) {
++      aObserveFunc(aSubject, aTopic, aData);
++      Services.obs.removeObserver(this, aObserveTopic);
++    }
++  }
++
++  Services.obs.addObserver(observe, aObserveTopic, false);
++}
++
++function expectException(aFunc, msg, aErrorType="Error") {
++  info("Expecting an exception: " + msg);
++  msg = msg || "";
++  let caughtEx = null;
++  try {
++    aFunc();
++  } catch (ex) {
++    let exProto = Object.getPrototypeOf(ex);
++    // Don't count NS_* exceptions since they shouldn't be exposed to content
++    if (exProto.toString() == aErrorType
++        && ex.toString().indexOf("NS_ERROR_FAILURE") == -1) {
++      caughtEx = ex;
++    } else {
++      ok(false, ex);
++      return;
++    }
++  }
++  isnot(caughtEx, null, "Check for thrown exception.");
++}
++
++function next() {
++  if (!identity) {
++    todo(false, "DOM API is not available. Skipping tests.");
++    finish_tests();
++    return;
++  }
++  if (index >= steps.length) {
++    ok(false, "Shouldn't get here!");
++    return;
++  }
++  try {
++    let fn = steps[index];
++    info("Begin test " + index + " '" + steps[index].name + "'!");
++    fn();
++  } catch(ex) {
++    ok(false, "Caught exception", ex);
++  }
++  index += 1;
++}
++
++function finish_tests() {
++  info("all done");
++  SpecialPowers.clearUserPref("toolkit.identity.debug");
++  SpecialPowers.clearUserPref("dom.identity.enabled");
++  window.requestListener.remove();
++  SimpleTest.finish();
++}
++
+diff --git a/dom/identity/tests/test_rp.html b/dom/identity/tests/test_rp.html
+new file mode 100644
+--- /dev/null
++++ b/dom/identity/tests/test_rp.html
+@@ -0,0 +1,86 @@
++<!DOCTYPE html>
++<!-- Any copyright is dedicated to the Public Domain.
++   - http://creativecommons.org/publicdomain/zero/1.0/ -->
++<html>
++<head>
++  <meta charset="utf-8">
++  <title>Test for navigator.id relying party (RP) basics</title>
++  <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css" />
++
++  <script type="application/javascript" src="/tests/SimpleTest/SimpleTest.js"></script>
++  <script type="application/javascript;version=1.8" src="head_identity.js"></script>
++</head>
++<body>
++<a target="_blank">navigator.id RP basics</a>
++<p id="display"></p>
++<div id="content" style="display: none">
++
++</div>
++<pre id="test">
++<script type="application/javascript;version=1.8">
++
++"use strict";
++
++SimpleTest.waitForExplicitFinish();
++
++let steps = [
++  function nonExistentProp() {
++    is(identity.foobarbaz, undefined, "Check that foobarbaz does not exist");
++    expectException(function() {
++      identity.foobarbaz()
++    }, "Check for exception calling non-existent method", "TypeError");
++    SimpleTest.executeSoon(next);
++  },
++
++  function watchExists() {
++    is(typeof(identity.watch), "function", "Check watch is a function");
++    SimpleTest.executeSoon(next);
++  },
++
++  function requestExists() {
++    is(typeof(identity.request), "function", "Check request is a function");
++    SimpleTest.executeSoon(next);
++  },
++
++  function logoutExists() {
++    is(typeof(identity.logout), "function", "Check logout is a function");
++    SimpleTest.executeSoon(next);
++  },
++
++  function testWatch() {
++    function onReady() {
++      SimpleTest.executeSoon(next);
++    }
++    identity.watch({
++      onlogin: function(){},
++      onlogout: function(){},
++      onready: onReady
++    });
++  },
++
++  function testLogout() {
++    info("testing logout");
++    info("now watch()");
++    identity.watch({
++      onlogin: function(){},
++      onlogout: function() {
++        SimpleTest.executeSoon(next);
++      },
++      onready: function() {
++        info("we ready");
++        info("ready with logout is", typeof identity.logout);
++        identity.logout();
++      }
++    }); 
++    info("did watch");
++  },
++
++  finish_tests
++];
++
++addLoadEvent(next);
++</script>
++</pre>
++</body>
++</html>
++
 diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm
 deleted file mode 100644
 --- a/toolkit/identity/Identity.jsm
@@ -4871,7 +5126,7 @@ new file mode 100644
 +  unwatch: function IDService_unwatch(aRpId, aTargetMM) {
 +    let rp = this._rpFlows[aRpId];
 +    if (!rp) {
-+      logger.warning("no rp to go with callerId " + aRpCallerId + "\n");
++      logger.warning("no rp to go with callerId " + aRpId + "\n");
 +      return;
 +    }
 +
