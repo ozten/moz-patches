@@ -2009,7 +2009,7 @@ diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/t
 +    run: function run_testRequest() {
 +      makePipeDelegate('identity-delegate-request', function doMethodCallback(options, id) {
 +        ok(options.method === 'login');
-+        ok(options.assertion === "I like those shoes!");
++        ok(options.assertion === "I love your shoes!");
 +        runNextTest();
 +      });
 +    }
