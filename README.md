@@ -25,6 +25,8 @@ sign-in-to-browser
 
 Then `./mach build` at the root of your `mozilla-central` repo.
 
+Latest tbpl: [Thu Apr 11 21:43:53 2013 PDT](https://tbpl.mozilla.org/?tree=Try&rev=245ba06fe850)
+
 ## The Sign In tab
 
 Visit the chrome url `chrome://browser/content/browser-id-signIn.html`
