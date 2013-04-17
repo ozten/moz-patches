@@ -1,0 +1,1700 @@
+# HG changeset patch
+# Parent b64b45bd43dec3baffadff066d25cdfdf99bfbd5
+# User Jed Parsons <jparsons@mozilla.com>
+# Date Wed Apr 17 11:43:14 2013 PDT
+Bug 845546: Identity service: part 2, toolkit component
+
+diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/IdentityService.jsm
+rename from toolkit/identity/MinimalIdentity.jsm
+rename to toolkit/identity/IdentityService.jsm
+--- a/toolkit/identity/MinimalIdentity.jsm
++++ b/toolkit/identity/IdentityService.jsm
+@@ -1,47 +1,29 @@
+ /* -*- Mode: js2; js2-basic-offset: 2; indent-tabs-mode: nil; -*- */
+ /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+-/*
+- * This alternate implementation of IdentityService provides just the
+- * channels for navigator.id, leaving the certificate storage to a
+- * server-provided app.
+- *
+- * On b2g, the messages identity-controller-watch, -request, and
+- * -logout, are observed by the component SignInToWebsite.jsm.
+- */
+-
+ "use strict";
+ 
+ this.EXPORTED_SYMBOLS = ["IdentityService"];
+ 
+ const Cu = Components.utils;
+ const Ci = Components.interfaces;
+-const Cc = Components.classes;
+-const Cr = Components.results;
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+-Cu.import("resource://gre/modules/identity/LogUtils.jsm");
+ Cu.import("resource://gre/modules/identity/IdentityUtils.jsm");
+ 
+-XPCOMUtils.defineLazyModuleGetter(this,
+-                                  "jwcrypto",
+-                                  "resource://gre/modules/identity/jwcrypto.jsm");
+-
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["minimal core"].concat(aMessageArgs));
+-}
+-function reportError(...aMessageArgs) {
+-  Logger.reportError.apply(Logger, ["core"].concat(aMessageArgs));
+-}
++XPCOMUtils.defineLazyGetter(this, "logger", function() {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
+ 
+ function makeMessageObject(aRpCaller) {
+   let options = {};
+ 
+   options.id = aRpCaller.id;
+   options.origin = aRpCaller.origin;
+ 
+   // loggedInUser can be undefined, null, or a string
+@@ -59,64 +41,77 @@ function makeMessageObject(aRpCaller) {
+       options[option] = aRpCaller[option];
+     }
+   });
+ 
+   // check validity of message structure
+   if ((typeof options.id === 'undefined') ||
+       (typeof options.origin === 'undefined')) {
+     let err = "id and origin required in relying-party message: " + JSON.stringify(options);
+-    reportError(err);
++    logger.error(err);
+     throw new Error(err);
+   }
+ 
+   return options;
+ }
+ 
++function getWindowInfo() {
++  /*
++  let someWindow = Services.wm.getMostRecentWindow('navigator:browser');
++  let windowUtils = someWindow
++    .QueryInterface(Ci.nsIInterfaceRequestor)
++    .getInterface(Ci.nsIDOMWindowUtils);
++
++  let id = windowUtils.outerWindowID;
++  */
++
++  let wm = Components.classes["@mozilla.org/appshell/window-mediator;1"]
++                       .getService(Components.interfaces.nsIWindowMediator);
++  let recentWindow = wm.getMostRecentWindow("navigator:browser");
++
++  //let origin = recentWindow.content.document.location || 'resource://your-agent';
++  //logger.log("found origin:", origin);
++
++  let id = recentWindow
++    .content
++    .QueryInterface(Ci.nsIInterfaceRequestor)
++    .getInterface(Ci.nsIDOMWindowUtils)
++    .outerWindowID;
++
++  return({
++    origin: 'resource://your-agent',
++    id: id
++  });
++}
++
+ function IDService() {
+   Services.obs.addObserver(this, "quit-application-granted", false);
+-  // Services.obs.addObserver(this, "identity-auth-complete", false);
+ 
+   // simplify, it's one object
+   this.RP = this;
+   this.IDP = this;
+ 
+   // keep track of flows
+   this._rpFlows = {};
+   this._authFlows = {};
+   this._provFlows = {};
+ }
+ 
+ IDService.prototype = {
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsISupports, Ci.nsIObserver]),
+ 
+-  observe: function observe(aSubject, aTopic, aData) {
++  observe: function IDService_observe(aSubject, aTopic, aData) {
+     switch (aTopic) {
+       case "quit-application-granted":
+         Services.obs.removeObserver(this, "quit-application-granted");
+-        // Services.obs.removeObserver(this, "identity-auth-complete");
+         break;
+     }
+   },
+ 
+   /**
+-   * Parse an email into username and domain if it is valid, else return null
+-   */
+-  parseEmail: function parseEmail(email) {
+-    var match = email.match(/^([^@]+)@([^@^/]+.[a-z]+)$/);
+-    if (match) {
+-      return {
+-        username: match[1],
+-        domain: match[2]
+-      };
+-    }
+-    return null;
+-  },
+-
+-  /**
+    * Register a listener for a given windowID as a result of a call to
+    * navigator.id.watch().
+    *
+    * @param aCaller
+    *        (Object)  an object that represents the caller document, and
+    *                  is expected to have properties:
+    *                  - id (unique, e.g. uuid)
+    *                  - loggedInUser (string or null)
+@@ -125,51 +120,56 @@ IDService.prototype = {
+    *                  and a bunch of callbacks
+    *                  - doReady()
+    *                  - doLogin()
+    *                  - doLogout()
+    *                  - doError()
+    *                  - doCancel()
+    *
+    */
+-  watch: function watch(aRpCaller) {
++  watch: function IDService_watch(aRpCaller) {
+     // store the caller structure and notify the UI observers
+     this._rpFlows[aRpCaller.id] = aRpCaller;
+ 
+     let options = makeMessageObject(aRpCaller);
+-    log("sending identity-controller-watch:", options);
++    logger.log("sending identity-controller-watch:", options);
+     Services.obs.notifyObservers({wrappedJSObject: options},"identity-controller-watch", null);
+   },
+ 
+   /*
+    * The RP has gone away; remove handles to the hidden iframe.
+    * It's probable that the frame will already have been cleaned up.
+    */
+-  unwatch: function unwatch(aRpId, aTargetMM) {
++  unwatch: function IDService_unwatch(aRpId, aTargetMM) {
+     let rp = this._rpFlows[aRpId];
++    if (!rp) {
++      logger.warning("no rp to go with callerId " + aRpId + "\n");
++      return;
++    }
++
+     let options = makeMessageObject({
+       id: aRpId,
+       origin: rp.origin,
+       messageManager: aTargetMM
+     });
+-    log("sending identity-controller-unwatch for id", options.id, options.origin);
++    logger.log("sending identity-controller-unwatch for id", options.id, options.origin);
+     Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-unwatch", null);
+   },
+ 
+   /**
+    * Initiate a login with user interaction as a result of a call to
+    * navigator.id.request().
+    *
+    * @param aRPId
+    *        (integer)  the id of the doc object obtained in .watch()
+    *
+    * @param aOptions
+    *        (Object)  options including privacyPolicy, termsOfService
+    */
+-  request: function request(aRPId, aOptions) {
++  request: function IDService_request(aRPId, aOptions) {
+     let rp = this._rpFlows[aRPId];
+ 
+     // Notify UX to display identity picker.
+     // Pass the doc id to UX so it can pass it back to us later.
+     let options = makeMessageObject(rp);
+     objectCopy(aOptions, options);
+     Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-request", null);
+   },
+@@ -177,269 +177,214 @@ IDService.prototype = {
+   /**
+    * Invoked when a user wishes to logout of a site (for instance, when clicking
+    * on an in-content logout button).
+    *
+    * @param aRpCallerId
+    *        (integer)  the id of the doc object obtained in .watch()
+    *
+    */
+-  logout: function logout(aRpCallerId) {
++  logout: function IDService_logout(aRpCallerId) {
+     let rp = this._rpFlows[aRpCallerId];
+ 
+     let options = makeMessageObject(rp);
+     Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-logout", null);
+   },
+ 
+-  childProcessShutdown: function childProcessShutdown(messageManager) {
++  childProcessShutdown: function IDService_childProcessShutdown(messageManager) {
+     let options = makeMessageObject({messageManager: messageManager, id: null, origin: null});
+     Services.obs.notifyObservers({wrappedJSObject: options}, "identity-child-process-shutdown", null);
+     Object.keys(this._rpFlows).forEach(function(key) {
+       if (this._rpFlows[key]._mm === messageManager) {
+-        log("child process shutdown for rp", key, "- deleting flow");
++        logger.log("child process shutdown for rp", key, "- deleting flow");
+         delete this._rpFlows[key];
+       }
+     }, this);
+   },
+ 
++
++  /**
++   * Sign In To Browser functions:
++   *   getIdentity()
++   *   signIn()
++   *   signOut()
++   *   accountExists()
++   *   createAccount()
++   */
++
++  getIdentity: function IDService_getIdentity(aOptions, aCallback) {
++    let info = getWindowInfo();
++    let rp = {
++      origin: info.origin,
++      id: info.id,
++      onGetIdentity: aCallback
++    };
++    this._rpFlows[info.id] = rp;
++
++    let options = makeMessageObject(rp);
++    objectCopy(aOptions, options);
++    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-getIdentity", null);
++  },
++
++  /**
++   * signIn to browser; callback with assertion on success or null
++   */
++  signIn: function IDService_signIn(aOptions, aCallback) {
++    let info = getWindowInfo();
++    let rp = {
++      id: info.id,
++      origin: info.origin,
++      onSignIn: aCallback
++    };
++    this._rpFlows[info.id] = rp;
++
++    let options = makeMessageObject(rp);
++    objectCopy(aOptions, options);
++    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-signIn", null);
++  },
++
++  signOut: function IDService_signOut(aCallback) {
++    let info = getWindowInfo();
++    let rp = {
++      id: info.id,
++      origin: info.origin,
++      onSignOut: aCallback
++    };
++    this._rpFlows[info.id] = rp;
++
++    let options = makeMessageObject(rp);
++    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-signOut", null);
++  },
++
++  accountExists: function IDService_accountExists(aOptions, aCallback) {
++    let info = getWindowInfo();
++    let rp = {
++      id: info.id,
++      email: aOptions.email,
++      origin: 'dummy-origin',
++      onAccountExists: aCallback
++    };
++    this._rpFlows[info.id] = rp;
++
++    let options = makeMessageObject(rp);
++    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-accountExists", null);
++  },
++
++  createAccount: function IDService_createAccount(aOptions, aCallback) {
++    let info = getWindowInfo();
++    let rp = {
++      id: info.id,
++      origin: info.origin,
++      onCreateAccount: aCallback
++    };
++    this._rpFlows[info.id] = rp;
++
++    let options = makeMessageObject(rp);
++    objectCopy(aOptions, options);
++    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-createAccount", null);
++  },
++
+   /*
+    * once the UI-and-display-logic components have received
+    * notifications, they call back with direct invocation of the
+    * following functions (doLogin, doLogout, or doReady)
+    */
+ 
+-  doLogin: function doLogin(aRpCallerId, aAssertion, aInternalParams) {
++  doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
+     let rp = this._rpFlows[aRpCallerId];
+     if (!rp) {
+-      dump("WARNING: doLogin found no rp to go with callerId " + aRpCallerId + "\n");
++      logger.warning("no rp to go with callerId " + aRpCallerId + "\n");
+       return;
+     }
+ 
+     rp.doLogin(aAssertion, aInternalParams);
+   },
+ 
+-  doLogout: function doLogout(aRpCallerId) {
++  doLogout: function IDService_doLogout(aRpCallerId) {
+     let rp = this._rpFlows[aRpCallerId];
+     if (!rp) {
+-      dump("WARNING: doLogout found no rp to go with callerId " + aRpCallerId + "\n");
++      logger.warning("no rp to go with callerId " + aRpCallerId + "\n");
+       return;
+     }
+ 
+     rp.doLogout();
+   },
+ 
+-  doReady: function doReady(aRpCallerId) {
++  doReady: function IDService_doReady(aRpCallerId) {
+     let rp = this._rpFlows[aRpCallerId];
+     if (!rp) {
+-      dump("WARNING: doReady found no rp to go with callerId " + aRpCallerId + "\n");
++      logger.warning("no rp to go with callerId " + aRpCallerId + "\n");
+       return;
+     }
+ 
+     rp.doReady();
+   },
+ 
+-  doCancel: function doCancel(aRpCallerId) {
++  doCancel: function IDService_doCancel(aRpCallerId) {
+     let rp = this._rpFlows[aRpCallerId];
+     if (!rp) {
+-      dump("WARNING: doCancel found no rp to go with callerId " + aRpCallerId + "\n");
++      logger.warning("no rp to go with callerId " + aRpCallerId + "\n");
+       return;
+     }
+ 
+     rp.doCancel();
+   },
+ 
+-
+-  /*
+-   * XXX Bug 804229: Implement Identity Provider Functions
+-   *
+-   * Stubs for Identity Provider functions follow
+-   */
+-
+-  /**
+-   * the provisioning iframe sandbox has called navigator.id.beginProvisioning()
+-   *
+-   * @param aCaller
+-   *        (object)  the iframe sandbox caller with all callbacks and
+-   *                  other information.  Callbacks include:
+-   *                  - doBeginProvisioningCallback(id, duration_s)
+-   *                  - doGenKeyPairCallback(pk)
+-   */
+-  beginProvisioning: function beginProvisioning(aCaller) {
++  doGetIdentity: function IDService_doGetIdentity(aRpCallerId, aAssertion, aInternalParams) {
++    let rp = this._rpFlows[aRpCallerId];
++    if (!rp) {
++      logger.error("no flow for id", aRpCallerId);
++    }
++    logger.log("got identity with assertion", aAssertion);
++    if (typeof rp.onGetIdentity === 'function') {
++      rp.onGetIdentity(aAssertion, aInternalParams);
++    }
+   },
+ 
+-  /**
+-   * the provisioning iframe sandbox has called
+-   * navigator.id.raiseProvisioningFailure()
+-   *
+-   * @param aProvId
+-   *        (int)  the identifier of the provisioning flow tied to that sandbox
+-   * @param aReason
+-   */
+-  raiseProvisioningFailure: function raiseProvisioningFailure(aProvId, aReason) {
+-    reportError("Provisioning failure", aReason);
++  doSignIn: function IDService_doSignIn(aRpCallerId, aAssertion, aInternalParams) {
++    let rp = this._rpFlows[aRpCallerId];
++    if (!rp) {
++      logger.error("no flow for id", aRpCallerId);
++    }
++    logger.log("signed in with assertion", aAssertion);
++    if (typeof rp.onSignIn === 'function') {
++      rp.onSignIn(aAssertion, aInternalParams);
++    }
+   },
+ 
+-  /**
+-   * When navigator.id.genKeyPair is called from provisioning iframe sandbox.
+-   * Generates a keypair for the current user being provisioned.
+-   *
+-   * @param aProvId
+-   *        (int)  the identifier of the provisioning caller tied to that sandbox
+-   *
+-   * It is an error to call genKeypair without receiving the callback for
+-   * the beginProvisioning() call first.
+-   */
+-  genKeyPair: function genKeyPair(aProvId) {
++  doSignOut: function IDService_doSignOut(aRpCallerId) {
++    let rp = this._rpFlows[aRpCallerId];
++    if (rp) {
++      if (typeof rp.onSignOut === 'function') {
++        rp.onSignOut(true);
++      }
++      delete(this._rpFlows[aRpCallerId]);
++    }
+   },
+ 
+-  /**
+-   * When navigator.id.registerCertificate is called from provisioning iframe
+-   * sandbox.
+-   *
+-   * Sets the certificate for the user for which a certificate was requested
+-   * via a preceding call to beginProvisioning (and genKeypair).
+-   *
+-   * @param aProvId
+-   *        (integer) the identifier of the provisioning caller tied to that
+-   *                  sandbox
+-   *
+-   * @param aCert
+-   *        (String)  A JWT representing the signed certificate for the user
+-   *                  being provisioned, provided by the IdP.
+-   */
+-  registerCertificate: function registerCertificate(aProvId, aCert) {
++  doAccountExists: function IDService_doAccountExists(aRpCallerId, aExists) {
++    let rp = this._rpFlows[aRpCallerId];
++    if (rp) {
++      if (typeof rp.onAccountExists === 'function') {
++        rp.onAccountExists(aExists);
++      }
++      delete(this._rpFlows[aRpCallerId]);
++    }
+   },
+ 
+-  /**
+-   * The authentication frame has called navigator.id.beginAuthentication
+-   *
+-   * IMPORTANT: the aCaller is *always* non-null, even if this is called from
+-   * a regular content page. We have to make sure, on every DOM call, that
+-   * aCaller is an expected authentication-flow identifier. If not, we throw
+-   * an error or something.
+-   *
+-   * @param aCaller
+-   *        (object)  the authentication caller
+-   *
+-   */
+-  beginAuthentication: function beginAuthentication(aCaller) {
++  doCreateAccount: function IDService_doCreateAccount(aRpCallerId, aAssertion) {
++    let rp = this._rpFlows[aRpCallerId];
++    if (rp) {
++      if (typeof rp.onCreateAccount === 'function') {
++        rp.onCreateAccount(aAssertion);
++      }
++      delete(this._rpFlows[aRpCallerId]);
++    }
+   },
+ 
+-  /**
+-   * The auth frame has called navigator.id.completeAuthentication
+-   *
+-   * @param aAuthId
+-   *        (int)  the identifier of the authentication caller tied to that sandbox
+-   *
+-   */
+-  completeAuthentication: function completeAuthentication(aAuthId) {
+-  },
+-
+-  /**
+-   * The auth frame has called navigator.id.cancelAuthentication
+-   *
+-   * @param aAuthId
+-   *        (int)  the identifier of the authentication caller
+-   *
+-   */
+-  cancelAuthentication: function cancelAuthentication(aAuthId) {
+-  },
+-
+-  // methods for chrome and add-ons
+-
+-  /**
+-   * Discover the IdP for an identity
+-   *
+-   * @param aIdentity
+-   *        (string) the email we're logging in with
+-   *
+-   * @param aCallback
+-   *        (function) callback to invoke on completion
+-   *                   with first-positional parameter the error.
+-   */
+-  _discoverIdentityProvider: function _discoverIdentityProvider(aIdentity, aCallback) {
+-    // XXX bug 767610 - validate email address call
+-    // When that is available, we can remove this custom parser
+-    var parsedEmail = this.parseEmail(aIdentity);
+-    if (parsedEmail === null) {
+-      return aCallback("Could not parse email: " + aIdentity);
+-    }
+-    log("_discoverIdentityProvider: identity:", aIdentity, "domain:", parsedEmail.domain);
+-
+-    this._fetchWellKnownFile(parsedEmail.domain, function fetchedWellKnown(err, idpParams) {
+-      // idpParams includes the pk, authorization url, and
+-      // provisioning url.
+-
+-      // XXX bug 769861 follow any authority delegations
+-      // if no well-known at any point in the delegation
+-      // fall back to browserid.org as IdP
+-      return aCallback(err, idpParams);
+-    });
+-  },
+-
+-  /**
+-   * Fetch the well-known file from the domain.
+-   *
+-   * @param aDomain
+-   *
+-   * @param aScheme
+-   *        (string) (optional) Protocol to use.  Default is https.
+-   *                 This is necessary because we are unable to test
+-   *                 https.
+-   *
+-   * @param aCallback
+-   *
+-   */
+-  _fetchWellKnownFile: function _fetchWellKnownFile(aDomain, aCallback, aScheme='https') {
+-    // XXX bug 769854 make tests https and remove aScheme option
+-    let url = aScheme + '://' + aDomain + "/.well-known/browserid";
+-    log("_fetchWellKnownFile:", url);
+-
+-    // this appears to be a more successful way to get at xmlhttprequest (which supposedly will close with a window
+-    let req = Cc["@mozilla.org/xmlextras/xmlhttprequest;1"]
+-                .createInstance(Ci.nsIXMLHttpRequest);
+-
+-    // XXX bug 769865 gracefully handle being off-line
+-    // XXX bug 769866 decide on how to handle redirects
+-    req.open("GET", url, true);
+-    req.responseType = "json";
+-    req.mozBackgroundRequest = true;
+-    req.onload = function _fetchWellKnownFile_onload() {
+-      if (req.status < 200 || req.status >= 400) {
+-        log("_fetchWellKnownFile", url, ": server returned status:", req.status);
+-        return aCallback("Error");
+-      }
+-      try {
+-        let idpParams = req.response;
+-
+-        // Verify that the IdP returned a valid configuration
+-        if (! (idpParams.provisioning &&
+-            idpParams.authentication &&
+-            idpParams['public-key'])) {
+-          let errStr= "Invalid well-known file from: " + aDomain;
+-          log("_fetchWellKnownFile:", errStr);
+-          return aCallback(errStr);
+-        }
+-
+-        let callbackObj = {
+-          domain: aDomain,
+-          idpParams: idpParams,
+-        };
+-        log("_fetchWellKnownFile result: ", callbackObj);
+-        // Yay.  Valid IdP configuration for the domain.
+-        return aCallback(null, callbackObj);
+-
+-      } catch (err) {
+-        reportError("_fetchWellKnownFile", "Bad configuration from", aDomain, err);
+-        return aCallback(err.toString());
+-      }
+-    };
+-    req.onerror = function _fetchWellKnownFile_onerror() {
+-      log("_fetchWellKnownFile", "ERROR:", req.status, req.statusText);
+-      log("ERROR: _fetchWellKnownFile:", err);
+-      return aCallback("Error");
+-    };
+-    req.send(null);
+-  },
+-
++  doFoo: function doFoo() {
++    let wm = Components.classes["@mozilla.org/appshell/window-mediator;1"]
++                   .getService(Components.interfaces.nsIWindowMediator);
++    let mainWindow = wm.getMostRecentWindow("navigator:browser");
++  }
+ };
+ 
+ this.IdentityService = new IDService();
+diff --git a/toolkit/identity/IdentityUtils.jsm b/toolkit/identity/IdentityUtils.jsm
+--- a/toolkit/identity/IdentityUtils.jsm
++++ b/toolkit/identity/IdentityUtils.jsm
+@@ -1,16 +1,14 @@
+ /* -*- Mode: js2; js2-basic-offset: 2; indent-tabs-mode: nil; -*- */
+ /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+-// functions common to Identity.jsm and MinimalIdentity.jsm
+-
+ "use strict";
+ 
+ this.EXPORTED_SYMBOLS = [
+   "checkDeprecated",
+   "checkRenamed",
+   "getRandomId",
+   "objectCopy"
+ ];
+@@ -18,40 +16,38 @@ this.EXPORTED_SYMBOLS = [
+ const Cu = Components.utils;
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ 
+ XPCOMUtils.defineLazyServiceGetter(this, "uuidgen",
+                                    "@mozilla.org/uuid-generator;1",
+                                    "nsIUUIDGenerator");
+ 
+-XPCOMUtils.defineLazyModuleGetter(this, "Logger",
+-                                  "resource://gre/modules/identity/LogUtils.jsm");
+-
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["Identity"].concat(aMessageArgs));
+-}
++XPCOMUtils.defineLazyGetter(this, "logger", function() {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
+ 
+ function defined(item) {
+   return typeof item !== 'undefined';
+ }
+ 
+ var checkDeprecated = this.checkDeprecated = function checkDeprecated(aOptions, aField) {
+   if (defined(aOptions[aField])) {
+-    log("WARNING: field is deprecated:", aField);
++    logger.log("WARNING: field is deprecated:", aField);
+     return true;
+   }
+   return false;
+ };
+ 
+ this.checkRenamed = function checkRenamed(aOptions, aOldName, aNewName) {
+   if (defined(aOptions[aOldName]) &&
+       defined(aOptions[aNewName])) {
+     let err = "You cannot provide both " + aOldName + " and " + aNewName;
+-    Logger.reportError(err);
++    logger.error(err);
+     throw new Error(err);
+   }
+ 
+   if (checkDeprecated(aOptions, aOldName)) {
+     aOptions[aNewName] = aOptions[aOldName];
+     delete(aOptions[aOldName]);
+   }
+ };
+@@ -59,17 +55,17 @@ this.checkRenamed = function checkRename
+ this.getRandomId = function getRandomId() {
+   return uuidgen.generateUUID().toString();
+ };
+ 
+ /*
+  * copy source object into target, excluding private properties
+  * (those whose names begin with an underscore)
+  */
+-this.objectCopy = function objectCopy(source, target){
++this.objectCopy = function objectCopy(source, target) {
+   let desc;
+   Object.getOwnPropertyNames(source).forEach(function(name) {
+     if (name[0] !== '_') {
+       desc = Object.getOwnPropertyDescriptor(source, name);
+       Object.defineProperty(target, name, desc);
+     }
+   });
+ };
+diff --git a/toolkit/identity/LogUtils.jsm b/toolkit/identity/LogUtils.jsm
+--- a/toolkit/identity/LogUtils.jsm
++++ b/toolkit/identity/LogUtils.jsm
+@@ -1,103 +1,178 @@
+ /* -*- Mode: js2; js2-basic-offset: 2; indent-tabs-mode: nil; -*- */
+ /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ "use strict";
+ 
+-this.EXPORTED_SYMBOLS = ["Logger"];
+-const PREF_DEBUG = "toolkit.identity.debug";
++this.EXPORTED_SYMBOLS = ["Logger", "getLogger"];
+ 
+ const Cu = Components.utils;
+ const Ci = Components.interfaces;
+-const Cc = Components.classes;
+-const Cr = Components.results;
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+ 
+-function IdentityLogger() {
+-  Services.prefs.addObserver(PREF_DEBUG, this, false);
+-  this._debug = Services.prefs.getBoolPref(PREF_DEBUG);
+-  return this;
++function Logger(aIdentifier, aEnablingPref) {
++  this._identifier = aIdentifier;
++  this._enablingPref = aEnablingPref;
++
++  // Enabled by default if a pref for toggling the logger is not given
++  this._enabled = !this._enablingPref;
++
++  this.init();
+ }
+ 
+-IdentityLogger.prototype = {
++Logger.prototype = {
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsISupports, Ci.nsIObserver]),
+ 
++  init: function Logger_init() {
++    if (this._enablingPref) {
++      Services.prefs.addObserver(this._enablingPref, this, false);
++      this._enabled = Services.prefs.getBoolPref(this._enablingPref);
++    }
++  },
++
+   observe: function observe(aSubject, aTopic, aData) {
+-    switch(aTopic) {
++    switch (aTopic) {
+       case "nsPref:changed":
+-        this._debug = Services.prefs.getBoolPref(PREF_DEBUG);
++        this._enabled = Services.prefs.getBoolPref(this._enablingPref);
++        dump("LogUtils " +
++             (this._enabled ? "enabled" : "disabled") +
++             " for " + this._identifier + "\n");
+         break;
+ 
+       case "quit-application-granted":
+-        Services.prefs.removeObserver(PREF_DEBUG, this);
++        Services.prefs.removeObserver(this._enablingPref, this);
+         break;
+ 
+       default:
+         this.log("Logger observer", "Unknown topic:", aTopic);
+         break;
+     }
+   },
+ 
+-  _generateLogMessage: function _generateLogMessage(aPrefix, args) {
+-    // create a string representation of a list of arbitrary things
++  _generatePrefix: function _generatePrefix() {
++    let caller = Components.stack.caller.caller;
++    let parts = ['[' + this._identifier + ']'];
++
++    // filename could be like path/to/foo.js or Scratchpad/1
++    if (caller.filename) {
++      let path = caller.filename.split('/');
++      if (path[path.length - 1].match(/\./)) {
++        parts.push(path[path.length - 1])
++      } else {
++        parts.push(caller.filename);
++      }
++    }
++
++    // Might not be called from a function; might be top-level
++    if (caller.name) {
++      parts.push(caller.name + '()');
++    }
++
++    parts.push('line ' + caller.lineNumber + ': ');
++
++    return parts.join(' ');
++  },
++
++  _generateLogMessage: function _generateLogMessage(severity, argList) {
+     let strings = [];
+-
+-    // XXX bug 770418 - args look like flattened array, not list of strings
+-
+-    args.forEach(function(arg) {
+-      if (typeof arg === 'string') {
+-        strings.push(arg);
+-      } else if (typeof arg === 'undefined') {
+-        strings.push('undefined');
+-      } else if (arg === null) {
++    argList.forEach(function(arg) {
++      if (arg === null) {
+         strings.push('null');
+       } else {
+-        try {
+-          strings.push(JSON.stringify(arg, null, 2));
+-        } catch(err) {
+-          strings.push("<<something>>");
++        switch (typeof arg) {
++          case 'string':
++            strings.push(arg);
++            break;
++          case 'undefined':
++            strings.push('undefined');
++            break;
++          case 'function':
++            strings.push('<<function>>');
++            break;
++          case 'object':
++            try {
++              strings.push(JSON.stringify(arg, null, 2));
++            } catch (err) {
++              strings.push('<<object>>');
++            }
++            break;
++          default:
++            try {
++              strings.push(arg.toString());
++            } catch (err) {
++              strings.push('<<something>>');
++            }
++            break;
+         }
+       }
+     });
+-    return 'Identity ' + aPrefix + ': ' + strings.join(' ');
++    return strings.join(' ');
+   },
+ 
+   /**
+    * log() - utility function to print a list of arbitrary things
+    *
+    * Enable with about:config pref toolkit.identity.debug
+    */
+-  log: function log(aPrefix, ...args) {
+-    if (!this._debug) {
++  log: function log(...argList) {
++    if (!this._enabled) {
+       return;
+     }
+-    let output = this._generateLogMessage(aPrefix, args);
++    let output = this._generatePrefix() + this._generateLogMessage('info', argList);
++
++    // print to the shell console and the browser error console
+     dump(output + "\n");
+-
+-    // Additionally, make the output visible in the Error Console
+     Services.console.logStringMessage(output);
+   },
+ 
++  warning: function Logger_warning(...argList) {
++    if (!this._enabled) {
++      return;
++    }
++
++    let output = this._generatePrefix() + this._generateLogMessage('warning', argList);
++  },
++
+   /**
+-   * reportError() - report an error through component utils as well as
++   * error() - report an error through component utils as well as
+    * our log function
+    */
+-  reportError: function reportError(aPrefix, ...aArgs) {
+-    let prefix = aPrefix + ' ERROR';
++  error: function Logger_error(...argList) {
++    if (!this._enabled) {
++      return;
++    }
+ 
+     // Report the error in the browser
+-    let output = this._generateLogMessage(aPrefix, aArgs);
++    let output = this._generatePrefix() + this._generateLogMessage('error', argList);
+     Cu.reportError(output);
++
++    // print to the console
+     dump("ERROR: " + output + "\n");
++    dump("   traceback follows:\n");
+     for (let frame = Components.stack.caller; frame; frame = frame.caller) {
+       dump(frame + "\n");
+     }
+   }
+-
+ };
+ 
+-this.Logger = new IdentityLogger();
++/**
++ * let logger = getLogger('my component', 'toolkit.foo.debug');
++ * logger.log("I would like", 42, "pies", {'and-some': 'object'});
++ */
++
++let _loggers = {};
++
++this.getLogger = function(aIdentifier, aEnablingPref) {
++  let key = aIdentifier;
++  if (aEnablingPref) {
++    key = key + '-' + aEnablingPref;
++  }
++  if (!_loggers[key]) {
++    _loggers[key] = new Logger(aIdentifier, aEnablingPref);
++  }
++  return _loggers[key];
++}
+diff --git a/toolkit/identity/Makefile.in b/toolkit/identity/Makefile.in
+--- a/toolkit/identity/Makefile.in
++++ b/toolkit/identity/Makefile.in
+@@ -18,22 +18,17 @@ LIBXUL_LIBRARY = 1
+ IS_COMPONENT = 1
+ EXPORT_LIBRARY = 1
+ 
+ CPPSRCS = \
+   IdentityCryptoService.cpp \
+   $(NULL)
+ 
+ EXTRA_JS_MODULES = \
++	jwcrypto.jsm \
+ 	IdentityUtils.jsm \
+-	Identity.jsm \
+-	IdentityProvider.jsm \
+-	IdentityStore.jsm \
+-	jwcrypto.jsm \
+ 	LogUtils.jsm \
+-	MinimalIdentity.jsm \
+-	RelyingParty.jsm \
+-	Sandbox.jsm \
++	IdentityService.jsm \
+ 	$(NULL)
+ 
+ JS_MODULES_PATH = $(FINAL_TARGET)/modules/identity
+ 
+ include $(topsrcdir)/config/rules.mk
+diff --git a/toolkit/identity/jwcrypto.jsm b/toolkit/identity/jwcrypto.jsm
+--- a/toolkit/identity/jwcrypto.jsm
++++ b/toolkit/identity/jwcrypto.jsm
+@@ -9,33 +9,33 @@
+ 
+ const Cu = Components.utils;
+ const Ci = Components.interfaces;
+ const Cc = Components.classes;
+ const Cr = Components.results;
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+-Cu.import("resource://gre/modules/identity/LogUtils.jsm");
++
++XPCOMUtils.defineLazyGetter(this, "logger", function() {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity test", "toolkit.identity.debug");
++});
+ 
+ XPCOMUtils.defineLazyServiceGetter(this,
+                                    "IdentityCryptoService",
+                                    "@mozilla.org/identity/crypto-service;1",
+                                    "nsIIdentityCryptoService");
+ 
+ this.EXPORTED_SYMBOLS = ["jwcrypto"];
+ 
+ const ALGORITHMS = { RS256: "RS256", DS160: "DS160" };
+ 
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["jwcrypto"].concat(aMessageArgs));
+-}
+-
+ function generateKeyPair(aAlgorithmName, aCallback) {
+-  log("Generate key pair; alg =", aAlgorithmName);
++  logger.log("Generate key pair; alg =", aAlgorithmName);
+ 
+   IdentityCryptoService.generateKeyPair(aAlgorithmName, function(rv, aKeyPair) {
+     if (!Components.isSuccessCode(rv)) {
+       return aCallback("key generation failed");
+     }
+ 
+     var publicKey;
+ 
+@@ -69,36 +69,36 @@ function generateKeyPair(aAlgorithmName,
+ 
+     return aCallback(null, keyWrapper);
+   });
+ }
+ 
+ function sign(aPayload, aKeypair, aCallback) {
+   aKeypair._kp.sign(aPayload, function(rv, signature) {
+     if (!Components.isSuccessCode(rv)) {
+-      log("ERROR: signer.sign failed");
++      logger.warning("ERROR: signer.sign failed");
+       return aCallback("Sign failed");
+     }
+-    log("signer.sign: success");
++    logger.log("signer.sign: success");
+     return aCallback(null, signature);
+   });
+ }
+ 
+ function jwcryptoClass()
+ {
+ }
+ 
+ jwcryptoClass.prototype = {
+   isCertValid: function(aCert, aCallback) {
+     // XXX check expiration, bug 769850
+     aCallback(true);
+   },
+ 
+   generateKeyPair: function(aAlgorithmName, aCallback) {
+-    log("generating");
++    logger.log("generating");
+     generateKeyPair(aAlgorithmName, aCallback);
+   },
+ 
+   generateAssertion: function(aCert, aKeyPair, aAudience, aCallback) {
+     // for now, we hack the algorithm name
+     // XXX bug 769851
+     var header = {"alg": "DS128"};
+     var headerBytes = IdentityCryptoService.base64UrlEncode(
+@@ -108,17 +108,17 @@ jwcryptoClass.prototype = {
+       // expires in 2 minutes
+       // XXX clock skew needs exploration bug 769852
+       exp: Date.now() + (2 * 60 * 1000),
+       aud: aAudience
+     };
+     var payloadBytes = IdentityCryptoService.base64UrlEncode(
+                           JSON.stringify(payload));
+ 
+-    log("payload bytes", payload, payloadBytes);
++    logger.log("payload bytes", payload, payloadBytes);
+     sign(headerBytes + "." + payloadBytes, aKeyPair, function(err, signature) {
+       if (err)
+         return aCallback(err);
+ 
+       var signedAssertion = headerBytes + "." + payloadBytes + "." + signature;
+       return aCallback(null, aCert + "~" + signedAssertion);
+     });
+   }
+diff --git a/toolkit/identity/tests/chrome/Makefile.in b/toolkit/identity/tests/chrome/Makefile.in
+--- a/toolkit/identity/tests/chrome/Makefile.in
++++ b/toolkit/identity/tests/chrome/Makefile.in
+@@ -6,20 +6,11 @@ DEPTH          = @DEPTH@
+ topsrcdir      = @top_srcdir@
+ srcdir         = @srcdir@
+ VPATH          = @srcdir@
+ relativesrcdir = @relativesrcdir@
+ 
+ include $(DEPTH)/config/autoconf.mk
+ 
+ MOCHITEST_CHROME_FILES = \
+-		sandbox_content.html \
+-		sandbox_content_alert.html \
+-		sandbox_content_framed.html \
+-		sandbox_content_perms.html \
+-		sandbox_content_popup.html \
+-		sandbox_content_redirect.html \
+-		sandbox_content_redirect.html^headers^ \
+-		sandbox_content.sjs \
+-		test_sandbox.xul \
+ 		$(NULL)
+ 
+ include $(topsrcdir)/config/rules.mk
+diff --git a/toolkit/identity/tests/moz.build b/toolkit/identity/tests/moz.build
+--- a/toolkit/identity/tests/moz.build
++++ b/toolkit/identity/tests/moz.build
+@@ -1,10 +1,10 @@
+ # -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+ # vim: set filetype=python:
+ # This Source Code Form is subject to the terms of the Mozilla Public
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+-DIRS += ['chrome', 'mochitest']
++DIRS += []
+ 
+ MODULE = 'test_identity'
+ 
+diff --git a/toolkit/identity/tests/unit/head_identity.js b/toolkit/identity/tests/unit/head_identity.js
+--- a/toolkit/identity/tests/unit/head_identity.js
++++ b/toolkit/identity/tests/unit/head_identity.js
+@@ -12,78 +12,26 @@ Cu.import("resource://testing-common/htt
+ // that use the profile directory work.
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+ 
+ XPCOMUtils.defineLazyModuleGetter(this, "jwcrypto",
+                                   "resource://gre/modules/identity/jwcrypto.jsm");
+ 
+-XPCOMUtils.defineLazyModuleGetter(this, "IDService",
+-                                  "resource://gre/modules/identity/Identity.jsm",
+-                                  "IdentityService");
+-
+-XPCOMUtils.defineLazyModuleGetter(this,
+-                                  "IdentityStore",
+-                                  "resource://gre/modules/identity/IdentityStore.jsm");
+-
+-XPCOMUtils.defineLazyModuleGetter(this,
+-                                  "Logger",
+-                                  "resource://gre/modules/identity/LogUtils.jsm");
+-
+ XPCOMUtils.defineLazyServiceGetter(this,
+                                    "uuidGenerator",
+                                    "@mozilla.org/uuid-generator;1",
+                                    "nsIUUIDGenerator");
+ 
++Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++const logger = getLogger("Identity test", "toolkit.identity.debug");
++const log = logger.log;
++
+ const TEST_URL = "https://myfavoritebacon.com";
+-const TEST_URL2 = "https://myfavoritebaconinacan.com";
+-const TEST_USER = "user@mozilla.com";
+-const TEST_PRIVKEY = "fake-privkey";
+-const TEST_CERT = "fake-cert";
+-const TEST_IDPPARAMS = {
+-  domain: "myfavoriteflan.com",
+-  authentication: "/foo/authenticate.html",
+-  provisioning: "/foo/provision.html"
+-};
+-
+-let XULAppInfo = {
+-  vendor: "Mozilla",
+-  name: "XPCShell",
+-  ID: "xpcshell@tests.mozilla.org",
+-  version: "1",
+-  appBuildID: "20100621",
+-  platformVersion: "",
+-  platformBuildID: "20100621",
+-  inSafeMode: false,
+-  logConsoleErrors: true,
+-  OS: "XPCShell",
+-  XPCOMABI: "noarch-spidermonkey",
+-  QueryInterface: XPCOMUtils.generateQI([Ci.nsIXULAppInfo, Ci.nsIXULRuntime]),
+-  invalidateCachesOnRestart: function invalidateCachesOnRestart() { }
+-};
+-
+-let XULAppInfoFactory = {
+-  createInstance: function (outer, iid) {
+-    if (outer != null)
+-      throw Cr.NS_ERROR_NO_AGGREGATION;
+-    return XULAppInfo.QueryInterface(iid);
+-  }
+-};
+-
+-let registrar = Components.manager.QueryInterface(Ci.nsIComponentRegistrar);
+-registrar.registerFactory(Components.ID("{fbfae60b-64a4-44ef-a911-08ceb70b9f31}"),
+-                          "XULAppInfo", "@mozilla.org/xre/app-info;1",
+-                          XULAppInfoFactory);
+-
+-// The following are utility functions for Identity testing
+-
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["test"].concat(aMessageArgs));
+-}
+ 
+ function get_idstore() {
+   return IdentityStore;
+ }
+ 
+ function partial(fn) {
+   let args = Array.prototype.slice.call(arguments, 1);
+   return function() {
+@@ -128,86 +76,10 @@ function makeObserver(aObserveTopic, aOb
+         Services.obs.removeObserver(observer, aObserveTopic);
+       }
+     }
+   };
+ 
+   Services.obs.addObserver(observer, aObserveTopic, false);
+ }
+ 
+-// set up the ID service with an identity with keypair and all
+-// when ready, invoke callback with the identity
+-function setup_test_identity(identity, cert, cb) {
+-  // set up the store so that we're supposed to be logged in
+-  let store = get_idstore();
+-
+-  function keyGenerated(err, kpo) {
+-    store.addIdentity(identity, kpo, cert);
+-    cb();
+-  };
+-
+-  jwcrypto.generateKeyPair("DS160", keyGenerated);
+-}
+-
+-// takes a list of functions and returns a function that
+-// when called the first time, calls the first func,
+-// then the next time the second, etc.
+-function call_sequentially() {
+-  let numCalls = 0;
+-  let funcs = arguments;
+-
+-  return function() {
+-    if (!funcs[numCalls]) {
+-      let argString = Array.prototype.slice.call(arguments).join(",");
+-      do_throw("Too many calls: " + argString);
+-      return;
+-    }
+-    funcs[numCalls].apply(funcs[numCalls],arguments);
+-    numCalls += 1;
+-  };
+-}
+-
+-/*
+- * Setup a provisioning workflow with appropriate callbacks
+- *
+- * identity is the email we're provisioning.
+- *
+- * afterSetupCallback is required.
+- *
+- * doneProvisioningCallback is optional, if the caller
+- * wants to be notified when the whole provisioning workflow is done
+- *
+- * frameCallbacks is optional, contains the callbacks that the sandbox
+- * frame would provide in response to DOM calls.
+- */
+-function setup_provisioning(identity, afterSetupCallback, doneProvisioningCallback, callerCallbacks) {
+-  IDService.reset();
+-
+-  let provId = uuid();
+-  IDService.IDP._provisionFlows[provId] = {
+-    identity : identity,
+-    idpParams: TEST_IDPPARAMS,
+-    callback: function(err) {
+-      if (doneProvisioningCallback)
+-        doneProvisioningCallback(err);
+-    },
+-    sandbox: {
+-	// Emulate the free() method on the iframe sandbox
+-	free: function() {}
+-    }
+-  };
+-
+-  let caller = {};
+-  caller.id = provId;
+-  caller.doBeginProvisioningCallback = function(id, duration_s) {
+-    if (callerCallbacks && callerCallbacks.beginProvisioningCallback)
+-      callerCallbacks.beginProvisioningCallback(id, duration_s);
+-  };
+-  caller.doGenKeyPairCallback = function(pk) {
+-    if (callerCallbacks && callerCallbacks.genKeyPairCallback)
+-      callerCallbacks.genKeyPairCallback(pk);
+-  };
+-
+-  afterSetupCallback(caller);
+-}
+-
+ // Switch debug messages on by default
+ Services.prefs.setBoolPref("toolkit.identity.debug", true);
+diff --git a/toolkit/identity/tests/unit/test_crypto_service.js b/toolkit/identity/tests/unit/test_crypto_service.js
+--- a/toolkit/identity/tests/unit/test_crypto_service.js
++++ b/toolkit/identity/tests/unit/test_crypto_service.js
+@@ -1,64 +1,63 @@
+ /* Any copyright is dedicated to the Public Domain.
+    http://creativecommons.org/publicdomain/zero/1.0/ */
+ 
+ "use strict";
+ 
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+-Cu.import('resource://gre/modules/identity/LogUtils.jsm');
+ 
+ const idService = Cc["@mozilla.org/identity/crypto-service;1"]
+                     .getService(Ci.nsIIdentityCryptoService);
+ 
+ const ALG_DSA = "DS160";
+ const ALG_RSA = "RS256";
+ 
+ // When the output of an operation is a
+ function do_check_eq_or_slightly_less(x, y) {
+   do_check_true(x >= y - (3 * 8));
+ }
+ 
+ function test_dsa() {
+   idService.generateKeyPair(ALG_DSA, function (rv, keyPair) {
+-    log("DSA generateKeyPair finished ", rv);
++    logger.log("DSA generateKeyPair finished ", rv);
+     do_check_true(Components.isSuccessCode(rv));
+     do_check_eq(typeof keyPair.sign, "function");
+     do_check_eq(keyPair.keyType, ALG_DSA);
+     do_check_eq_or_slightly_less(keyPair.hexDSAGenerator.length, 1024 / 8 * 2);
+     do_check_eq_or_slightly_less(keyPair.hexDSAPrime.length, 1024 / 8 * 2);
+     do_check_eq_or_slightly_less(keyPair.hexDSASubPrime.length, 160 / 8 * 2);
+     do_check_eq_or_slightly_less(keyPair.hexDSAPublicValue.length, 1024 / 8 * 2);
+     // XXX: test that RSA parameters throw the correct error
+ 
+-    log("about to sign with DSA key");
++    logger.log("about to sign with DSA key");
+     keyPair.sign("foo", function (rv, signature) {
+-      log("DSA sign finished ", rv, signature);
++      logger.log("DSA sign finished ", rv, signature);
+       do_check_true(Components.isSuccessCode(rv));
+       do_check_true(signature.length > 1);
+       // TODO: verify the signature with the public key
+       run_next_test();
+     });
+   });
+ }
+ 
+ function test_rsa() {
+   idService.generateKeyPair(ALG_RSA, function (rv, keyPair) {
+-    log("RSA generateKeyPair finished ", rv);
++    logger.log("RSA generateKeyPair finished ", rv);
+     do_check_true(Components.isSuccessCode(rv));
+     do_check_eq(typeof keyPair.sign, "function");
+     do_check_eq(keyPair.keyType, ALG_RSA);
+     do_check_eq_or_slightly_less(keyPair.hexRSAPublicKeyModulus.length,
+                                  2048 / 8);
+     do_check_true(keyPair.hexRSAPublicKeyExponent.length > 1);
+ 
+-    log("about to sign with RSA key");
++    logger.log("about to sign with RSA key");
+     keyPair.sign("foo", function (rv, signature) {
+-      log("RSA sign finished ", rv, signature);
++      logger.log("RSA sign finished ", rv, signature);
+       do_check_true(Components.isSuccessCode(rv));
+       do_check_true(signature.length > 1);
+       run_next_test();
+     });
+   });
+ }
+ 
+ add_test(test_dsa);
+diff --git a/toolkit/identity/tests/unit/test_identityservice.js b/toolkit/identity/tests/unit/test_identityservice.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/identity/tests/unit/test_identityservice.js
+@@ -0,0 +1,127 @@
++"use strict";
++
++XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
++                                  "resource://gre/modules/identity/IdentityService.jsm",
++                                  "IdentityService");
++
++function test_overall() {
++  do_check_neq(IdentityService, null);
++  run_next_test();
++}
++
++function test_mock_doc() {
++  do_test_pending();
++  let mockedDoc = mock_doc(null, TEST_URL, function(action, params) {
++    do_check_eq(action, 'coffee');
++    do_test_finished();
++    run_next_test();
++  });
++
++  mockedDoc.doCoffee();
++}
++
++/*
++ * Test that the "identity-controller-watch" signal is emitted correctly
++ */
++function test_watch() {
++  do_test_pending();
++
++  let mockedDoc = mock_doc(null, TEST_URL);
++  makeObserver("identity-controller-watch", function (aSubject, aTopic, aData) {
++    do_check_eq(aSubject.wrappedJSObject.id, mockedDoc.id);
++    do_check_eq(aSubject.wrappedJSObject.origin, TEST_URL);
++    do_test_finished();
++    run_next_test();
++   });
++
++  IdentityService.RP.watch(mockedDoc);
++}
++
++/*
++ * Test that the "identity-controller-request" signal is emitted correctly
++ */
++function test_request() {
++  do_test_pending();
++
++  let mockedDoc = mock_doc(null, TEST_URL);
++  makeObserver("identity-controller-request", function (aSubject, aTopic, aData) {
++    do_check_eq(aSubject.wrappedJSObject.id, mockedDoc.id);
++    do_check_eq(aSubject.wrappedJSObject.origin, TEST_URL);
++    do_test_finished();
++    run_next_test();
++  });
++
++  IdentityService.RP.watch(mockedDoc);
++  IdentityService.RP.request(mockedDoc.id, {});
++}
++
++/*
++ * Test that the forceAuthentication flag can be sent
++ */
++function test_request_forceAuthentication() {
++  do_test_pending();
++
++  let mockedDoc = mock_doc(null, TEST_URL);
++  makeObserver("identity-controller-request", function (aSubject, aTopic, aData) {
++    do_check_eq(aSubject.wrappedJSObject.id, mockedDoc.id);
++    do_check_eq(aSubject.wrappedJSObject.origin, TEST_URL);
++    do_check_eq(aSubject.wrappedJSObject.forceAuthentication, true);
++    do_test_finished();
++    run_next_test();
++   });
++
++  IdentityService.RP.watch(mockedDoc);
++  IdentityService.RP.request(mockedDoc.id, {forceAuthentication: true});
++}
++
++/*
++ * Test that the issuer can be forced
++ */
++function test_request_forceIssuer() {
++  do_test_pending();
++
++  let mockedDoc = mock_doc(null, TEST_URL);
++  makeObserver("identity-controller-request", function (aSubject, aTopic, aData) {
++    do_check_eq(aSubject.wrappedJSObject.id, mockedDoc.id);
++    do_check_eq(aSubject.wrappedJSObject.origin, TEST_URL);
++    do_check_eq(aSubject.wrappedJSObject.issuer, "https://jed.gov");
++    do_test_finished();
++    run_next_test();
++   });
++
++  IdentityService.RP.watch(mockedDoc);
++  IdentityService.RP.request(mockedDoc.id, {issuer: "https://jed.gov"});
++}
++
++/*
++ * Test that the "identity-controller-logout" signal is emitted correctly
++ */
++function test_logout() {
++  do_test_pending();
++
++  let mockedDoc = mock_doc(null, TEST_URL);
++  makeObserver("identity-controller-logout", function (aSubject, aTopic, aData) {
++    do_check_eq(aSubject.wrappedJSObject.id, mockedDoc.id);
++    do_test_finished();
++    run_next_test();
++  });
++
++  IdentityService.RP.watch(mockedDoc);
++  IdentityService.RP.logout(mockedDoc.id, {});
++}
++
++let TESTS = [
++  test_overall,
++  test_mock_doc,
++  test_watch,
++  test_request,
++  test_request_forceAuthentication,
++  test_request_forceIssuer,
++  test_logout
++];
++
++TESTS.forEach(add_test);
++
++function run_test() {
++  run_next_test();
++}
+diff --git a/toolkit/identity/tests/unit/test_jwcrypto.js b/toolkit/identity/tests/unit/test_jwcrypto.js
+--- a/toolkit/identity/tests/unit/test_jwcrypto.js
++++ b/toolkit/identity/tests/unit/test_jwcrypto.js
+@@ -1,15 +1,13 @@
+ /* Any copyright is dedicated to the Public Domain.
+    http://creativecommons.org/publicdomain/zero/1.0/ */
+ 
+ "use strict"
+ 
+-Cu.import('resource://gre/modules/identity/LogUtils.jsm');
+-
+ XPCOMUtils.defineLazyModuleGetter(this, "IDService",
+                                   "resource://gre/modules/identity/Identity.jsm",
+                                   "IdentityService");
+ 
+ XPCOMUtils.defineLazyModuleGetter(this, "jwcrypto",
+                                   "resource://gre/modules/identity/jwcrypto.jsm");
+ 
+ const RP_ORIGIN = "http://123done.org";
+@@ -42,29 +40,29 @@ function test_get_assertion() {
+ 
+   jwcrypto.generateKeyPair(
+     "DS160",
+     function(err, kp) {
+       jwcrypto.generateAssertion("fake-cert", kp, RP_ORIGIN, function(err, assertion) {
+         do_check_null(err);
+ 
+         // more checks on assertion
+-        log("assertion", assertion);
++        logger.log("assertion", assertion);
+ 
+         do_test_finished();
+         run_next_test();
+       });
+     });
+ }
+ 
+ function test_rsa() {
+   do_test_pending();
+   function checkRSA(err, kpo) {
+     do_check_neq(kpo, undefined);
+-    log(kpo.serializedPublicKey);
++    logger.log(kpo.serializedPublicKey);
+     let pk = JSON.parse(kpo.serializedPublicKey);
+     do_check_eq(pk.algorithm, "RS");
+ /* TODO
+     do_check_neq(kpo.sign, null);
+     do_check_eq(typeof kpo.sign, "function");
+     do_check_neq(kpo.userID, null);
+     do_check_neq(kpo.url, null);
+     do_check_eq(kpo.url, INTERNAL_ORIGIN);
+@@ -84,17 +82,17 @@ function test_rsa() {
+ 
+   jwcrypto.generateKeyPair("RS256", checkRSA);
+ }
+ 
+ function test_dsa() {
+   do_test_pending();
+   function checkDSA(err, kpo) {
+     do_check_neq(kpo, undefined);
+-    log(kpo.serializedPublicKey);
++    logger.log(kpo.serializedPublicKey);
+     let pk = JSON.parse(kpo.serializedPublicKey);
+     do_check_eq(pk.algorithm, "DS");
+ /* TODO
+     do_check_neq(kpo.sign, null);
+     do_check_eq(typeof kpo.sign, "function");
+     do_check_neq(kpo.userID, null);
+     do_check_neq(kpo.url, null);
+     do_check_eq(kpo.url, INTERNAL_ORIGIN);
+diff --git a/toolkit/identity/tests/unit/test_load_modules.js b/toolkit/identity/tests/unit/test_load_modules.js
+--- a/toolkit/identity/tests/unit/test_load_modules.js
++++ b/toolkit/identity/tests/unit/test_load_modules.js
+@@ -1,19 +1,15 @@
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ const modules = [
+-  "Identity.jsm",
+-  "IdentityProvider.jsm",
+-  "IdentityStore.jsm",
+-  "jwcrypto.jsm",
+-  "RelyingParty.jsm",
+-  "Sandbox.jsm",
++  "IdentityService.jsm",
++  "jwcrypto.jsm"
+ ];
+ 
+ function run_test() {
+   for each (let m in modules) {
+     let resource = "resource://gre/modules/identity/" + m;
+     Components.utils.import(resource, {});
+     do_print("loaded " + resource);
+   }
+diff --git a/toolkit/identity/tests/unit/test_log_utils.js b/toolkit/identity/tests/unit/test_log_utils.js
+--- a/toolkit/identity/tests/unit/test_log_utils.js
++++ b/toolkit/identity/tests/unit/test_log_utils.js
+@@ -1,74 +1,70 @@
+ 
+ "use strict";
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import('resource://gre/modules/Services.jsm');
+-Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++
++// logger defined in head_identity.js
+ 
+ function toggle_debug() {
+   do_test_pending();
+ 
+   function Wrapper() {
+     this.init();
+   }
+   Wrapper.prototype = {
+     QueryInterface: XPCOMUtils.generateQI([Ci.nsISupports, Ci.nsIObserver]),
+ 
+     observe: function observe(aSubject, aTopic, aData) {
+       if (aTopic === "nsPref:changed") {
+         // race condition?
+-        do_check_eq(Logger._debug, true);
++        do_check_eq(logger._enabled, true);
+         do_test_finished();
+         run_next_test();
+       }
+     },
+ 
+     init: function() {
+       Services.prefs.addObserver('toolkit.identity.debug', this, false);
+     }
+   };
+ 
+   var wrapper = new Wrapper();
+   Services.prefs.setBoolPref('toolkit.identity.debug', true);
+ }
+ 
+ // test that things don't break
+ 
+-function logAlias(...args) {
+-  Logger.log.apply(Logger, ["log alias"].concat(args));
+-}
+-function reportErrorAlias(...args) {
+-  Logger.reportError.apply(Logger, ["report error alias"].concat(args));
+-}
+-
+ function test_log() {
+-  Logger.log("log test", "I like pie");
++  logger.log("log test", "I like pie");
+   do_test_finished();
+   run_next_test();
+ }
+ 
+-function test_reportError() {
+-  Logger.reportError("log test", "We are out of pies!!!");
++function test_warning() {
++  logger.warning("similar log test", "We are still out of pies!!!");
+   do_test_finished();
+   run_next_test();
+ }
+ 
+-function test_wrappers() {
+-  logAlias("I like potatoes");
++function test_error() {
++  logger.error("My head a splode");
+   do_test_finished();
+-  reportErrorAlias("Too much red bull");
++  run_next_test();
+ }
+ 
++
+ let TESTS = [
+ // XXX fix me 
+ //    toggle_debug,
+     test_log,
+-    test_reportError,
+-    test_wrappers
++    test_warning,
++    test_error
+ ];
+ 
+ TESTS.forEach(add_test);
+ 
+ function run_test() {
+   run_next_test();
+-}
+\ No newline at end of file
++}
++
+diff --git a/toolkit/identity/tests/unit/xpcshell.ini b/toolkit/identity/tests/unit/xpcshell.ini
+--- a/toolkit/identity/tests/unit/xpcshell.ini
++++ b/toolkit/identity/tests/unit/xpcshell.ini
+@@ -1,19 +1,12 @@
+ [DEFAULT]
+ head = head_identity.js
+-tail = tail_identity.js
++tail = 
+ 
+ # Test load modules first so syntax failures are caught early.
+ [test_load_modules.js]
+-[test_minimalidentity.js]
+-
+ [test_identity_utils.js]
+ [test_log_utils.js]
+-[test_authentication.js]
++[test_identityservice.js]
+ [test_crypto_service.js]
+-[test_identity.js]
+ [test_jwcrypto.js]
+-[test_observer_topics.js]
+-[test_provisioning.js]
+-[test_relying_party.js]
+-[test_store.js]
+-[test_well-known.js]
++

@@ -1,0 +1,875 @@
+# HG changeset patch
+# Parent 162645e12e21574f022fb5d23e19d557a1d89318
+# User Jed Parsons <jparsons@mozilla.com>
+# Date Wed Apr 17 11:43:14 2013 PDT
+Bug 845546: Identity service: part 3, dom component
+
+diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
+--- a/dom/identity/DOMIdentity.jsm
++++ b/dom/identity/DOMIdentity.jsm
+@@ -9,33 +9,26 @@ const {classes: Cc, interfaces: Ci, util
+ // This is the parent process corresponding to nsDOMIdentity.
+ this.EXPORTED_SYMBOLS = ["DOMIdentity"];
+ 
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/identity/IdentityUtils.jsm");
+ 
+ XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
+-#ifdef MOZ_B2G_VERSION
+-                                  "resource://gre/modules/identity/MinimalIdentity.jsm");
+-#else
+-                                  "resource://gre/modules/identity/Identity.jsm");
+-#endif
+-
+-XPCOMUtils.defineLazyModuleGetter(this,
+-                                  "Logger",
+-                                  "resource://gre/modules/identity/LogUtils.jsm");
++                                  "resource://gre/modules/identity/IdentityService.jsm");
+ 
+ XPCOMUtils.defineLazyServiceGetter(this, "ppmm",
+                                    "@mozilla.org/parentprocessmessagemanager;1",
+                                    "nsIMessageListenerManager");
+ 
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["DOMIdentity"].concat(aMessageArgs));
+-}
++XPCOMUtils.defineLazyGetter(this, "logger", function() {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
+ 
+ function IDDOMMessage(aOptions) {
+   objectCopy(aOptions, this);
+ }
+ 
+ function IDPProvisioningContext(aID, aOrigin, aTargetMM) {
+   this._id = aID;
+   this._origin = aOrigin;
+@@ -50,24 +43,24 @@ IDPProvisioningContext.prototype = {
+     let message = new IDDOMMessage({id: this.id});
+     message.identity = aID;
+     message.certDuration = aCertDuration;
+     this._mm.sendAsyncMessage("Identity:IDP:CallBeginProvisioningCallback",
+                               message);
+   },
+ 
+   doGenKeyPairCallback: function IDPPC_doGenKeyPairCallback(aPublicKey) {
+-    log("doGenKeyPairCallback");
++    logger.log("doGenKeyPairCallback");
+     let message = new IDDOMMessage({id: this.id});
+     message.publicKey = aPublicKey;
+     this._mm.sendAsyncMessage("Identity:IDP:CallGenKeyPairCallback", message);
+   },
+ 
+   doError: function(msg) {
+-    log("Provisioning ERROR: " + msg);
++    logger.warning(msg);
+   }
+ };
+ 
+ function IDPAuthenticationContext(aID, aOrigin, aTargetMM) {
+   this._id = aID;
+   this._origin = aOrigin;
+   this._mm = aTargetMM;
+ }
+@@ -79,61 +72,63 @@ IDPAuthenticationContext.prototype = {
+   doBeginAuthenticationCallback: function IDPAC_doBeginAuthCB(aIdentity) {
+     let message = new IDDOMMessage({id: this.id});
+     message.identity = aIdentity;
+     this._mm.sendAsyncMessage("Identity:IDP:CallBeginAuthenticationCallback",
+                               message);
+   },
+ 
+   doError: function IDPAC_doError(msg) {
+-    log("Authentication ERROR: " + msg);
++    logger.warning(msg);
+   }
+ };
+ 
+ function RPWatchContext(aOptions, aTargetMM) {
+   objectCopy(aOptions, this);
+ 
+   // id and origin are required
+   if (! (this.id && this.origin)) {
+-    throw new Error("id and origin are required for RP watch context");
++    let err = "id and origin are required for RP watch context";
++    logger.error(err);
++    throw new Error(err);
+   }
+ 
+   // default for no loggedInUser is undefined, not null
+   this.loggedInUser = aOptions.loggedInUser;
+ 
+   // Maybe internal
+   this._internal = aOptions._internal;
+ 
+   this._mm = aTargetMM;
+ }
+ 
+ RPWatchContext.prototype = {
+   doLogin: function RPWatchContext_onlogin(aAssertion, aMaybeInternalParams) {
+-    log("doLogin: " + this.id);
++    logger.log("login id: " + this.id);
+     let message = new IDDOMMessage({id: this.id, assertion: aAssertion});
+     if (aMaybeInternalParams) {
+       message._internalParams = aMaybeInternalParams;
+     }
+     this._mm.sendAsyncMessage("Identity:RP:Watch:OnLogin", message);
+   },
+ 
+   doLogout: function RPWatchContext_onlogout() {
+-    log("doLogout: " + this.id);
++    logger.log("logout id: " + this.id);
+     let message = new IDDOMMessage({id: this.id});
+     this._mm.sendAsyncMessage("Identity:RP:Watch:OnLogout", message);
+   },
+ 
+   doReady: function RPWatchContext_onready() {
+-    log("doReady: " + this.id);
++    logger.log("ready id: " + this.id);
+     let message = new IDDOMMessage({id: this.id});
+     this._mm.sendAsyncMessage("Identity:RP:Watch:OnReady", message);
+   },
+ 
+   doCancel: function RPWatchContext_oncancel() {
+-    log("doCancel: " + this.id);
++    logger.log("cancel id: " + this.id);
+     let message = new IDDOMMessage({id: this.id});
+     this._mm.sendAsyncMessage("Identity:RP:Watch:OnCancel", message);
+   },
+ 
+   doError: function RPWatchContext_onerror(aMessage) {
+     log("doError: " + aMessage);
+   }
+ };
+@@ -142,16 +137,18 @@ this.DOMIdentity = {
+   // nsIMessageListener
+   receiveMessage: function DOMIdentity_receiveMessage(aMessage) {
+     let msg = aMessage.json;
+ 
+     // Target is the frame message manager that called us and is
+     // used to send replies back to the proper window.
+     let targetMM = aMessage.target;
+ 
++    logger.log("received:", aMessage.name);
++
+     switch (aMessage.name) {
+       // RP
+       case "Identity:RP:Watch":
+         this._watch(msg, targetMM);
+         break;
+       case "Identity:RP:Unwatch":
+         this._unwatch(msg, targetMM);
+         break;
+@@ -212,16 +209,17 @@ this.DOMIdentity = {
+              "Identity:RP:Unwatch",
+              "child-process-shutdown"],
+ 
+   // Private.
+   _init: function DOMIdentity__init() {
+     Services.ww.registerNotification(this);
+     Services.obs.addObserver(this, "xpcom-shutdown", false);
+     this._subscribeListeners();
++    logger.log("DOM identity service initialized");
+   },
+ 
+   _subscribeListeners: function DOMIdentity__subscribeListeners() {
+     if (!ppmm) return;
+     for (let message of this.messages) {
+       ppmm.addMessageListener(message, this);
+     }
+   },
+@@ -229,26 +227,28 @@ this.DOMIdentity = {
+   _unsubscribeListeners: function DOMIdentity__unsubscribeListeners() {
+     for (let message of this.messages) {
+       ppmm.removeMessageListener(message, this);
+     }
+     ppmm = null;
+   },
+ 
+   _resetFrameState: function(aContext) {
+-    log("_resetFrameState: ", aContext.id);
++    logger.log("_resetFrameState: ", aContext.id);
+     if (!aContext._mm) {
+-      throw new Error("ERROR: Trying to reset an invalid context");
++      let err = "Trying to reset an invalid context";
++      logger.error(err);
++      throw new Error(err);
+     }
+     let message = new IDDOMMessage({id: aContext.id});
+     aContext._mm.sendAsyncMessage("Identity:ResetState", message);
+   },
+ 
+   _watch: function DOMIdentity__watch(message, targetMM) {
+-    log("DOMIdentity__watch: " + message.id);
++    logger.log("DOMIdentity__watch: " + message.id);
+     // Pass an object with the watch members to Identity.jsm so it can call the
+     // callbacks.
+     let context = new RPWatchContext(message, targetMM);
+     IdentityService.RP.watch(context);
+   },
+ 
+   _unwatch: function DOMIdentity_unwatch(message, targetMM) {
+     IdentityService.RP.unwatch(message.id, targetMM);
+diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
+--- a/dom/identity/nsDOMIdentity.js
++++ b/dom/identity/nsDOMIdentity.js
+@@ -18,22 +18,28 @@ const PREF_SYNTHETIC_EVENTS_OK = "dom.id
+ const MAX_STRING_LENGTH = 2048;
+ // Maximum number of times navigator.id.request can be called for a document
+ const MAX_RP_CALLS = 100;
+ 
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/identity/IdentityUtils.jsm");
+ 
++XPCOMUtils.defineLazyGetter(this, "logger", function() {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
++
+ // This is the child process corresponding to nsIDOMIdentity
+ XPCOMUtils.defineLazyServiceGetter(this, "cpmm",
+                                    "@mozilla.org/childprocessmessagemanager;1",
+                                    "nsIMessageSender");
+ 
+ function nsDOMIdentity(aIdentityInternal) {
++  logger.log("nsDOMIdentity constructor");
+   this._identityInternal = aIdentityInternal;
+ }
+ nsDOMIdentity.prototype = {
+   __exposedProps__: {
+     // Relying Party (RP)
+     watch: 'r',
+     request: 'r',
+     logout: 'r',
+@@ -60,22 +66,27 @@ nsDOMIdentity.prototype = {
+     return true;
+   },
+ 
+   /**
+    * Relying Party (RP) APIs
+    */
+ 
+   watch: function nsDOMIdentity_watch(aOptions) {
++    logger.log(aOptions);
+     if (this._rpWatcher) {
+-      throw new Error("navigator.id.watch was already called");
++      let err = "navigator.id.watch was already called";
++      logger.warning(err);
++      throw new Error(err);
+     }
+ 
+     if (!aOptions || typeof(aOptions) !== "object") {
+-      throw new Error("options argument to watch is required");
++      let err = "options argument to watch is required";
++      logger.warning(err);
++      throw new Error(err);
+     }
+ 
+     // Check for required callbacks
+     let requiredCallbacks = ["onlogin", "onlogout"];
+     for (let cbName of requiredCallbacks) {
+       if ((!(cbName in aOptions))
+           || typeof(aOptions[cbName]) !== "function") {
+            throw new Error(cbName + " callback is required.");
+@@ -84,16 +95,17 @@ nsDOMIdentity.prototype = {
+ 
+     // Optional callback "onready"
+     if (aOptions["onready"]
+         && typeof(aOptions['onready']) !== "function") {
+       throw new Error("onready must be a function");
+     }
+ 
+     let message = this.DOMIdentityMessage(aOptions);
++    logger.log(message);
+ 
+     // loggedInUser vs loggedInEmail
+     // https://developer.mozilla.org/en-US/docs/DOM/navigator.id.watch
+     // This parameter, loggedInUser, was renamed from loggedInEmail in early
+     // September, 2012. Both names will continue to work for the time being,
+     // but code should be changed to use loggedInUser instead.
+     checkRenamed(aOptions, "loggedInEmail", "loggedInUser");
+     message["loggedInUser"] = aOptions["loggedInUser"];
+@@ -108,44 +120,47 @@ nsDOMIdentity.prototype = {
+       // See HTMLInputElement::IsValidEmailAddress
+       if (aOptions["loggedInUser"].indexOf("@") == -1
+           || aOptions["loggedInUser"].length > MAX_STRING_LENGTH) {
+         throw new Error("loggedInUser is not valid");
+       }
+       // Set loggedInUser in this block that "undefined" doesn't get through.
+       message.loggedInUser = aOptions.loggedInUser;
+     }
+-    this._log("loggedInUser: " + message.loggedInUser);
++    logger.log("loggedInUser: " + message.loggedInUser);
+ 
+     this._rpWatcher = aOptions;
+     this._identityInternal._mm.sendAsyncMessage("Identity:RP:Watch", message);
+   },
+ 
+   request: function nsDOMIdentity_request(aOptions) {
++    aOptions = aOptions || {};
++
+     let util = this._window.QueryInterface(Ci.nsIInterfaceRequestor)
+                            .getInterface(Ci.nsIDOMWindowUtils);
+ 
+     // The only time we permit calling of request() outside of a user
+     // input handler is when we are handling the (deprecated) get() or
+     // getVerifiedEmail() calls, which make use of an RP context
+     // marked as _internal.
+     if (this.nativeEventsRequired && !util.isHandlingUserInput && !aOptions._internal) {
+-      this._log("request: rejecting non-native event");
++      logger.error("request: rejecting non-native event");
+       return;
+     }
+ 
+     // Has the caller called watch() before this?
+     if (!this._rpWatcher) {
+       throw new Error("navigator.id.request called before navigator.id.watch");
+     }
+     if (this._rpCalls > MAX_RP_CALLS) {
+       throw new Error("navigator.id.request called too many times");
+     }
+ 
+     let message = this.DOMIdentityMessage(aOptions);
++    logger.log(message);
+ 
+     if (aOptions) {
+       // Optional string properties
+       let optionalStringProps = ["privacyPolicy", "termsOfService"];
+       for (let propName of optionalStringProps) {
+         if (!aOptions[propName] || aOptions[propName] === "undefined")
+           continue;
+         if (typeof(aOptions[propName]) !== "string") {
+@@ -166,16 +181,17 @@ nsDOMIdentity.prototype = {
+       }
+     }
+ 
+     this._rpCalls++;
+     this._identityInternal._mm.sendAsyncMessage("Identity:RP:Request", message);
+   },
+ 
+   logout: function nsDOMIdentity_logout() {
++    logger.log("logout");
+     if (!this._rpWatcher) {
+       throw new Error("navigator.id.logout called before navigator.id.watch");
+     }
+     if (this._rpCalls > MAX_RP_CALLS) {
+       throw new Error("navigator.id.logout called too many times");
+     }
+ 
+     this._rpCalls++;
+@@ -238,72 +254,72 @@ nsDOMIdentity.prototype = {
+       onlogout: function get_onlogout() {},
+       onready: function get_onready() {
+         self.request(opts);
+       }
+     });
+   },
+ 
+   getVerifiedEmail: function nsDOMIdentity_getVerifiedEmail(aCallback) {
+-    Cu.reportError("WARNING: getVerifiedEmail has been deprecated");
++    error("WARNING: getVerifiedEmail has been deprecated");
+     this.get(aCallback, {});
+   },
+ 
+   /**
+    *  Identity Provider (IDP) Provisioning APIs
+    */
+ 
+   beginProvisioning: function nsDOMIdentity_beginProvisioning(aCallback) {
+-    this._log("beginProvisioning");
++    logger.log("beginProvisioning");
+     if (this._beginProvisioningCallback) {
+       throw new Error("navigator.id.beginProvisioning already called.");
+     }
+     if (!aCallback || typeof(aCallback) !== "function") {
+       throw new Error("beginProvisioning callback is required.");
+     }
+ 
+     this._beginProvisioningCallback = aCallback;
+     this._identityInternal._mm.sendAsyncMessage("Identity:IDP:BeginProvisioning",
+                                                 this.DOMIdentityMessage());
+   },
+ 
+   genKeyPair: function nsDOMIdentity_genKeyPair(aCallback) {
+-    this._log("genKeyPair");
++    logger.log("genKeyPair");
+     if (!this._beginProvisioningCallback) {
+       throw new Error("navigator.id.genKeyPair called outside of provisioning");
+     }
+     if (this._genKeyPairCallback) {
+       throw new Error("navigator.id.genKeyPair already called.");
+     }
+     if (!aCallback || typeof(aCallback) !== "function") {
+       throw new Error("genKeyPair callback is required.");
+     }
+ 
+     this._genKeyPairCallback = aCallback;
+     this._identityInternal._mm.sendAsyncMessage("Identity:IDP:GenKeyPair",
+                                                 this.DOMIdentityMessage());
+   },
+ 
+   registerCertificate: function nsDOMIdentity_registerCertificate(aCertificate) {
+-    this._log("registerCertificate");
++    logger.log("registerCertificate");
+     if (!this._genKeyPairCallback) {
+       throw new Error("navigator.id.registerCertificate called outside of provisioning");
+     }
+     if (this._provisioningEnded) {
+       throw new Error("Provisioning already ended");
+     }
+     this._provisioningEnded = true;
+ 
+     let message = this.DOMIdentityMessage();
+     message.cert = aCertificate;
+     this._identityInternal._mm.sendAsyncMessage("Identity:IDP:RegisterCertificate", message);
+   },
+ 
+   raiseProvisioningFailure: function nsDOMIdentity_raiseProvisioningFailure(aReason) {
+-    this._log("raiseProvisioningFailure '" + aReason + "'");
++    logger.log("raiseProvisioningFailure '" + aReason + "'");
+     if (this._provisioningEnded) {
+       throw new Error("Provisioning already ended");
+     }
+     if (!aReason || typeof(aReason) != "string") {
+       throw new Error("raiseProvisioningFailure reason is required");
+     }
+     this._provisioningEnded = true;
+ 
+@@ -312,17 +328,17 @@ nsDOMIdentity.prototype = {
+     this._identityInternal._mm.sendAsyncMessage("Identity:IDP:ProvisioningFailure", message);
+   },
+ 
+   /**
+    *  Identity Provider (IDP) Authentication APIs
+    */
+ 
+   beginAuthentication: function nsDOMIdentity_beginAuthentication(aCallback) {
+-    this._log("beginAuthentication");
++    logger.log("beginAuthentication");
+     if (this._beginAuthenticationCallback) {
+       throw new Error("navigator.id.beginAuthentication already called.");
+     }
+     if (typeof(aCallback) !== "function") {
+       throw new Error("beginAuthentication callback is required.");
+     }
+     if (!aCallback || typeof(aCallback) !== "function") {
+       throw new Error("beginAuthentication callback is required.");
+@@ -400,54 +416,54 @@ nsDOMIdentity.prototype = {
+           return;
+         }
+         this._initializeState();
+         Services.obs.notifyObservers(null, "identity-DOM-state-reset", this._id);
+         break;
+       case "Identity:RP:Watch:OnLogin":
+         // Do we have a watcher?
+         if (!this._rpWatcher) {
+-          this._log("WARNING: Received OnLogin message, but there is no RP watcher");
++          logger.warning("Received OnLogin message, but there is no RP watcher");
+           return;
+         }
+ 
+         if (this._rpWatcher.onlogin) {
+           if (this._rpWatcher._internal) {
+             this._rpWatcher.onlogin(msg.assertion, msg._internalParams);
+           } else {
+             this._rpWatcher.onlogin(msg.assertion);
+           }
+         }
+         break;
+       case "Identity:RP:Watch:OnLogout":
+         // Do we have a watcher?
+         if (!this._rpWatcher) {
+-          this._log("WARNING: Received OnLogout message, but there is no RP watcher");
++          logger.warning("Received OnLogout message, but there is no RP watcher");
+           return;
+         }
+ 
+         if (this._rpWatcher.onlogout) {
+           this._rpWatcher.onlogout();
+         }
+         break;
+       case "Identity:RP:Watch:OnReady":
+         // Do we have a watcher?
+         if (!this._rpWatcher) {
+-          this._log("WARNING: Received OnReady message, but there is no RP watcher");
++          logger.warning("Received OnReady message, but there is no RP watcher");
+           return;
+         }
+ 
+         if (this._rpWatcher.onready) {
+           this._rpWatcher.onready();
+         }
+         break;
+       case "Identity:RP:Watch:OnCancel":
+         // Do we have a watcher?
+         if (!this._rpWatcher) {
+-          this._log("WARNING: Received OnCancel message, but there is no RP watcher");
++          logger.warning("Received OnCancel message, but there is no RP watcher");
+           return;
+         }
+ 
+         if (this._onCancelRequestCallback) {
+           this._onCancelRequestCallback();
+         }
+         break;
+       case "Identity:IDP:CallBeginProvisioningCallback":
+@@ -457,20 +473,16 @@ nsDOMIdentity.prototype = {
+         this._callGenKeyPairCallback(msg);
+         break;
+       case "Identity:IDP:CallBeginAuthenticationCallback":
+         this._callBeginAuthenticationCallback(msg);
+         break;
+     }
+   },
+ 
+-  _log: function nsDOMIdentity__log(msg) {
+-    this._identityInternal._log(msg);
+-  },
+-
+   _callGenKeyPairCallback: function nsDOMIdentity__callGenKeyPairCallback(message) {
+     // create a pubkey object that works
+     let chrome_pubkey = JSON.parse(message.publicKey);
+ 
+     // bunch of stuff to create a proper object in window context
+     function genPropDesc(value) {
+       return {
+         enumerable: true, configurable: true, writable: true, value: value
+@@ -520,17 +532,17 @@ nsDOMIdentity.prototype = {
+ 
+     // window origin
+     message.origin = this._origin;
+ 
+     return message;
+   },
+ 
+   uninit: function DOMIdentity_uninit() {
+-    this._log("nsDOMIdentity uninit()");
++    logger.log("unwatch", this._id);
+     this._identityInternal._mm.sendAsyncMessage(
+       "Identity:RP:Unwatch",
+       { id: this._id }
+     );
+   }
+ 
+ };
+ 
+@@ -593,17 +605,17 @@ nsDOMIdentityInternal.prototype = {
+ 
+     this._identity._init(aWindow);
+ 
+     let util = aWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+                       .getInterface(Ci.nsIDOMWindowUtils);
+     this._id = util.outerWindowID;
+     this._innerWindowID = util.currentInnerWindowID;
+ 
+-    this._log("init was called from " + aWindow.document.location);
++    logger.log("init was called from", aWindow.document.location);
+ 
+     this._mm = cpmm;
+ 
+     // Setup listeners for messages from parent process.
+     this._messages = [
+       "Identity:ResetState",
+       "Identity:RP:Watch:OnLogin",
+       "Identity:RP:Watch:OnLogout",
+@@ -618,24 +630,16 @@ nsDOMIdentityInternal.prototype = {
+     }, this);
+ 
+     // Setup observers so we can remove message listeners.
+     Services.obs.addObserver(this, "inner-window-destroyed", false);
+ 
+     return this._identity;
+   },
+ 
+-  // Private.
+-  _log: function nsDOMIdentityInternal__log(msg) {
+-    if (!this._debug) {
+-      return;
+-    }
+-    dump("nsDOMIdentity (" + this._id + "): " + msg + "\n");
+-  },
+-
+   // Component setup.
+   classID: Components.ID("{210853d9-2c97-4669-9761-b1ab9cbf57ef}"),
+ 
+   QueryInterface: XPCOMUtils.generateQI(
+     [Ci.nsIDOMGlobalPropertyInitializer, Ci.nsIMessageListener]
+   ),
+ 
+   classInfo: XPCOMUtils.generateCI({
+diff --git a/dom/identity/tests/Makefile.in b/dom/identity/tests/Makefile.in
+new file mode 100644
+--- /dev/null
++++ b/dom/identity/tests/Makefile.in
+@@ -0,0 +1,20 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this file,
++# You can obtain one at http://mozilla.org/MPL/2.0/.
++
++DEPTH            = @DEPTH@
++topsrcdir        = @top_srcdir@
++srcdir           = @srcdir@
++VPATH            = @srcdir@
++
++relativesrcdir   = @relativesrcdir@
++
++include $(DEPTH)/config/autoconf.mk
++
++MOCHITEST_FILES = \
++  head_identity.js \
++  test_rp.html \
++  $(NULL)
++
++include $(topsrcdir)/config/rules.mk
++
+diff --git a/dom/identity/tests/head_identity.js b/dom/identity/tests/head_identity.js
+new file mode 100644
+--- /dev/null
++++ b/dom/identity/tests/head_identity.js
+@@ -0,0 +1,132 @@
++/* Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/ */
++
++"use strict";
++
++const Cc = SpecialPowers.Cc;
++const Ci = SpecialPowers.Ci;
++const Cu = SpecialPowers.Cu;
++
++const Services = Cu.import("resource://gre/modules/Services.jsm").Services;
++const XPCOMUtils = Cu.import('resource://gre/modules/XPCOMUtils.jsm').XPCOMUtils;
++
++SpecialPowers.setBoolPref("toolkit.identity.debug", true);
++SpecialPowers.setBoolPref("dom.identity.enabled", true);
++SpecialPowers.setBoolPref("dom.identity.syntheticEventsOk", true);
++
++const DOMIdentity = Cu.import("resource://gre/modules/DOMIdentity.jsm")
++                      .DOMIdentity;
++
++let util = SpecialPowers.getDOMWindowUtils(window);
++let outerWinId = util.outerWindowID;
++
++const getLogger = Cu.import("resource://gre/modules/identity/LogUtils.jsm").getLogger;
++const logger = getLogger("Identity DOM test", "toolkit.identity.debug");
++
++const identity = navigator.id || navigator.mozId;
++
++const MOCK_INCLUDEJS = "http://example.org/browser/browser/modules/test/mock_personaIframe.html";
++const MOCK_IFRAME = "http://example.org/browser/browser/modules/test/mock_personaIframe.html";
++const MOCK_DIALOG = "http://example.org/browser/browser/modules/test/mock_personaIframe.html";
++
++let index = 0;
++
++// Intercept all requests to get the persona iframes and redirect
++// them to our local mock.
++function RequestListener() {
++  Services.obs.addObserver(this, "http-on-modify-request", false);
++  logger.log("Listening for http-on-modify-request");
++}
++
++RequestListener.prototype = {
++  observe: function observe(aSubject, aTopic, aData) {
++    if (aTopic === "http-on-modify-request") {
++      let channel = SpecialPowers.wrap(aSubject).QueryInterface(Ci.nsIHttpChannel);
++      let ioservice = Cc["@mozilla.org/network/io-service;1"]
++                        .getService(Ci.nsIIOService);
++      let src = channel.URI.spec;
++      let target = null;
++      if (src.match(/include.js/)) target = MOCK_INCLUDEJS;
++      if (src.match(/communication_iframe/)) target = MOCK_IFRAME;
++      if (src.match(/sign_in/)) target = MOCK_DIALOG;
++      if (target) {
++        let redirect = ioservice.newURI(target, null, null);
++        try {
++          logger.log("Intercepting http request and redirecting", src, "->", target);
++          channel.redirectTo(redirect);
++        } catch (err) {
++          do_throw("Redirect failed: " + err);
++        }
++      }
++    }
++  },
++
++  remove: function() {
++    Services.obs.removeObserver(this, "http-on-modify-request");
++  }
++};
++
++window.requestListener = new RequestListener();
++
++// mimicking callback funtionality for ease of testing
++// this observer auto-removes itself after the observe function
++// is called, so this is meant to observe only ONE event.
++function makeObserver(aObserveTopic, aObserveFunc) {
++  function observe(aSubject, aTopic, aData) {
++    if (aTopic == aObserveTopic) {
++      aObserveFunc(aSubject, aTopic, aData);
++      Services.obs.removeObserver(this, aObserveTopic);
++    }
++  }
++
++  Services.obs.addObserver(observe, aObserveTopic, false);
++}
++
++function expectException(aFunc, msg, aErrorType="Error") {
++  info("Expecting an exception: " + msg);
++  msg = msg || "";
++  let caughtEx = null;
++  try {
++    aFunc();
++  } catch (ex) {
++    let exProto = Object.getPrototypeOf(ex);
++    // Don't count NS_* exceptions since they shouldn't be exposed to content
++    if (exProto.toString() == aErrorType
++        && ex.toString().indexOf("NS_ERROR_FAILURE") == -1) {
++      caughtEx = ex;
++    } else {
++      ok(false, ex);
++      return;
++    }
++  }
++  isnot(caughtEx, null, "Check for thrown exception.");
++}
++
++function next() {
++  if (!identity) {
++    todo(false, "DOM API is not available. Skipping tests.");
++    finish_tests();
++    return;
++  }
++  if (index >= steps.length) {
++    ok(false, "Shouldn't get here!");
++    return;
++  }
++  try {
++    let fn = steps[index];
++    info("Begin test " + index + " '" + steps[index].name + "'!");
++    fn();
++  } catch(ex) {
++    ok(false, "Caught exception", ex);
++  }
++  index += 1;
++}
++
++function finish_tests() {
++  info("all done");
++  SpecialPowers.clearUserPref("toolkit.identity.debug");
++  SpecialPowers.clearUserPref("dom.identity.enabled");
++  window.requestListener.remove();
++  SimpleTest.finish();
++}
++
+diff --git a/dom/identity/tests/test_rp.html b/dom/identity/tests/test_rp.html
+new file mode 100644
+--- /dev/null
++++ b/dom/identity/tests/test_rp.html
+@@ -0,0 +1,106 @@
++<!DOCTYPE html>
++<!-- Any copyright is dedicated to the Public Domain.
++   - http://creativecommons.org/publicdomain/zero/1.0/ -->
++<html>
++<head>
++  <meta charset="utf-8">
++  <title>Test for navigator.id relying party (RP) basics</title>
++  <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css" />
++
++  <script type="application/javascript" src="/tests/SimpleTest/SimpleTest.js"></script>
++  <script type="application/javascript;version=1.8" src="head_identity.js"></script>
++</head>
++<body>
++<a target="_blank">navigator.id RP basics</a>
++<p id="display"></p>
++<div id="content" style="display: none">
++
++</div>
++<pre id="test">
++<script type="application/javascript;version=1.8">
++
++"use strict";
++
++const RP = Cu.import("resource://gre/modules/identity/IdentityService.jsm").IdentityService.RP;
++
++function resetAndNext() {
++  // Watch can only be called once per page.  So reset
++  // the state before moving on to the next test.
++  makeObserver("identity-DOM-state-reset", function stateReset() {
++    SimpleTest.executeSoon(next);
++  });
++
++  let context = RP._rpFlows[outerWinId];
++  DOMIdentity._resetFrameState(context);
++}
++
++let steps = [
++  function nonExistentProp() {
++    is(identity.foobarbaz, undefined, "Check that foobarbaz does not exist");
++    expectException(function() {
++      identity.foobarbaz()
++    }, "Check for exception calling non-existent method", "TypeError");
++    SimpleTest.executeSoon(next);
++  },
++
++  function watchExists() {
++    is(typeof(identity.watch), "function", "Check watch is a function");
++    SimpleTest.executeSoon(next);
++  },
++
++  function requestExists() {
++    is(typeof(identity.request), "function", "Check request is a function");
++    SimpleTest.executeSoon(next);
++  },
++
++  function logoutExists() {
++    is(typeof(identity.logout), "function", "Check logout is a function");
++    SimpleTest.executeSoon(next);
++  },
++
++  function testWatch() {
++    function onReady() {
++      resetAndNext();
++    }
++    identity.watch({
++      onlogin: function(){},
++      onlogout: function(){},
++      onready: onReady
++    });
++  },
++
++  function testLogout() {
++    identity.watch({
++      onlogin: function(){},
++      onlogout: function() {
++        resetAndNext();
++      },
++      onready: function() {
++        identity.logout();
++      }
++    }); 
++  },
++
++  function testLogin() {
++    identity.watch({
++      onlogin: function(assertion) {
++        is(assertion, "I love your shoes!", "Get an assertion on request()");
++        resetAndNext();
++      },
++      onlogout: function() {},
++      onready: function() {
++        identity.request();
++      }
++    });
++  },
++
++  finish_tests
++];
++
++SimpleTest.waitForExplicitFinish();
++addLoadEvent(next);
++</script>
++</pre>
++</body>
++</html>
++

@@ -1,0 +1,694 @@
+# HG changeset patch
+# Parent fd787e1a9c265fc51e223d89b4b42c88c1093d22
+# User Jed Parsons <jparsons@mozilla.com>
+# Date Wed Apr 17 11:43:14 2013 PDT
+Bug 845546: Identity service: part 5, b2g component
+
+diff --git a/b2g/chrome/content/identity.js b/b2g/chrome/content/identity.js
+--- a/b2g/chrome/content/identity.js
++++ b/b2g/chrome/content/identity.js
+@@ -16,24 +16,22 @@ Cu.import("resource://gre/modules/Servic
+ XPCOMUtils.defineLazyServiceGetter(this, "cpmm",
+                                    "@mozilla.org/childprocessmessagemanager;1",
+                                    "nsIMessageSender");
+ 
+ XPCOMUtils.defineLazyServiceGetter(this, "uuidgen",
+                                    "@mozilla.org/uuid-generator;1",
+                                    "nsIUUIDGenerator");
+ 
+-XPCOMUtils.defineLazyModuleGetter(this, "Logger",
+-                                  "resource://gre/modules/identity/LogUtils.jsm");
++XPCOMUtils.defineLazyGetter(this, "logger", function() {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
+ 
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["injected identity.js"].concat(aMessageArgs));
+-}
+-
+-log("\n\n======================= identity.js =======================\n\n");
++logger.log("\n\n======================= identity.js =======================\n\n");
+ 
+ // This script may be injected more than once into an iframe.
+ // Ensure we don't redefine contstants
+ if (typeof kIdentityJSLoaded === 'undefined') {
+   const kIdentityDelegateWatch = "identity-delegate-watch";
+   const kIdentityDelegateRequest = "identity-delegate-request";
+   const kIdentityDelegateLogout = "identity-delegate-logout";
+   const kIdentityDelegateReady = "identity-delegate-ready";
+@@ -73,36 +71,36 @@ function closeIdentityDialog() {
+   sendAsyncMessage(kIdentityDelegateFinished);
+ }
+ 
+ /*
+  * doInternalWatch - call the internal.watch api and relay the results
+  * up to the controller.
+  */
+ function doInternalWatch() {
+-  log("doInternalWatch:", options, isLoaded);
++  logger.log("doInternalWatch:", options, isLoaded);
+   if (options && isLoaded) {
+     let BrowserID = content.wrappedJSObject.BrowserID;
+     BrowserID.internal.watch(function(aParams, aInternalParams) {
+         identityCall(aParams);
+         if (aParams.method === "ready") {
+           closeIdentityDialog();
+         }
+       },
+       JSON.stringify(options),
+       function(...things) {
+         // internal watch log callback
+-        log("(watch) internal: ", things);
++        logger.log("(watch) internal: ", things);
+       }
+     );
+   }
+ }
+ 
+ function doInternalRequest() {
+-  log("doInternalRequest:", options && isLoaded);
++  logger.log("doInternalRequest:", options && isLoaded);
+   if (options && isLoaded) {
+     var stringifiedOptions = JSON.stringify(options);
+     content.wrappedJSObject.BrowserID.internal.get(
+       options.origin,
+       function(assertion, internalParams) {
+         internalParams = internalParams || {};
+         if (assertion) {
+           identityCall({
+@@ -112,17 +110,17 @@ function doInternalRequest() {
+         }
+         closeIdentityDialog();
+       },
+       stringifiedOptions);
+   }
+ }
+ 
+ function doInternalLogout(aOptions) {
+-  log("doInternalLogout:", (options && isLoaded));
++  logger.log("doInternalLogout:", (options && isLoaded));
+   if (options && isLoaded) {
+     let BrowserID = content.wrappedJSObject.BrowserID;
+     BrowserID.internal.logout(options.origin, function() {
+       identityCall({method:'logout'});
+       closeIdentityDialog();
+     });
+   }
+ }
+@@ -132,32 +130,32 @@ addEventListener("DOMContentLoaded", fun
+     isLoaded = true;
+      // bring da func
+      if (func) func();
+   });
+ });
+ 
+ // listen for request
+ addMessageListener(kIdentityDelegateRequest, function(aMessage) {
+-  log("injected identity.js received", kIdentityDelegateRequest);
++  logger.log("injected identity.js received", kIdentityDelegateRequest);
+   options = aMessage.json;
+   showUI = true;
+   func = doInternalRequest;
+   func();
+ });
+ 
+ // listen for watch
+ addMessageListener(kIdentityDelegateWatch, function(aMessage) {
+-  log("injected identity.js received", kIdentityDelegateWatch);
++  logger.log("injected identity.js received", kIdentityDelegateWatch);
+   options = aMessage.json;
+   showUI = false;
+   func = doInternalWatch;
+   func();
+ });
+ 
+ // listen for logout
+ addMessageListener(kIdentityDelegateLogout, function(aMessage) {
+-  log("injected identity.js received", kIdentityDelegateLogout);
++  logger.log("injected identity.js received", kIdentityDelegateLogout);
+   options = aMessage.json;
+   showUI = false;
+   func = doInternalLogout;
+   func();
+ });
+diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite.jsm
+--- a/b2g/components/SignInToWebsite.jsm
++++ b/b2g/components/SignInToWebsite.jsm
+@@ -34,17 +34,17 @@
+  * in its context.
+  *
+  * On the Relying Party's side, say a web page invokes
+  * navigator.id.watch(), to register callbacks, and then
+  * navigator.id.request() to request an assertion.  The navigator.id
+  * calls are provided by nsDOMIdentity.  nsDOMIdentity messages down
+  * to the privileged DOMIdentity code (using cpmm and ppmm message
+  * managers).  DOMIdentity stores the state of Relying Party flows
+- * using an Identity service (MinimalIdentity.jsm), and emits messages
++ * using an Identity service (IdentityService.jsm), and emits messages
+  * requesting Persona functions (doWatch, doReady, doLogout).
+  *
+  * The Identity service sends these observer messages to the
+  * Controller in this module, which in turn triggers content to open a
+  * window to host the Persona js.  If user interaction is required,
+  * content will open the trusty UI.  If user interaction is not required,
+  * and we only need to get to Persona functions, content will open a
+  * hidden iframe.  In either case, a window is opened into which the
+@@ -74,20 +74,17 @@ this.EXPORTED_SYMBOLS = ["SignInToWebsit
+ const Ci = Components.interfaces;
+ const Cu = Components.utils;
+ 
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/identity/IdentityUtils.jsm");
+ 
+ XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
+-                                  "resource://gre/modules/identity/MinimalIdentity.jsm");
+-
+-XPCOMUtils.defineLazyModuleGetter(this, "Logger",
+-                                  "resource://gre/modules/identity/LogUtils.jsm");
++                                  "resource://gre/modules/identity/IdentityService.jsm");
+ 
+ // JS shim that contains the callback functions that
+ // live within the identity UI provisioning frame.
+ const kIdentityShimFile = "chrome://browser/content/identity.js";
+ 
+ // Type of MozChromeEvents to handle id dialogs.
+ const kOpenIdentityDialog = "id-dialog-open";
+ const kDoneIdentityDialog = "id-dialog-done";
+@@ -97,19 +94,21 @@ const kCloseIdentityDialog = "id-dialog-
+ const kIdentityDelegateWatch = "identity-delegate-watch";
+ const kIdentityDelegateRequest = "identity-delegate-request";
+ const kIdentityDelegateLogout = "identity-delegate-logout";
+ const kIdentityDelegateFinished = "identity-delegate-finished";
+ const kIdentityDelegateReady = "identity-delegate-ready";
+ 
+ const kIdentityControllerDoMethod = "identity-controller-doMethod";
+ 
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["SignInToWebsiteController"].concat(aMessageArgs));
+-}
++XPCOMUtils.defineLazyGetter(this, "logger", function() {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
++
+ 
+ /*
+  * ContentInterface encapsulates the our content functions.  There are only two:
+  *
+  * getContent       - return the current content window
+  * sendChromeEvent  - send a chromeEvent from the browser shell
+  */
+ let ContentInterface = {
+@@ -143,29 +142,29 @@ Pipe.prototype = {
+ 
+   observe: function Pipe_observe(aSubject, aTopic, aData) {
+     let options = {};
+     if (aSubject) {
+       options = aSubject.wrappedJSObject;
+     }
+     switch (aTopic) {
+       case "identity-child-process-shutdown":
+-        log("pipe removing watchers by message manager");
++        logger.log("pipe removing watchers by message manager");
+         this._removeWatchers(null, options.messageManager);
+         break;
+ 
+       case "identity-controller-unwatch":
+-        log("unwatching", options.id);
++        logger.log("unwatching", options.id);
+         this._removeWatchers(options.id, options.messageManager);
+         break;
+     }
+   },
+ 
+   _addWatcher: function Pipe__addWatcher(aId, aMm) {
+-    log("Adding watcher with id", aId);
++    logger.log("Adding watcher with id", aId);
+     for (let i = 0; i < this._watchers.length; ++i) {
+       let watcher = this._watchers[i];
+       if (this._watcher.id === aId) {
+         watcher.count++;
+         return;
+       }
+     }
+     this._watchers.push({id: aId, count: 1, mm: aMm});
+@@ -189,45 +188,45 @@ Pipe.prototype = {
+           this._watchers.splice(index, 1);
+         }
+       } else {
+         this._watchers.splice(index, 1);
+       }
+     }
+ 
+     if (this._watchers.length === 0) {
+-      log("No more watchers; clean up persona host iframe");
++      logger.log("No more watchers; clean up persona host iframe");
+       let detail = {
+         type: kCloseIdentityDialog
+       };
+-      log('telling content to close the dialog');
++      logger.log('telling content to close the dialog');
+       // tell content to close the dialog
+       ContentInterface.sendChromeEvent(detail);
+     }
+   },
+ 
+   communicate: function(aRpOptions, aContentOptions, aMessageCallback) {
+     let rpID = aRpOptions.id;
+     let rpMM = aRpOptions.mm;
+     if (rpMM) {
+       this._addWatcher(rpID, rpMM);
+     }
+ 
+-    log("RP options:", aRpOptions, "\n  content options:", aContentOptions);
++    logger.log("RP options:", aRpOptions, "\n  content options:", aContentOptions);
+ 
+     // This content variable is injected into the scope of
+     // kIdentityShimFile, where it is used to access the BrowserID object
+     // and its internal API.
+     let content = ContentInterface.getContent();
+     let mm = null;
+     let uuid = getRandomId();
+     let self = this;
+ 
+     if (!content) {
+-      log("ERROR: what the what? no content window?");
++      logger.log("ERROR: what the what? no content window?");
+       // aErrorCb.onresult("NO_CONTENT_WINDOW");
+       return;
+     }
+ 
+     function removeMessageListeners() {
+       if (mm) {
+         mm.removeMessageListener(kIdentityDelegateFinished, identityDelegateFinished);
+         mm.removeMessageListener(kIdentityControllerDoMethod, aMessageCallback);
+@@ -238,17 +237,17 @@ Pipe.prototype = {
+       removeMessageListeners();
+ 
+       let detail = {
+         type: kDoneIdentityDialog,
+         showUI: aContentOptions.showUI || false,
+         id: kDoneIdentityDialog + "-" + uuid,
+         requestId: aRpOptions.id
+       };
+-      log('received delegate finished; telling content to close the dialog');
++      logger.log('received delegate finished; telling content to close the dialog');
+       ContentInterface.sendChromeEvent(detail);
+       self._removeWatchers(rpID, rpMM);
+     }
+ 
+     content.addEventListener("mozContentEvent", function getAssertion(evt) {
+       let msg = evt.detail;
+       if (!msg.id.match(uuid)) {
+         return;
+@@ -266,19 +265,19 @@ Pipe.prototype = {
+             // the callbacks in the content script.  This could be either the
+             // visible popup that the user interacts with, or it could be an
+             // invisible frame.
+             let frame = evt.detail.frame;
+             let frameLoader = frame.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader;
+             mm = frameLoader.messageManager;
+             try {
+               mm.loadFrameScript(kIdentityShimFile, true);
+-              log("Loaded shim " + kIdentityShimFile + "\n");
++              logger.log("Loaded shim " + kIdentityShimFile + "\n");
+             } catch (e) {
+-              log("Error loading ", kIdentityShimFile, " as a frame script: ", e);
++              logger.log("Error loading ", kIdentityShimFile, " as a frame script: ", e);
+             }
+ 
+             // There are two messages that the delegate can send back: a "do
+             // method" event, and a "finished" event.  We pass the do-method
+             // events straight to the caller for interpretation and handling.
+             // If we receive a "finished" event, then the delegate is done, so
+             // we shut down the pipe and clean up.
+             mm.addMessageListener(kIdentityControllerDoMethod, aMessageCallback);
+@@ -291,17 +290,17 @@ Pipe.prototype = {
+         case kDoneIdentityDialog + '-' + uuid:
+           // Received our assertion.  The message manager callbacks will handle
+           // communicating back to the IDService.  All we have to do is remove
+           // this listener.
+           content.removeEventListener("mozContentEvent", getAssertion);
+           break;
+ 
+         default:
+-          log("ERROR - Unexpected message: id=" + msg.id + ", type=" + msg.type + ", errorMsg=" + msg.errorMsg);
++          logger.log("ERROR - Unexpected message: id=" + msg.id + ", type=" + msg.type + ", errorMsg=" + msg.errorMsg);
+           break;
+       }
+ 
+     });
+ 
+     // Tell content to open the identity iframe or trusty popup. The parameter
+     // showUI signals whether user interaction is needed.  If it is, content will
+     // open a dialog; if not, a hidden iframe.  In each case, BrowserID is
+@@ -343,17 +342,17 @@ this.SignInToWebsiteController = {
+ 
+   uninit: function SignInToWebsiteController_uninit() {
+     Services.obs.removeObserver(this, "identity-controller-watch");
+     Services.obs.removeObserver(this, "identity-controller-request");
+     Services.obs.removeObserver(this, "identity-controller-logout");
+   },
+ 
+   observe: function SignInToWebsiteController_observe(aSubject, aTopic, aData) {
+-    log("observe: received", aTopic, "with", aData, "for", aSubject);
++    logger.log("observe: received", aTopic, "with", aData, "for", aSubject);
+     let options = null;
+     if (aSubject) {
+       options = aSubject.wrappedJSObject;
+     }
+     switch (aTopic) {
+       case "identity-controller-watch":
+         this.doWatch(options);
+         break;
+@@ -397,17 +396,17 @@ this.SignInToWebsiteController = {
+           IdentityService.doLogout(aRpId);
+           break;
+ 
+         case "cancel":
+           IdentityService.doCancel(aRpId);
+           break;
+ 
+         default:
+-          log("WARNING: wonky method call:", message.method);
++          logger.warning("wonky method call:", message.method);
+           break;
+       }
+     };
+   },
+ 
+   doWatch: function SignInToWebsiteController_doWatch(aRpOptions) {
+     // dom prevents watch from  being called twice
+     let contentOptions = {
+@@ -417,30 +416,30 @@ this.SignInToWebsiteController = {
+     this.pipe.communicate(aRpOptions, contentOptions,
+         this._makeDoMethodCallback(aRpOptions.id));
+   },
+ 
+   /**
+    * The website is requesting login so the user must choose an identity to use.
+    */
+   doRequest: function SignInToWebsiteController_doRequest(aRpOptions) {
+-    log("doRequest", aRpOptions);
++    logger.log("doRequest", aRpOptions);
+     let contentOptions = {
+       message: kIdentityDelegateRequest,
+       showUI: true
+     };
+     this.pipe.communicate(aRpOptions, contentOptions,
+         this._makeDoMethodCallback(aRpOptions.id));
+   },
+ 
+   /*
+    *
+    */
+   doLogout: function SignInToWebsiteController_doLogout(aRpOptions) {
+-    log("doLogout", aRpOptions);
++    logger.log("doLogout", aRpOptions);
+     let contentOptions = {
+       message: kIdentityDelegateLogout,
+       showUI: false
+     };
+     this.pipe.communicate(aRpOptions, contentOptions,
+         this._makeDoMethodCallback(aRpOptions.id));
+   }
+ 
+diff --git a/b2g/components/test/unit/head_identity.js b/b2g/components/test/unit/head_identity.js
+--- a/b2g/components/test/unit/head_identity.js
++++ b/b2g/components/test/unit/head_identity.js
+@@ -5,39 +5,34 @@ const Ci = Components.interfaces;
+ const Cu = Components.utils;
+ 
+ // The following boilerplate makes sure that XPCom calls
+ // that use the profile directory work.
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+ 
+-XPCOMUtils.defineLazyModuleGetter(this, "MinimalIDService",
+-                                  "resource://gre/modules/identity/MinimalIdentity.jsm",
++XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
++                                  "resource://gre/modules/identity/IdentityService.jsm",
+                                   "IdentityService");
+ 
+-XPCOMUtils.defineLazyModuleGetter(this,
+-                                  "Logger",
+-                                  "resource://gre/modules/identity/LogUtils.jsm");
+-
+ XPCOMUtils.defineLazyServiceGetter(this,
+                                    "uuidGenerator",
+                                    "@mozilla.org/uuid-generator;1",
+                                    "nsIUUIDGenerator");
+ 
+ const TEST_URL = "https://myfavoriteflan.com";
+ const TEST_USER = "uumellmahaye1969@hotmail.com";
+ const TEST_PRIVKEY = "i-am-a-secret";
+ const TEST_CERT = "i~like~pie";
+ 
+-// The following are utility functions for Identity testing
+-
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["test"].concat(aMessageArgs));
+-}
++XPCOMUtils.defineLazyGetter(this, "logger", function() {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
+ 
+ function partial(fn) {
+   let args = Array.prototype.slice.call(arguments, 1);
+   return function() {
+     return fn.apply(this, args.concat(Array.prototype.slice.call(arguments)));
+   };
+ }
+ 
+diff --git a/b2g/components/test/unit/test_signintowebsite.js b/b2g/components/test/unit/test_signintowebsite.js
+--- a/b2g/components/test/unit/test_signintowebsite.js
++++ b/b2g/components/test/unit/test_signintowebsite.js
+@@ -1,31 +1,21 @@
+ /* Any copyright is dedicated to the Public Domain.
+  * http://creativecommons.org/publicdomain/zero/1.0/ */
+ 
+ // Tests for b2g/components/SignInToWebsite.jsm
+ 
+ "use strict";
+ 
+-XPCOMUtils.defineLazyModuleGetter(this, "MinimalIDService",
+-                                  "resource://gre/modules/identity/MinimalIdentity.jsm",
+-                                  "IdentityService");
+-
+ XPCOMUtils.defineLazyModuleGetter(this, "SignInToWebsiteController",
+                                   "resource://gre/modules/SignInToWebsite.jsm",
+                                   "SignInToWebsiteController");
+ 
+-Cu.import("resource://gre/modules/identity/LogUtils.jsm");
+-
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["test_signintowebsite"].concat(aMessageArgs));
+-}
+-
+ function test_overall() {
+-  do_check_neq(MinimalIDService, null);
++  do_check_neq(IdentityService, null);
+   run_next_test();
+ }
+ 
+ function objectContains(object, subset) {
+   let objectKeys = Object.keys(object);
+   let subsetKeys = Object.keys(subset);
+ 
+   // can't have fewer keys than the subset
+@@ -106,17 +96,17 @@ function test_watch() {
+     let mockedDoc = mockDoc({loggedInUser: null}, function(action, params) {
+       do_check_eq(action, 'ready');
+       controller.uninit();
+       do_test_finished();
+       run_next_test();
+     });
+ 
+     controller.init({pipe: mockReceivingPipe()});
+-    MinimalIDService.RP.watch(mockedDoc, {});
++    IdentityService.RP.watch(mockedDoc, {});
+   });
+ }
+ 
+ function test_request_login() {
+   do_test_pending();
+ 
+   setup_test_identity("flan@food.gov", TEST_CERT, function() {
+     let controller = SignInToWebsiteController;
+@@ -131,18 +121,18 @@ function test_request_login() {
+         do_check_eq(params, TEST_CERT);
+         controller.uninit();
+         do_test_finished();
+         run_next_test();
+       }
+     ));
+ 
+     controller.init({pipe: mockReceivingPipe()});
+-    MinimalIDService.RP.watch(mockedDoc, {});
+-    MinimalIDService.RP.request(mockedDoc.id, {});
++    IdentityService.RP.watch(mockedDoc, {});
++    IdentityService.RP.request(mockedDoc.id, {});
+   });
+ }
+ 
+ function test_request_logout() {
+   do_test_pending();
+ 
+   setup_test_identity("flan@food.gov", TEST_CERT, function() {
+     let controller = SignInToWebsiteController;
+@@ -157,18 +147,18 @@ function test_request_logout() {
+         do_check_eq(params, undefined);
+         controller.uninit();
+         do_test_finished();
+         run_next_test();
+       }
+     ));
+ 
+     controller.init({pipe: mockReceivingPipe()});
+-    MinimalIDService.RP.watch(mockedDoc, {});
+-    MinimalIDService.RP.logout(mockedDoc.id, {});
++    IdentityService.RP.watch(mockedDoc, {});
++    IdentityService.RP.logout(mockedDoc.id, {});
+   });
+ }
+ 
+ function test_request_login_logout() {
+   do_test_pending();
+ 
+   setup_test_identity("unagi@food.gov", TEST_CERT, function() {
+     let controller = SignInToWebsiteController;
+@@ -187,19 +177,19 @@ function test_request_login_logout() {
+         do_check_eq(params, undefined);
+         controller.uninit();
+         do_test_finished();
+         run_next_test();
+       }
+     ));
+ 
+     controller.init({pipe: mockReceivingPipe()});
+-    MinimalIDService.RP.watch(mockedDoc, {});
+-    MinimalIDService.RP.request(mockedDoc.id, {});
+-    MinimalIDService.RP.logout(mockedDoc.id, {});
++    IdentityService.RP.watch(mockedDoc, {});
++    IdentityService.RP.request(mockedDoc.id, {});
++    IdentityService.RP.logout(mockedDoc.id, {});
+   });
+ }
+ 
+ function test_options_pass_through() {
+   do_test_pending();
+ 
+   // An meaningless structure for testing that RP messages preserve
+   // objects and their parameters as they are passed back and forth.
+@@ -218,32 +208,32 @@ function test_options_pass_through() {
+ 
+   function pipeOtherEnd(rpOptions, gaiaOptions) {
+     // Ensure that every time we receive a message, our mixed
+     // random params are contained in that message
+     do_check_true(objectContains(rpOptions, randomMixedParams));
+ 
+     switch (gaiaOptions.message) {
+       case "identity-delegate-watch":
+-        MinimalIDService.RP.request(mockedDoc.id, {});
++        IdentityService.RP.request(mockedDoc.id, {});
+         break;
+       case "identity-delegate-request":
+-        MinimalIDService.RP.logout(mockedDoc.id, {});
++        IdentityService.RP.logout(mockedDoc.id, {});
+         break;
+       case "identity-delegate-logout":
+         do_test_finished();
+         run_next_test();
+         break;
+     }
+   }
+ 
+   let controller = SignInToWebsiteController;
+   controller.init({pipe: mockSendingPipe(pipeOtherEnd)});
+ 
+-  MinimalIDService.RP.watch(mockedDoc, {});
++  IdentityService.RP.watch(mockedDoc, {});
+ }
+ 
+ let TESTS = [
+   test_overall,
+   test_mock_doc,
+   test_object_contains,
+ 
+   test_watch,
+diff --git a/dom/identity/tests/head_identity.js b/dom/identity/tests/head_identity.js
+--- a/dom/identity/tests/head_identity.js
++++ b/dom/identity/tests/head_identity.js
+@@ -5,29 +5,30 @@
+ 
+ const Cc = SpecialPowers.Cc;
+ const Ci = SpecialPowers.Ci;
+ const Cu = SpecialPowers.Cu;
+ 
+ const Services = Cu.import("resource://gre/modules/Services.jsm").Services;
+ const XPCOMUtils = Cu.import('resource://gre/modules/XPCOMUtils.jsm').XPCOMUtils;
+ 
++const getLogger = Cu.import("resource://gre/modules/identity/LogUtils.jsm").getLogger;
++const logger = getLogger("Identity DOM test", "toolkit.identity.debug");
++
++logger.log("special powers: set prefs");
+ SpecialPowers.setBoolPref("toolkit.identity.debug", true);
+ SpecialPowers.setBoolPref("dom.identity.enabled", true);
+ SpecialPowers.setBoolPref("dom.identity.syntheticEventsOk", true);
+ 
+ const DOMIdentity = Cu.import("resource://gre/modules/DOMIdentity.jsm")
+                       .DOMIdentity;
+ 
+ let util = SpecialPowers.getDOMWindowUtils(window);
+ let outerWinId = util.outerWindowID;
+ 
+-const getLogger = Cu.import("resource://gre/modules/identity/LogUtils.jsm").getLogger;
+-const logger = getLogger("Identity DOM test", "toolkit.identity.debug");
+-
+ const identity = navigator.id || navigator.mozId;
+ 
+ const MOCK_INCLUDEJS = "http://example.org/browser/browser/modules/test/mock_personaIframe.html";
+ const MOCK_IFRAME = "http://example.org/browser/browser/modules/test/mock_personaIframe.html";
+ const MOCK_DIALOG = "http://example.org/browser/browser/modules/test/mock_personaIframe.html";
+ 
+ let index = 0;
+ 
+@@ -36,16 +37,17 @@ let index = 0;
+ function RequestListener() {
+   Services.obs.addObserver(this, "http-on-modify-request", false);
+   logger.log("Listening for http-on-modify-request");
+ }
+ 
+ RequestListener.prototype = {
+   observe: function observe(aSubject, aTopic, aData) {
+     if (aTopic === "http-on-modify-request") {
++      logger.log("SpecialPowers.wrap(", aSubject, ").QueryInterface(Ci.nsIHttpChannel);");
+       let channel = SpecialPowers.wrap(aSubject).QueryInterface(Ci.nsIHttpChannel);
+       let ioservice = Cc["@mozilla.org/network/io-service;1"]
+                         .getService(Ci.nsIIOService);
+       let src = channel.URI.spec;
+       let target = null;
+       if (src.match(/include.js/)) target = MOCK_INCLUDEJS;
+       if (src.match(/communication_iframe/)) target = MOCK_IFRAME;
+       if (src.match(/sign_in/)) target = MOCK_DIALOG;
+@@ -119,14 +121,16 @@ function next() {
+   } catch(ex) {
+     ok(false, "Caught exception", ex);
+   }
+   index += 1;
+ }
+ 
+ function finish_tests() {
+   info("all done");
++  info("clearing bool prefs");
+   SpecialPowers.clearUserPref("toolkit.identity.debug");
+   SpecialPowers.clearUserPref("dom.identity.enabled");
++  SpecialPowers.clearUserPref("dom.identity.syntheticEventsOk");
+   window.requestListener.remove();
+   SimpleTest.finish();
+ }
+ 

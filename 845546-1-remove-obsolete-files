@@ -1,0 +1,3253 @@
+# HG changeset patch
+# Parent 53c2e7b9753bbaaed5fc5db747d0600f18d9e5af
+# User Jed Parsons <jparsons@mozilla.com>
+# Date Wed Apr 17 11:43:14 2013 PDT
+Bug 845546: Identity service: part 1, remove obsolete files
+
+diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm
+deleted file mode 100644
+--- a/toolkit/identity/Identity.jsm
++++ /dev/null
+@@ -1,305 +0,0 @@
+-/* -*- Mode: js2; js2-basic-offset: 2; indent-tabs-mode: nil; -*- */
+-/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+-/* This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+-
+-"use strict";
+-
+-this.EXPORTED_SYMBOLS = ["IdentityService"];
+-
+-const Cu = Components.utils;
+-const Ci = Components.interfaces;
+-const Cc = Components.classes;
+-const Cr = Components.results;
+-
+-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+-Cu.import("resource://gre/modules/Services.jsm");
+-Cu.import("resource://gre/modules/identity/LogUtils.jsm");
+-Cu.import("resource://gre/modules/identity/IdentityStore.jsm");
+-Cu.import("resource://gre/modules/identity/RelyingParty.jsm");
+-Cu.import("resource://gre/modules/identity/IdentityProvider.jsm");
+-
+-XPCOMUtils.defineLazyModuleGetter(this,
+-                                  "jwcrypto",
+-                                  "resource://gre/modules/identity/jwcrypto.jsm");
+-
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["core"].concat(aMessageArgs));
+-}
+-function reportError(...aMessageArgs) {
+-  Logger.reportError.apply(Logger, ["core"].concat(aMessageArgs));
+-}
+-
+-function IDService() {
+-  Services.obs.addObserver(this, "quit-application-granted", false);
+-  Services.obs.addObserver(this, "identity-auth-complete", false);
+-
+-  this._store = IdentityStore;
+-  this.RP = RelyingParty;
+-  this.IDP = IdentityProvider;
+-}
+-
+-IDService.prototype = {
+-  QueryInterface: XPCOMUtils.generateQI([Ci.nsISupports, Ci.nsIObserver]),
+-
+-  observe: function observe(aSubject, aTopic, aData) {
+-    switch (aTopic) {
+-      case "quit-application-granted":
+-        Services.obs.removeObserver(this, "quit-application-granted");
+-        this.shutdown();
+-        break;
+-      case "identity-auth-complete":
+-        if (!aSubject || !aSubject.wrappedJSObject)
+-          break;
+-        let subject = aSubject.wrappedJSObject;
+-        log("Auth complete:", aSubject.wrappedJSObject);
+-        // We have authenticated in order to provision an identity.
+-        // So try again.
+-        this.selectIdentity(subject.rpId, subject.identity);
+-        break;
+-    }
+-  },
+-
+-  reset: function reset() {
+-    // Explicitly call reset() on our RP and IDP classes.
+-    // This is here to make testing easier.  When the
+-    // quit-application-granted signal is emitted, reset() will be
+-    // called here, on RP, on IDP, and on the store.  So you don't
+-    // need to use this :)
+-    this._store.reset();
+-    this.RP.reset();
+-    this.IDP.reset();
+-  },
+-
+-  shutdown: function shutdown() {
+-    log("shutdown");
+-    Services.obs.removeObserver(this, "identity-auth-complete");
+-    Services.obs.removeObserver(this, "quit-application-granted");
+-  },
+-
+-  /**
+-   * Parse an email into username and domain if it is valid, else return null
+-   */
+-  parseEmail: function parseEmail(email) {
+-    var match = email.match(/^([^@]+)@([^@^/]+.[a-z]+)$/);
+-    if (match) {
+-      return {
+-        username: match[1],
+-        domain: match[2]
+-      };
+-    }
+-    return null;
+-  },
+-
+-  /**
+-   * The UX wants to add a new identity
+-   * often followed by selectIdentity()
+-   *
+-   * @param aIdentity
+-   *        (string) the email chosen for login
+-   */
+-  addIdentity: function addIdentity(aIdentity) {
+-    if (this._store.fetchIdentity(aIdentity) === null) {
+-      this._store.addIdentity(aIdentity, null, null);
+-    }
+-  },
+-
+-  /**
+-   * The UX comes back and calls selectIdentity once the user has picked
+-   * an identity.
+-   *
+-   * @param aRPId
+-   *        (integer) the id of the doc object obtained in .watch() and
+-   *                  passed to the UX component.
+-   *
+-   * @param aIdentity
+-   *        (string) the email chosen for login
+-   */
+-  selectIdentity: function selectIdentity(aRPId, aIdentity) {
+-    log("selectIdentity: RP id:", aRPId, "identity:", aIdentity);
+-
+-    // Get the RP that was stored when watch() was invoked.
+-    let rp = this.RP._rpFlows[aRPId];
+-    if (!rp) {
+-      reportError("selectIdentity", "Invalid RP id: ", aRPId);
+-      return;
+-    }
+-
+-    // It's possible that we are in the process of provisioning an
+-    // identity.
+-    let provId = rp.provId;
+-
+-    let rpLoginOptions = {
+-      loggedInUser: aIdentity,
+-      origin: rp.origin
+-    };
+-    log("selectIdentity: provId:", provId, "origin:", rp.origin);
+-
+-    // Once we have a cert, and once the user is authenticated with the
+-    // IdP, we can generate an assertion and deliver it to the doc.
+-    let self = this;
+-    this.RP._generateAssertion(rp.origin, aIdentity, function hadReadyAssertion(err, assertion) {
+-      if (!err && assertion) {
+-        self.RP._doLogin(rp, rpLoginOptions, assertion);
+-        return;
+-
+-      }
+-      // Need to provision an identity first.  Begin by discovering
+-      // the user's IdP.
+-      self._discoverIdentityProvider(aIdentity, function gotIDP(err, idpParams) {
+-        if (err) {
+-          rp.doError(err);
+-          return;
+-        }
+-
+-        // The idpParams tell us where to go to provision and authenticate
+-        // the identity.
+-        self.IDP._provisionIdentity(aIdentity, idpParams, provId, function gotID(err, aProvId) {
+-
+-          // Provision identity may have created a new provision flow
+-          // for us.  To make it easier to relate provision flows with
+-          // RP callers, we cross index the two here.
+-          rp.provId = aProvId;
+-          self.IDP._provisionFlows[aProvId].rpId = aRPId;
+-
+-          // At this point, we already have a cert.  If the user is also
+-          // already authenticated with the IdP, then we can try again
+-          // to generate an assertion and login.
+-          if (err) {
+-            // We are not authenticated.  If we have already tried to
+-            // authenticate and failed, then this is a "hard fail" and
+-            // we give up.  Otherwise we try to authenticate with the
+-            // IdP.
+-
+-            if (self.IDP._provisionFlows[aProvId].didAuthentication) {
+-              self.IDP._cleanUpProvisionFlow(aProvId);
+-              self.RP._cleanUpProvisionFlow(aRPId, aProvId);
+-              log("ERROR: selectIdentity: authentication hard fail");
+-              rp.doError("Authentication fail.");
+-              return;
+-            }
+-            // Try to authenticate with the IdP.  Note that we do
+-            // not clean up the provision flow here.  We will continue
+-            // to use it.
+-            self.IDP._doAuthentication(aProvId, idpParams);
+-            return;
+-          }
+-
+-          // Provisioning flows end when a certificate has been registered.
+-          // Thus IdentityProvider's registerCertificate() cleans up the
+-          // current provisioning flow.  We only do this here on error.
+-          self.RP._generateAssertion(rp.origin, aIdentity, function gotAssertion(err, assertion) {
+-            if (err) {
+-              rp.doError(err);
+-              return;
+-            }
+-            self.RP._doLogin(rp, rpLoginOptions, assertion);
+-            self.RP._cleanUpProvisionFlow(aRPId, aProvId);
+-            return;
+-          });
+-        });
+-      });
+-    });
+-  },
+-
+-  // methods for chrome and add-ons
+-
+-  /**
+-   * Discover the IdP for an identity
+-   *
+-   * @param aIdentity
+-   *        (string) the email we're logging in with
+-   *
+-   * @param aCallback
+-   *        (function) callback to invoke on completion
+-   *                   with first-positional parameter the error.
+-   */
+-  _discoverIdentityProvider: function _discoverIdentityProvider(aIdentity, aCallback) {
+-    // XXX bug 767610 - validate email address call
+-    // When that is available, we can remove this custom parser
+-    var parsedEmail = this.parseEmail(aIdentity);
+-    if (parsedEmail === null) {
+-      return aCallback("Could not parse email: " + aIdentity);
+-    }
+-    log("_discoverIdentityProvider: identity:", aIdentity, "domain:", parsedEmail.domain);
+-
+-    this._fetchWellKnownFile(parsedEmail.domain, function fetchedWellKnown(err, idpParams) {
+-      // idpParams includes the pk, authorization url, and
+-      // provisioning url.
+-
+-      // XXX bug 769861 follow any authority delegations
+-      // if no well-known at any point in the delegation
+-      // fall back to browserid.org as IdP
+-      return aCallback(err, idpParams);
+-    });
+-  },
+-
+-  /**
+-   * Fetch the well-known file from the domain.
+-   *
+-   * @param aDomain
+-   *
+-   * @param aScheme
+-   *        (string) (optional) Protocol to use.  Default is https.
+-   *                 This is necessary because we are unable to test
+-   *                 https.
+-   *
+-   * @param aCallback
+-   *
+-   */
+-  _fetchWellKnownFile: function _fetchWellKnownFile(aDomain, aCallback, aScheme='https') {
+-    // XXX bug 769854 make tests https and remove aScheme option
+-    let url = aScheme + '://' + aDomain + "/.well-known/browserid";
+-    log("_fetchWellKnownFile:", url);
+-
+-    // this appears to be a more successful way to get at xmlhttprequest (which supposedly will close with a window
+-    let req = Cc["@mozilla.org/xmlextras/xmlhttprequest;1"]
+-                .createInstance(Ci.nsIXMLHttpRequest);
+-
+-    // XXX bug 769865 gracefully handle being off-line
+-    // XXX bug 769866 decide on how to handle redirects
+-    req.open("GET", url, true);
+-    req.responseType = "json";
+-    req.mozBackgroundRequest = true;
+-    req.onload = function _fetchWellKnownFile_onload() {
+-      if (req.status < 200 || req.status >= 400) {
+-        log("_fetchWellKnownFile", url, ": server returned status:", req.status);
+-        return aCallback("Error");
+-      }
+-      try {
+-        let idpParams = req.response;
+-
+-        // Verify that the IdP returned a valid configuration
+-        if (! (idpParams.provisioning &&
+-            idpParams.authentication &&
+-            idpParams['public-key'])) {
+-          let errStr= "Invalid well-known file from: " + aDomain;
+-          log("_fetchWellKnownFile:", errStr);
+-          return aCallback(errStr);
+-        }
+-
+-        let callbackObj = {
+-          domain: aDomain,
+-          idpParams: idpParams,
+-        };
+-        log("_fetchWellKnownFile result: ", callbackObj);
+-        // Yay.  Valid IdP configuration for the domain.
+-        return aCallback(null, callbackObj);
+-
+-      } catch (err) {
+-        reportError("_fetchWellKnownFile", "Bad configuration from", aDomain, err);
+-        return aCallback(err.toString());
+-      }
+-    };
+-    req.onerror = function _fetchWellKnownFile_onerror() {
+-      log("_fetchWellKnownFile", "ERROR:", req.status, req.statusText);
+-      log("ERROR: _fetchWellKnownFile:", err);
+-      return aCallback("Error");
+-    };
+-    req.send(null);
+-  },
+-
+-};
+-
+-this.IdentityService = new IDService();
+diff --git a/toolkit/identity/IdentityProvider.jsm b/toolkit/identity/IdentityProvider.jsm
+deleted file mode 100644
+--- a/toolkit/identity/IdentityProvider.jsm
++++ /dev/null
+@@ -1,494 +0,0 @@
+-/* -*- Mode: js2; js2-basic-offset: 2; indent-tabs-mode: nil; -*- */
+-/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+-/* This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+-
+-"use strict";
+-
+-const Cu = Components.utils;
+-const Ci = Components.interfaces;
+-const Cc = Components.classes;
+-const Cr = Components.results;
+-
+-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+-Cu.import("resource://gre/modules/Services.jsm");
+-Cu.import("resource://gre/modules/identity/LogUtils.jsm");
+-Cu.import("resource://gre/modules/identity/Sandbox.jsm");
+-
+-this.EXPORTED_SYMBOLS = ["IdentityProvider"];
+-const FALLBACK_PROVIDER = "browserid.org";
+-
+-XPCOMUtils.defineLazyModuleGetter(this,
+-                                  "jwcrypto",
+-                                  "resource://gre/modules/identity/jwcrypto.jsm");
+-
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["IDP"].concat(aMessageArgs));
+-}
+-function reportError(...aMessageArgs) {
+-  Logger.reportError.apply(Logger, ["IDP"].concat(aMessageArgs));
+-}
+-
+-
+-function IdentityProviderService() {
+-  XPCOMUtils.defineLazyModuleGetter(this,
+-                                    "_store",
+-                                    "resource://gre/modules/identity/IdentityStore.jsm",
+-                                    "IdentityStore");
+-
+-  this.reset();
+-}
+-
+-IdentityProviderService.prototype = {
+-  QueryInterface: XPCOMUtils.generateQI([Ci.nsISupports, Ci.nsIObserver]),
+-  _sandboxConfigured: false,
+-
+-  observe: function observe(aSubject, aTopic, aData) {
+-    switch (aTopic) {
+-      case "quit-application-granted":
+-        Services.obs.removeObserver(this, "quit-application-granted");
+-        this.shutdown();
+-        break;
+-    }
+-  },
+-
+-  reset: function IDP_reset() {
+-    // Clear the provisioning flows.  Provision flows contain an
+-    // identity, idpParams (how to reach the IdP to provision and
+-    // authenticate), a callback (a completion callback for when things
+-    // are done), and a provisioningFrame (which is the provisioning
+-    // sandbox).  Additionally, two callbacks will be attached:
+-    // beginProvisioningCallback and genKeyPairCallback.
+-    this._provisionFlows = {};
+-
+-    // Clear the authentication flows.  Authentication flows attach
+-    // to provision flows.  In the process of provisioning an id, it
+-    // may be necessary to authenticate with an IdP.  The authentication
+-    // flow maintains the state of that authentication process.
+-    this._authenticationFlows = {};
+-  },
+-
+-  getProvisionFlow: function getProvisionFlow(aProvId, aErrBack) {
+-    let provFlow = this._provisionFlows[aProvId];
+-    if (provFlow) {
+-      return provFlow;
+-    }
+-
+-    let err = "No provisioning flow found with id " + aProvId;
+-    log("ERROR:", err);
+-    if (typeof aErrBack === 'function') {
+-      aErrBack(err);
+-    }
+-  },
+-
+-  shutdown: function RP_shutdown() {
+-    this.reset();
+-
+-    if (this._sandboxConfigured) {
+-      // Tear down message manager listening on the hidden window
+-      Cu.import("resource://gre/modules/DOMIdentity.jsm");
+-      DOMIdentity._configureMessages(Services.appShell.hiddenDOMWindow, false);
+-      this._sandboxConfigured = false;
+-    }
+-
+-    Services.obs.removeObserver(this, "quit-application-granted");
+-  },
+-
+-  get securityLevel() {
+-    return 1;
+-  },
+-
+-  get certDuration() {
+-    switch(this.securityLevel) {
+-      default:
+-        return 3600;
+-    }
+-  },
+-
+-  /**
+-   * Provision an Identity
+-   *
+-   * @param aIdentity
+-   *        (string) the email we're logging in with
+-   *
+-   * @param aIDPParams
+-   *        (object) parameters of the IdP
+-   *
+-   * @param aCallback
+-   *        (function) callback to invoke on completion
+-   *                   with first-positional parameter the error.
+-   */
+-  _provisionIdentity: function _provisionIdentity(aIdentity, aIDPParams, aProvId, aCallback) {
+-    let provPath = aIDPParams.idpParams.provisioning;
+-    let url = Services.io.newURI("https://" + aIDPParams.domain, null, null).resolve(provPath);
+-    log("_provisionIdentity: identity:", aIdentity, "url:", url);
+-
+-    // If aProvId is not null, then we already have a flow
+-    // with a sandbox.  Otherwise, get a sandbox and create a
+-    // new provision flow.
+-
+-    if (aProvId) {
+-      // Re-use an existing sandbox
+-      log("_provisionIdentity: re-using sandbox in provisioning flow with id:", aProvId);
+-      this._provisionFlows[aProvId].provisioningSandbox.reload();
+-
+-    } else {
+-      this._createProvisioningSandbox(url, function createdSandbox(aSandbox) {
+-        // create a provisioning flow, using the sandbox id, and
+-        // stash callback associated with this provisioning workflow.
+-
+-        let provId = aSandbox.id;
+-        this._provisionFlows[provId] = {
+-          identity: aIdentity,
+-          idpParams: aIDPParams,
+-          securityLevel: this.securityLevel,
+-          provisioningSandbox: aSandbox,
+-          callback: function doCallback(aErr) {
+-            aCallback(aErr, provId);
+-          },
+-        };
+-
+-        log("_provisionIdentity: Created sandbox and provisioning flow with id:", provId);
+-        // XXX bug 769862 - provisioning flow should timeout after N seconds
+-
+-      }.bind(this));
+-    }
+-  },
+-
+-  // DOM Methods
+-  /**
+-   * the provisioning iframe sandbox has called navigator.id.beginProvisioning()
+-   *
+-   * @param aCaller
+-   *        (object)  the iframe sandbox caller with all callbacks and
+-   *                  other information.  Callbacks include:
+-   *                  - doBeginProvisioningCallback(id, duration_s)
+-   *                  - doGenKeyPairCallback(pk)
+-   */
+-  beginProvisioning: function beginProvisioning(aCaller) {
+-    log("beginProvisioning:", aCaller.id);
+-
+-    // Expect a flow for this caller already to be underway.
+-    let provFlow = this.getProvisionFlow(aCaller.id, aCaller.doError);
+-
+-    // keep the caller object around
+-    provFlow.caller = aCaller;
+-
+-    let identity = provFlow.identity;
+-    let frame = provFlow.provisioningFrame;
+-
+-    // Determine recommended length of cert.
+-    let duration = this.certDuration;
+-
+-    // Make a record that we have begun provisioning.  This is required
+-    // for genKeyPair.
+-    provFlow.didBeginProvisioning = true;
+-
+-    // Let the sandbox know to invoke the callback to beginProvisioning with
+-    // the identity and cert length.
+-    return aCaller.doBeginProvisioningCallback(identity, duration);
+-  },
+-
+-  /**
+-   * the provisioning iframe sandbox has called
+-   * navigator.id.raiseProvisioningFailure()
+-   *
+-   * @param aProvId
+-   *        (int)  the identifier of the provisioning flow tied to that sandbox
+-   * @param aReason
+-   */
+-  raiseProvisioningFailure: function raiseProvisioningFailure(aProvId, aReason) {
+-    reportError("Provisioning failure", aReason);
+-
+-    // look up the provisioning caller and its callback
+-    let provFlow = this.getProvisionFlow(aProvId);
+-
+-    // Sandbox is deleted in _cleanUpProvisionFlow in case we re-use it.
+-
+-    // This may be either a "soft" or "hard" fail.  If it's a
+-    // soft fail, we'll flow through setAuthenticationFlow, where
+-    // the provision flow data will be copied into a new auth
+-    // flow.  If it's a hard fail, then the callback will be
+-    // responsible for cleaning up the now defunct provision flow.
+-
+-    // invoke the callback with an error.
+-    provFlow.callback(aReason);
+-  },
+-
+-  /**
+-   * When navigator.id.genKeyPair is called from provisioning iframe sandbox.
+-   * Generates a keypair for the current user being provisioned.
+-   *
+-   * @param aProvId
+-   *        (int)  the identifier of the provisioning caller tied to that sandbox
+-   *
+-   * It is an error to call genKeypair without receiving the callback for
+-   * the beginProvisioning() call first.
+-   */
+-  genKeyPair: function genKeyPair(aProvId) {
+-    // Look up the provisioning caller and make sure it's valid.
+-    let provFlow = this.getProvisionFlow(aProvId);
+-
+-    if (!provFlow.didBeginProvisioning) {
+-      let errStr = "ERROR: genKeyPair called before beginProvisioning";
+-      log(errStr);
+-      provFlow.callback(errStr);
+-      return;
+-    }
+-
+-    // Ok generate a keypair
+-    jwcrypto.generateKeyPair(jwcrypto.ALGORITHMS.DS160, function gkpCb(err, kp) {
+-      log("in gkp callback");
+-      if (err) {
+-        log("ERROR: genKeyPair:", err);
+-        provFlow.callback(err);
+-        return;
+-      }
+-
+-      provFlow.kp = kp;
+-
+-      // Serialize the publicKey of the keypair and send it back to the
+-      // sandbox.
+-      log("genKeyPair: generated keypair for provisioning flow with id:", aProvId);
+-      provFlow.caller.doGenKeyPairCallback(provFlow.kp.serializedPublicKey);
+-    }.bind(this));
+-  },
+-
+-  /**
+-   * When navigator.id.registerCertificate is called from provisioning iframe
+-   * sandbox.
+-   *
+-   * Sets the certificate for the user for which a certificate was requested
+-   * via a preceding call to beginProvisioning (and genKeypair).
+-   *
+-   * @param aProvId
+-   *        (integer) the identifier of the provisioning caller tied to that
+-   *                  sandbox
+-   *
+-   * @param aCert
+-   *        (String)  A JWT representing the signed certificate for the user
+-   *                  being provisioned, provided by the IdP.
+-   */
+-  registerCertificate: function registerCertificate(aProvId, aCert) {
+-    log("registerCertificate:", aProvId, aCert);
+-
+-    // look up provisioning caller, make sure it's valid.
+-    let provFlow = this.getProvisionFlow(aProvId);
+-
+-    if (!provFlow.caller) {
+-      reportError("registerCertificate", "No provision flow or caller");
+-      return;
+-    }
+-    if (!provFlow.kp)  {
+-      let errStr = "Cannot register a certificate without a keypair";
+-      reportError("registerCertificate", errStr);
+-      provFlow.callback(errStr);
+-      return;
+-    }
+-
+-    // store the keypair and certificate just provided in IDStore.
+-    this._store.addIdentity(provFlow.identity, provFlow.kp, aCert);
+-
+-    // Great success!
+-    provFlow.callback(null);
+-
+-    // Clean up the flow.
+-    this._cleanUpProvisionFlow(aProvId);
+-  },
+-
+-  /**
+-   * Begin the authentication process with an IdP
+-   *
+-   * @param aProvId
+-   *        (int) the identifier of the provisioning flow which failed
+-   *
+-   * @param aCallback
+-   *        (function) to invoke upon completion, with
+-   *                   first-positional-param error.
+-   */
+-  _doAuthentication: function _doAuthentication(aProvId, aIDPParams) {
+-    log("_doAuthentication: provId:", aProvId, "idpParams:", aIDPParams);
+-    // create an authentication caller and its identifier AuthId
+-    // stash aIdentity, idpparams, and callback in it.
+-
+-    // extract authentication URL from idpParams
+-    let authPath = aIDPParams.idpParams.authentication;
+-    let authURI = Services.io.newURI("https://" + aIDPParams.domain, null, null).resolve(authPath);
+-
+-    // beginAuthenticationFlow causes the "identity-auth" topic to be
+-    // observed.  Since it's sending a notification to the DOM, there's
+-    // no callback.  We wait for the DOM to trigger the next phase of
+-    // provisioning.
+-    this._beginAuthenticationFlow(aProvId, authURI);
+-
+-    // either we bind the AuthID to the sandbox ourselves, or UX does that,
+-    // in which case we need to tell UX the AuthId.
+-    // Currently, the UX creates the UI and gets the AuthId from the window
+-    // and sets is with setAuthenticationFlow
+-  },
+-
+-  /**
+-   * The authentication frame has called navigator.id.beginAuthentication
+-   *
+-   * IMPORTANT: the aCaller is *always* non-null, even if this is called from
+-   * a regular content page. We have to make sure, on every DOM call, that
+-   * aCaller is an expected authentication-flow identifier. If not, we throw
+-   * an error or something.
+-   *
+-   * @param aCaller
+-   *        (object)  the authentication caller
+-   *
+-   */
+-  beginAuthentication: function beginAuthentication(aCaller) {
+-    log("beginAuthentication: caller id:", aCaller.id);
+-
+-    // Begin the authentication flow after having concluded a provisioning
+-    // flow.  The aCaller that the DOM gives us will have the same ID as
+-    // the provisioning flow we just concluded.  (see setAuthenticationFlow)
+-    let authFlow = this._authenticationFlows[aCaller.id];
+-    if (!authFlow) {
+-      return aCaller.doError("beginAuthentication: no flow for caller id", aCaller.id);
+-    }
+-
+-    authFlow.caller = aCaller;
+-
+-    let identity = this._provisionFlows[authFlow.provId].identity;
+-
+-    // tell the UI to start the authentication process
+-    log("beginAuthentication: authFlow:", aCaller.id, "identity:", identity);
+-    return authFlow.caller.doBeginAuthenticationCallback(identity);
+-  },
+-
+-  /**
+-   * The auth frame has called navigator.id.completeAuthentication
+-   *
+-   * @param aAuthId
+-   *        (int)  the identifier of the authentication caller tied to that sandbox
+-   *
+-   */
+-  completeAuthentication: function completeAuthentication(aAuthId) {
+-    log("completeAuthentication:", aAuthId);
+-
+-    // look up the AuthId caller, and get its callback.
+-    let authFlow = this._authenticationFlows[aAuthId];
+-    if (!authFlow) {
+-      reportError("completeAuthentication", "No auth flow with id", aAuthId);
+-      return;
+-    }
+-    let provId = authFlow.provId;
+-
+-    // delete caller
+-    delete authFlow['caller'];
+-    delete this._authenticationFlows[aAuthId];
+-
+-    let provFlow = this.getProvisionFlow(provId);
+-    provFlow.didAuthentication = true;
+-    let subject = {
+-      rpId: provFlow.rpId,
+-      identity: provFlow.identity,
+-    };
+-    Services.obs.notifyObservers({ wrappedJSObject: subject }, "identity-auth-complete", aAuthId);
+-  },
+-
+-  /**
+-   * The auth frame has called navigator.id.cancelAuthentication
+-   *
+-   * @param aAuthId
+-   *        (int)  the identifier of the authentication caller
+-   *
+-   */
+-  cancelAuthentication: function cancelAuthentication(aAuthId) {
+-    log("cancelAuthentication:", aAuthId);
+-
+-    // look up the AuthId caller, and get its callback.
+-    let authFlow = this._authenticationFlows[aAuthId];
+-    if (!authFlow) {
+-      reportError("cancelAuthentication", "No auth flow with id:", aAuthId);
+-      return;
+-    }
+-    let provId = authFlow.provId;
+-
+-    // delete caller
+-    delete authFlow['caller'];
+-    delete this._authenticationFlows[aAuthId];
+-
+-    let provFlow = this.getProvisionFlow(provId);
+-    provFlow.didAuthentication = true;
+-    Services.obs.notifyObservers(null, "identity-auth-complete", aAuthId);
+-
+-    // invoke callback with ERROR.
+-    let errStr = "Authentication canceled by IDP";
+-    log("ERROR: cancelAuthentication:", errStr);
+-    provFlow.callback(errStr);
+-  },
+-
+-  /**
+-   * Called by the UI to set the ID and caller for the authentication flow after it gets its ID
+-   */
+-  setAuthenticationFlow: function(aAuthId, aProvId) {
+-    // this is the transition point between the two flows,
+-    // provision and authenticate.  We tell the auth flow which
+-    // provisioning flow it is started from.
+-    log("setAuthenticationFlow: authId:", aAuthId, "provId:", aProvId);
+-    this._authenticationFlows[aAuthId] = { provId: aProvId };
+-    this._provisionFlows[aProvId].authId = aAuthId;
+-  },
+-
+-  /**
+-   * Load the provisioning URL in a hidden frame to start the provisioning
+-   * process.
+-   */
+-  _createProvisioningSandbox: function _createProvisioningSandbox(aURL, aCallback) {
+-    log("_createProvisioningSandbox:", aURL);
+-
+-    if (!this._sandboxConfigured) {
+-      // Configure message manager listening on the hidden window
+-      Cu.import("resource://gre/modules/DOMIdentity.jsm");
+-      DOMIdentity._configureMessages(Services.appShell.hiddenDOMWindow, true);
+-      this._sandboxConfigured = true;
+-    }
+-
+-    new Sandbox(aURL, aCallback);
+-  },
+-
+-  /**
+-   * Load the authentication UI to start the authentication process.
+-   */
+-  _beginAuthenticationFlow: function _beginAuthenticationFlow(aProvId, aURL) {
+-    log("_beginAuthenticationFlow:", aProvId, aURL);
+-    let propBag = {provId: aProvId};
+-
+-    Services.obs.notifyObservers({wrappedJSObject:propBag}, "identity-auth", aURL);
+-  },
+-
+-  /**
+-   * Clean up a provision flow and the authentication flow and sandbox
+-   * that may be attached to it.
+-   */
+-  _cleanUpProvisionFlow: function _cleanUpProvisionFlow(aProvId) {
+-    log('_cleanUpProvisionFlow:', aProvId);
+-    let prov = this._provisionFlows[aProvId];
+-
+-    // Clean up the sandbox, if there is one.
+-    if (prov.provisioningSandbox) {
+-      let sandbox = this._provisionFlows[aProvId]['provisioningSandbox'];
+-      if (sandbox.free) {
+-        log('_cleanUpProvisionFlow: freeing sandbox');
+-        sandbox.free();
+-      }
+-      delete this._provisionFlows[aProvId]['provisioningSandbox'];
+-    }
+-
+-    // Clean up a related authentication flow, if there is one.
+-    if (this._authenticationFlows[prov.authId]) {
+-      delete this._authenticationFlows[prov.authId];
+-    }
+-
+-    // Finally delete the provision flow
+-    delete this._provisionFlows[aProvId];
+-  }
+-
+-};
+-
+-this.IdentityProvider = new IdentityProviderService();
+diff --git a/toolkit/identity/IdentityStore.jsm b/toolkit/identity/IdentityStore.jsm
+deleted file mode 100644
+--- a/toolkit/identity/IdentityStore.jsm
++++ /dev/null
+@@ -1,97 +0,0 @@
+-/* -*- Mode: js2; js2-basic-offset: 2; indent-tabs-mode: nil; -*- */
+-/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+-/* This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+-
+-"use strict";
+-
+-const Cu = Components.utils;
+-const Ci = Components.interfaces;
+-const Cc = Components.classes;
+-const Cr = Components.results;
+-
+-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+-Cu.import("resource://gre/modules/Services.jsm");
+-
+-this.EXPORTED_SYMBOLS = ["IdentityStore"];
+-
+-// the data store for IDService
+-// written as a separate thing so it can easily be mocked
+-function IDServiceStore() {
+-  this.reset();
+-}
+-
+-// Note: eventually these methods may be async, but we haven no need for this
+-// for now, since we're not storing to disk.
+-IDServiceStore.prototype = {
+-  addIdentity: function addIdentity(aEmail, aKeyPair, aCert) {
+-    this._identities[aEmail] = {keyPair: aKeyPair, cert: aCert};
+-  },
+-  fetchIdentity: function fetchIdentity(aEmail) {
+-    return aEmail in this._identities ? this._identities[aEmail] : null;
+-  },
+-  removeIdentity: function removeIdentity(aEmail) {
+-    let data = this._identities[aEmail];
+-    delete this._identities[aEmail];
+-    return data;
+-  },
+-  getIdentities: function getIdentities() {
+-    // XXX - should clone?
+-    return this._identities;
+-  },
+-  clearCert: function clearCert(aEmail) {
+-    // XXX - should remove key from store?
+-    this._identities[aEmail].cert = null;
+-    this._identities[aEmail].keyPair = null;
+-  },
+-
+-  /**
+-   * set the login state for a given origin
+-   *
+-   * @param aOrigin
+-   *        (string) a web origin
+-   *
+-   * @param aState
+-   *        (boolean) whether or not the user is logged in
+-   *
+-   * @param aEmail
+-   *        (email) the email address the user is logged in with,
+-   *                or, if not logged in, the default email for that origin.
+-   */
+-  setLoginState: function setLoginState(aOrigin, aState, aEmail) {
+-    if (aState && !aEmail) {
+-      throw "isLoggedIn cannot be set to true without an email";
+-    }
+-    return this._loginStates[aOrigin] = {isLoggedIn: aState, email: aEmail};
+-  },
+-  getLoginState: function getLoginState(aOrigin) {
+-    return aOrigin in this._loginStates ? this._loginStates[aOrigin] : null;
+-  },
+-  clearLoginState: function clearLoginState(aOrigin) {
+-    delete this._loginStates[aOrigin];
+-  },
+-
+-  reset: function Store_reset() {
+-    // _identities associates emails with keypairs and certificates
+-    this._identities = {};
+-
+-    // _loginStates associates. remote origins with a login status and
+-    // the email the user has chosen as his or her identity when logging
+-    // into that origin.
+-    this._loginStates = {};
+-  },
+-
+-  QueryInterface: XPCOMUtils.generateQI([Ci.nsISupports, Ci.nsIObserver]),
+-
+-  observe: function observe(aSubject, aTopic, aData) {
+-    switch (aTopic) {
+-      case "quit-application-granted":
+-        Services.obs.removeObserver(this, "quit-application-granted");
+-        this.reset();
+-        break;
+-    }
+-  },
+-};
+-
+-this.IdentityStore = new IDServiceStore();
+diff --git a/toolkit/identity/RelyingParty.jsm b/toolkit/identity/RelyingParty.jsm
+deleted file mode 100644
+--- a/toolkit/identity/RelyingParty.jsm
++++ /dev/null
+@@ -1,370 +0,0 @@
+-/* -*- Mode: js2; js2-basic-offset: 2; indent-tabs-mode: nil; -*- */
+-/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+-/* This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+-
+-"use strict";
+-
+-const Cu = Components.utils;
+-const Ci = Components.interfaces;
+-const Cc = Components.classes;
+-const Cr = Components.results;
+-
+-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+-Cu.import("resource://gre/modules/Services.jsm");
+-Cu.import("resource://gre/modules/identity/LogUtils.jsm");
+-Cu.import("resource://gre/modules/identity/IdentityUtils.jsm");
+-Cu.import("resource://gre/modules/identity/IdentityStore.jsm");
+-
+-this.EXPORTED_SYMBOLS = ["RelyingParty"];
+-
+-XPCOMUtils.defineLazyModuleGetter(this,
+-                                  "jwcrypto",
+-                                  "resource://gre/modules/identity/jwcrypto.jsm");
+-
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["RP"].concat(aMessageArgs));
+-}
+-function reportError(...aMessageArgs) {
+-  Logger.reportError.apply(Logger, ["RP"].concat(aMessageArgs));
+-}
+-
+-function IdentityRelyingParty() {
+-  // The store is a singleton shared among Identity, RelyingParty, and
+-  // IdentityProvider.  The Identity module takes care of resetting
+-  // state in the _store on shutdown.
+-  this._store = IdentityStore;
+-
+-  this.reset();
+-}
+-
+-IdentityRelyingParty.prototype = {
+-  QueryInterface: XPCOMUtils.generateQI([Ci.nsISupports, Ci.nsIObserver]),
+-
+-  observe: function observe(aSubject, aTopic, aData) {
+-    switch (aTopic) {
+-      case "quit-application-granted":
+-        Services.obs.removeObserver(this, "quit-application-granted");
+-        this.shutdown();
+-        break;
+-
+-    }
+-  },
+-
+-  reset: function RP_reset() {
+-    // Forget all documents that call in.  (These are sometimes
+-    // referred to as callers.)
+-    this._rpFlows = {};
+-  },
+-
+-  shutdown: function RP_shutdown() {
+-    this.reset();
+-    Services.obs.removeObserver(this, "quit-application-granted");
+-  },
+-
+-  /**
+-   * Register a listener for a given windowID as a result of a call to
+-   * navigator.id.watch().
+-   *
+-   * @param aCaller
+-   *        (Object)  an object that represents the caller document, and
+-   *                  is expected to have properties:
+-   *                  - id (unique, e.g. uuid)
+-   *                  - loggedInUser (string or null)
+-   *                  - origin (string)
+-   *
+-   *                  and a bunch of callbacks
+-   *                  - doReady()
+-   *                  - doLogin()
+-   *                  - doLogout()
+-   *                  - doError()
+-   *                  - doCancel()
+-   *
+-   */
+-  watch: function watch(aRpCaller) {
+-    this._rpFlows[aRpCaller.id] = aRpCaller;
+-    let origin = aRpCaller.origin;
+-    let state = this._store.getLoginState(origin) || { isLoggedIn: false, email: null };
+-
+-    log("watch: rpId:", aRpCaller.id,
+-        "origin:", origin,
+-        "loggedInUser:", aRpCaller.loggedInUser,
+-        "loggedIn:", state.isLoggedIn,
+-        "email:", state.email);
+-
+-    // If the user is already logged in, then there are three cases
+-    // to deal with:
+-    //
+-    //   1. the email is valid and unchanged:  'ready'
+-    //   2. the email is null:                 'login'; 'ready'
+-    //   3. the email has changed:             'login'; 'ready'
+-    if (state.isLoggedIn) {
+-      if (state.email && aRpCaller.loggedInUser === state.email) {
+-        this._notifyLoginStateChanged(aRpCaller.id, state.email);
+-        return aRpCaller.doReady();
+-
+-      } else if (aRpCaller.loggedInUser === null) {
+-        // Generate assertion for existing login
+-        let options = {loggedInUser: state.email, origin: origin};
+-        return this._doLogin(aRpCaller, options);
+-
+-      } else {
+-        // A loggedInUser different from state.email has been specified.
+-        // Change login identity.
+-
+-        let options = {loggedInUser: state.email, origin: origin};
+-        return this._doLogin(aRpCaller, options);
+-      }
+-
+-    // If the user is not logged in, there are two cases:
+-    //
+-    //   1. a logged in email was provided: 'ready'; 'logout'
+-    //   2. not logged in, no email given:  'ready';
+-
+-    } else {
+-      if (aRpCaller.loggedInUser) {
+-        return this._doLogout(aRpCaller, {origin: origin});
+-
+-      } else {
+-        return aRpCaller.doReady();
+-      }
+-    }
+-  },
+-
+-  /**
+-   * A utility for watch() to set state and notify the dom
+-   * on login
+-   *
+-   * Note that this calls _getAssertion
+-   */
+-  _doLogin: function _doLogin(aRpCaller, aOptions, aAssertion) {
+-    log("_doLogin: rpId:", aRpCaller.id, "origin:", aOptions.origin);
+-
+-    let loginWithAssertion = function loginWithAssertion(assertion) {
+-      this._store.setLoginState(aOptions.origin, true, aOptions.loggedInUser);
+-      this._notifyLoginStateChanged(aRpCaller.id, aOptions.loggedInUser);
+-      aRpCaller.doLogin(assertion);
+-      aRpCaller.doReady();
+-    }.bind(this);
+-
+-    if (aAssertion) {
+-      loginWithAssertion(aAssertion);
+-    } else {
+-      this._getAssertion(aOptions, function gotAssertion(err, assertion) {
+-        if (err) {
+-          reportError("_doLogin:", "Failed to get assertion on login attempt:", err);
+-          this._doLogout(aRpCaller);
+-        } else {
+-          loginWithAssertion(assertion);
+-        }
+-      }.bind(this));
+-    }
+-  },
+-
+-  /**
+-   * A utility for watch() to set state and notify the dom
+-   * on logout.
+-   */
+-  _doLogout: function _doLogout(aRpCaller, aOptions) {
+-    log("_doLogout: rpId:", aRpCaller.id, "origin:", aOptions.origin);
+-
+-    let state = this._store.getLoginState(aOptions.origin) || {};
+-
+-    state.isLoggedIn = false;
+-    this._notifyLoginStateChanged(aRpCaller.id, null);
+-
+-    aRpCaller.doLogout();
+-    aRpCaller.doReady();
+-  },
+-
+-  /**
+-   * For use with login or logout, emit 'identity-login-state-changed'
+-   *
+-   * The notification will send the rp caller id in the properties,
+-   * and the email of the user in the message.
+-   *
+-   * @param aRpCallerId
+-   *        (integer) The id of the RP caller
+-   *
+-   * @param aIdentity
+-   *        (string) The email of the user whose login state has changed
+-   */
+-  _notifyLoginStateChanged: function _notifyLoginStateChanged(aRpCallerId, aIdentity) {
+-    log("_notifyLoginStateChanged: rpId:", aRpCallerId, "identity:", aIdentity);
+-
+-    let options = {rpId: aRpCallerId};
+-    Services.obs.notifyObservers({wrappedJSObject: options},
+-                                 "identity-login-state-changed",
+-                                 aIdentity);
+-  },
+-
+-  /**
+-   * Initiate a login with user interaction as a result of a call to
+-   * navigator.id.request().
+-   *
+-   * @param aRPId
+-   *        (integer)  the id of the doc object obtained in .watch()
+-   *
+-   * @param aOptions
+-   *        (Object)  options including privacyPolicy, termsOfService
+-   */
+-  request: function request(aRPId, aOptions) {
+-    log("request: rpId:", aRPId);
+-    let rp = this._rpFlows[aRPId];
+-
+-    // Notify UX to display identity picker.
+-    // Pass the doc id to UX so it can pass it back to us later.
+-    let options = {rpId: aRPId, origin: rp.origin};
+-    objectCopy(aOptions, options);
+-
+-    // Append URLs after resolving
+-    let baseURI = Services.io.newURI(rp.origin, null, null);
+-    for (let optionName of ["privacyPolicy", "termsOfService"]) {
+-      if (aOptions[optionName]) {
+-        options[optionName] = baseURI.resolve(aOptions[optionName]);
+-      }
+-    }
+-
+-    Services.obs.notifyObservers({wrappedJSObject: options}, "identity-request", null);
+-  },
+-
+-  /**
+-   * Invoked when a user wishes to logout of a site (for instance, when clicking
+-   * on an in-content logout button).
+-   *
+-   * @param aRpCallerId
+-   *        (integer)  the id of the doc object obtained in .watch()
+-   *
+-   */
+-  logout: function logout(aRpCallerId) {
+-    log("logout: RP caller id:", aRpCallerId);
+-    let rp = this._rpFlows[aRpCallerId];
+-    if (rp && rp.origin) {
+-      let origin = rp.origin;
+-      log("logout: origin:", origin);
+-      this._doLogout(rp, {origin: origin});
+-    } else {
+-      log("logout: no RP found with id:", aRpCallerId);
+-    }
+-    // We don't delete this._rpFlows[aRpCallerId], because
+-    // the user might log back in again.
+-  },
+-
+-  getDefaultEmailForOrigin: function getDefaultEmailForOrigin(aOrigin) {
+-    let identities = this.getIdentitiesForSite(aOrigin);
+-    let result = identities.lastUsed || null;
+-    log("getDefaultEmailForOrigin:", aOrigin, "->", result);
+-    return result;
+-  },
+-
+-  /**
+-   * Return the list of identities a user may want to use to login to aOrigin.
+-   */
+-  getIdentitiesForSite: function getIdentitiesForSite(aOrigin) {
+-    let rv = { result: [] };
+-    for (let id in this._store.getIdentities()) {
+-      rv.result.push(id);
+-    }
+-    let loginState = this._store.getLoginState(aOrigin);
+-    if (loginState && loginState.email)
+-      rv.lastUsed = loginState.email;
+-    return rv;
+-  },
+-
+-  /**
+-   * Obtain a BrowserID assertion with the specified characteristics.
+-   *
+-   * @param aCallback
+-   *        (Function) Callback to be called with (err, assertion) where 'err'
+-   *        can be an Error or NULL, and 'assertion' can be NULL or a valid
+-   *        BrowserID assertion. If no callback is provided, an exception is
+-   *        thrown.
+-   *
+-   * @param aOptions
+-   *        (Object) An object that may contain the following properties:
+-   *
+-   *          "audience"      : The audience for which the assertion is to be
+-   *                            issued. If this property is not set an exception
+-   *                            will be thrown.
+-   *
+-   *        Any properties not listed above will be ignored.
+-   */
+-  _getAssertion: function _getAssertion(aOptions, aCallback) {
+-    let audience = aOptions.origin;
+-    let email = aOptions.loggedInUser || this.getDefaultEmailForOrigin(audience);
+-    log("_getAssertion: audience:", audience, "email:", email);
+-    if (!audience) {
+-      throw "audience required for _getAssertion";
+-    }
+-
+-    // We might not have any identity info for this email
+-    if (!this._store.fetchIdentity(email)) {
+-      this._store.addIdentity(email, null, null);
+-    }
+-
+-    let cert = this._store.fetchIdentity(email)['cert'];
+-    if (cert) {
+-      this._generateAssertion(audience, email, function generatedAssertion(err, assertion) {
+-        if (err) {
+-          log("ERROR: _getAssertion:", err);
+-        }
+-        log("_getAssertion: generated assertion:", assertion);
+-        return aCallback(err, assertion);
+-      });
+-    }
+-  },
+-
+-  /**
+-   * Generate an assertion, including provisioning via IdP if necessary,
+-   * but no user interaction, so if provisioning fails, aCallback is invoked
+-   * with an error.
+-   *
+-   * @param aAudience
+-   *        (string) web origin
+-   *
+-   * @param aIdentity
+-   *        (string) the email we're logging in with
+-   *
+-   * @param aCallback
+-   *        (function) callback to invoke on completion
+-   *                   with first-positional parameter the error.
+-   */
+-  _generateAssertion: function _generateAssertion(aAudience, aIdentity, aCallback) {
+-    log("_generateAssertion: audience:", aAudience, "identity:", aIdentity);
+-
+-    let id = this._store.fetchIdentity(aIdentity);
+-    if (! (id && id.cert)) {
+-      let errStr = "Cannot generate an assertion without a certificate";
+-      log("ERROR: _generateAssertion:", errStr);
+-      aCallback(errStr);
+-      return;
+-    }
+-
+-    let kp = id.keyPair;
+-
+-    if (!kp) {
+-      let errStr = "Cannot generate an assertion without a keypair";
+-      log("ERROR: _generateAssertion:", errStr);
+-      aCallback(errStr);
+-      return;
+-    }
+-
+-    jwcrypto.generateAssertion(id.cert, kp, aAudience, aCallback);
+-  },
+-
+-  /**
+-   * Clean up references to the provisioning flow for the specified RP.
+-   */
+-  _cleanUpProvisionFlow: function RP_cleanUpProvisionFlow(aRPId, aProvId) {
+-    let rp = this._rpFlows[aRPId];
+-    if (rp) {
+-      delete rp['provId'];
+-    } else {
+-      log("Error: Couldn't delete provision flow ", aProvId, " for RP ", aRPId);
+-    }
+-  },
+-
+-};
+-
+-this.RelyingParty = new IdentityRelyingParty();
+diff --git a/toolkit/identity/Sandbox.jsm b/toolkit/identity/Sandbox.jsm
+deleted file mode 100644
+--- a/toolkit/identity/Sandbox.jsm
++++ /dev/null
+@@ -1,153 +0,0 @@
+-/* This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+-
+-"use strict";
+-
+-this.EXPORTED_SYMBOLS = ["Sandbox"];
+-
+-const {classes: Cc, interfaces: Ci, utils: Cu} = Components;
+-
+-const XHTML_NS = "http://www.w3.org/1999/xhtml";
+-
+-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+-Cu.import("resource://gre/modules/Services.jsm");
+-
+-XPCOMUtils.defineLazyModuleGetter(this,
+-                                  "Logger",
+-                                  "resource://gre/modules/identity/LogUtils.jsm");
+-
+-/**
+- * An object that represents a sandbox in an iframe loaded with aURL. The
+- * callback provided to the constructor will be invoked when the sandbox is
+- * ready to be used. The callback will receive this object as its only argument.
+- *
+- * You must call free() when you are finished with the sandbox to explicitly
+- * free up all associated resources.
+- *
+- * @param aURL
+- *        (string) URL to load in the sandbox.
+- *
+- * @param aCallback
+- *        (function) Callback to be invoked with a Sandbox, when ready.
+- */
+-this.Sandbox = function Sandbox(aURL, aCallback) {
+-  // Normalize the URL so the comparison in _makeSandboxContentLoaded works
+-  this._url = Services.io.newURI(aURL, null, null).spec;
+-  this._log("Creating sandbox for:", this._url);
+-  this._createFrame();
+-  this._createSandbox(aCallback);
+-};
+-
+-this.Sandbox.prototype = {
+-
+-  /**
+-   * Use the outer window ID as the identifier of the sandbox.
+-   */
+-  get id() {
+-    return this._frame.contentWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+-               .getInterface(Ci.nsIDOMWindowUtils).outerWindowID;
+-  },
+-
+-  /**
+-   * Reload the URL in the sandbox. This is useful to reuse a Sandbox (same
+-   * id and URL).
+-   */
+-  reload: function Sandbox_reload(aCallback) {
+-    this._log("reload:", this.id, ":", this._url);
+-    this._createSandbox(function createdSandbox(aSandbox) {
+-      this._log("reloaded sandbox id:", aSandbox.id);
+-      aCallback(aSandbox);
+-    }.bind(this));
+-  },
+-
+-  /**
+-   * Frees the sandbox and releases the iframe created to host it.
+-   */
+-  free: function Sandbox_free() {
+-    this._log("free:", this.id);
+-    this._container.removeChild(this._frame);
+-    this._frame = null;
+-    this._container = null;
+-    this._url = null;
+-  },
+-
+-  /**
+-   * Creates an empty, hidden iframe and sets it to the _frame
+-   * property of this object.
+-   */
+-  _createFrame: function Sandbox__createFrame() {
+-    let hiddenWindow = Services.appShell.hiddenDOMWindow;
+-    let doc = hiddenWindow.document;
+-
+-    // Insert iframe in to create docshell.
+-    let frame = doc.createElementNS(XHTML_NS, "iframe");
+-    frame.setAttribute("mozframetype", "content");
+-    frame.sandbox = "allow-forms allow-scripts allow-same-origin";
+-    frame.style.visibility = "collapse";
+-    doc.documentElement.appendChild(frame);
+-
+-    let docShell = frame.contentWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+-                                      .getInterface(Ci.nsIWebNavigation)
+-                                      .QueryInterface(Ci.nsIInterfaceRequestor)
+-                                      .getInterface(Ci.nsIDocShell);
+-
+-    // Stop about:blank from being loaded.
+-    docShell.stop(Ci.nsIWebNavigation.STOP_NETWORK);
+-
+-    // Disable some types of content
+-    docShell.allowAuth = false;
+-    docShell.allowPlugins = false;
+-    docShell.allowImages = false;
+-    docShell.allowWindowControl = false;
+-    // TODO: disable media (bug 759964)
+-
+-    // Disable stylesheet loading since the document is not visible.
+-    let markupDocViewer = docShell.contentViewer
+-                                  .QueryInterface(Ci.nsIMarkupDocumentViewer);
+-    markupDocViewer.authorStyleDisabled = true;
+-
+-    // Set instance properties.
+-    this._frame = frame;
+-    this._container = doc.documentElement;
+-  },
+-
+-  _createSandbox: function Sandbox__createSandbox(aCallback) {
+-    let self = this;
+-    function _makeSandboxContentLoaded(event) {
+-      self._log("_makeSandboxContentLoaded:", self.id,
+-                event.target.location.toString());
+-      if (event.target != self._frame.contentDocument) {
+-        return;
+-      }
+-      self._frame.removeEventListener(
+-        "DOMWindowCreated", _makeSandboxContentLoaded, true
+-      );
+-
+-      aCallback(self);
+-    };
+-
+-    this._frame.addEventListener("DOMWindowCreated",
+-                                 _makeSandboxContentLoaded,
+-                                 true);
+-
+-    // Load the iframe.
+-    let webNav = this._frame.contentWindow
+-                            .QueryInterface(Ci.nsIInterfaceRequestor)
+-                            .getInterface(Ci.nsIWebNavigation);
+-
+-    webNav.loadURI(
+-      this._url,
+-      Ci.nsIWebNavigation.LOAD_FLAGS_BYPASS_CACHE,
+-      null, // referrer
+-      null, // postData
+-      null  // headers
+-    );
+-
+-  },
+-
+-  _log: function Sandbox__log(...aMessageArgs) {
+-    Logger.log.apply(Logger, ["sandbox"].concat(aMessageArgs));
+-  },
+-
+-};
+diff --git a/toolkit/identity/tests/chrome/sandbox_content.html b/toolkit/identity/tests/chrome/sandbox_content.html
+deleted file mode 100644
+--- a/toolkit/identity/tests/chrome/sandbox_content.html
++++ /dev/null
+@@ -1,32 +0,0 @@
+-<!DOCTYPE html>
+-<html>
+-<!-- Any copyright is dedicated to the Public Domain.
+-   - http://creativecommons.org/publicdomain/zero/1.0/ -->
+-<head>
+-<meta charset="utf-8">
+-<title>Page testing blocked content in the Sandbox</title>
+-
+-<link rel="stylesheet" src="sandbox_content.sjs?text/css"/>
+-
+-<script src="sandbox_content.sjs?application/javascript"></script>
+-
+-</head>
+-
+-<body>
+-
+-<img src="sandbox_content.sjs?image/jpeg"/>
+-
+-<!-- media -->
+-<video src="sandbox_content.sjs?video/webm" autoplay="true"></video>
+-<audio src="sandbox_content.sjs?audio/ogg" autoplay="true"></audio>
+-
+-<!-- plugins -->
+-<embed src="sandbox_content.sjs?application/x-test"/>
+-<object data="sandbox_content.sjs?application/x-test"></object>
+-<applet code="sandbox_content.sjs?application/x-java-applet"></applet>
+-
+-<iframe src="sandbox_content.sjs?text/html"></iframe>
+-
+-</body>
+-
+-</html>
+diff --git a/toolkit/identity/tests/chrome/sandbox_content.sjs b/toolkit/identity/tests/chrome/sandbox_content.sjs
+deleted file mode 100644
+--- a/toolkit/identity/tests/chrome/sandbox_content.sjs
++++ /dev/null
+@@ -1,36 +0,0 @@
+-/* This Source Code Form is subject to the terms of the Mozilla Public
+- *  * License, v. 2.0. If a copy of the MPL was not distributed with this
+- *  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+-
+-function handleRequest(request, response) {
+-  response.setHeader("Cache-Control", "no-cache", false);
+-
+-  let loadedStateKey = "sandbox_content_loaded";
+-  switch(request.queryString) {
+-    case "reset": {
+-      setState(loadedStateKey, "");
+-      response.write("reset");
+-      break;
+-    }
+-    case "get_loaded": {
+-      response.setHeader("Content-Type", "text/plain", false);
+-      let loaded = getState(loadedStateKey);
+-      if (loaded)
+-        response.write(loaded);
+-      else
+-        response.write("NOTHING");
+-      break;
+-    }
+-    default: {
+-      let contentType = decodeURIComponent(request.queryString);
+-      // set the Content-Type equal to the query string
+-      response.setHeader("Content-Type", contentType, false);
+-      // If any content is loaded, append it's content type in state
+-      let loaded = getState(loadedStateKey);
+-      if (loaded)
+-        loaded += ",";
+-      setState(loadedStateKey, loaded + contentType);
+-      break;
+-    }
+-  }
+-}
+diff --git a/toolkit/identity/tests/chrome/sandbox_content_alert.html b/toolkit/identity/tests/chrome/sandbox_content_alert.html
+deleted file mode 100644
+--- a/toolkit/identity/tests/chrome/sandbox_content_alert.html
++++ /dev/null
+@@ -1,20 +0,0 @@
+-<!DOCTYPE html>
+-<html>
+-<!-- Any copyright is dedicated to the Public Domain.
+-     http://creativecommons.org/publicdomain/zero/1.0/ -->
+-<head>
+-<meta charset="utf-8">
+-<title>Page creating an alert inside the Sandbox</title>
+-
+-<script>
+-
+-alert("The user shouldn't see this");
+-
+-</script>
+-
+-</head>
+-
+-<body>
+-
+-</body>
+-</html>
+diff --git a/toolkit/identity/tests/chrome/sandbox_content_framed.html b/toolkit/identity/tests/chrome/sandbox_content_framed.html
+deleted file mode 100644
+--- a/toolkit/identity/tests/chrome/sandbox_content_framed.html
++++ /dev/null
+@@ -1,17 +0,0 @@
+-<!DOCTYPE html>
+-<html>
+-<!-- Any copyright is dedicated to the Public Domain.
+-     http://creativecommons.org/publicdomain/zero/1.0/ -->
+-<head>
+-<meta charset="utf-8">
+-<title>Page testing blocked content in an iframe inside the Sandbox</title>
+-
+-</head>
+-
+-<body>
+-
+-<iframe src="sandbox_content.html"></iframe>
+-
+-</body>
+-
+-</html>
+diff --git a/toolkit/identity/tests/chrome/sandbox_content_perms.html b/toolkit/identity/tests/chrome/sandbox_content_perms.html
+deleted file mode 100644
+--- a/toolkit/identity/tests/chrome/sandbox_content_perms.html
++++ /dev/null
+@@ -1,66 +0,0 @@
+-<!DOCTYPE html>
+-<html>
+-  <!-- Any copyright is dedicated to the Public Domain.
+-     - http://creativecommons.org/publicdomain/zero/1.0/ -->
+-  <head>
+-    <meta charset="utf-8">
+-    <title>Page testing content in the Sandbox can't escape</title>
+-    <script type="application/javascript;version=1.8">
+-      const TEST_BASE = "http://mochi.test:8888/chrome/toolkit/identity/tests/chrome/"
+-      const Ci = SpecialPowers.Ci;
+-
+-      function expectException(aFunc) {
+-        try {
+-          aFunc();
+-        } catch (ex) {
+-          return true;
+-        }
+-        return false;
+-      }
+-
+-      function CcDenied() {
+-        // Once Components goes away in content, the question of whether or not
+-        // Components.classes throws is not well-formed.
+-        if (typeof Components === 'undefined')
+-          return true;
+-        try {
+-          Components.classes;
+-          return false;
+-        } catch (e) {
+-          return !!/denied/.exec(e);
+-        }
+-      }
+-
+-      // Build an object with test results (true = pass)
+-      let results = {
+-        windowTop: window.top == window,
+-
+-        qiWindow: expectException(function() {
+-          let isForced = window.QueryInterface(Ci.nsIInterfaceRequestor)
+-                               .getInterface(Ci.nsIDOMWindowUtils)
+-                               .docCharsetIsForced;
+-        }),
+-
+-        ccAccess: !!CcDenied(),
+-      };
+-
+-      let resultsJSON = JSON.stringify(results);
+-
+-      // Send the results to the mochitest server so the test file can retrieve them.
+-      let stateURL = TEST_BASE + "sandbox_content.sjs"
+-      let xhr = new XMLHttpRequest();
+-      xhr.open("GET", stateURL + "?" + encodeURIComponent(resultsJSON), true);
+-      xhr.onload = function() {
+-        if (xhr.status != 200) {
+-          dump("Failed sending results\n");
+-        }
+-      };
+-      xhr.send();
+-
+-    </script>
+-  </head>
+-
+-  <body>
+-
+-  </body>
+-</html>
+diff --git a/toolkit/identity/tests/chrome/sandbox_content_popup.html b/toolkit/identity/tests/chrome/sandbox_content_popup.html
+deleted file mode 100644
+--- a/toolkit/identity/tests/chrome/sandbox_content_popup.html
++++ /dev/null
+@@ -1,25 +0,0 @@
+-<!DOCTYPE html>
+-<html>
+-<!-- Any copyright is dedicated to the Public Domain.
+-   - http://creativecommons.org/publicdomain/zero/1.0/ -->
+-<head>
+-<meta charset="utf-8">
+-<title>Page creating an popup inside the Sandbox</title>
+-
+-<script>
+-
+-var strWindowFeatures = "menubar=yes,location=yes,resizable=yes,scrollbars=yes,status=yes";
+-
+-var uri = "data:text/html,";
+-uri += encodeURI("<body onload='setTimeout(window.close, 1000)'>");
+-
+-var win = window.open(uri, "sandbox_popup", strWindowFeatures);
+-
+-</script>
+-
+-</head>
+-
+-<body>
+-
+-</body>
+-</html>
+diff --git a/toolkit/identity/tests/chrome/sandbox_content_redirect.html b/toolkit/identity/tests/chrome/sandbox_content_redirect.html
+deleted file mode 100644
+--- a/toolkit/identity/tests/chrome/sandbox_content_redirect.html
++++ /dev/null
+@@ -1,2 +0,0 @@
+-<!-- Any copyright is dedicated to the Public Domain.
+-     http://creativecommons.org/publicdomain/zero/1.0/ -->
+diff --git a/toolkit/identity/tests/chrome/sandbox_content_redirect.html^headers^ b/toolkit/identity/tests/chrome/sandbox_content_redirect.html^headers^
+deleted file mode 100644
+--- a/toolkit/identity/tests/chrome/sandbox_content_redirect.html^headers^
++++ /dev/null
+@@ -1,2 +0,0 @@
+-HTTP 302 Found
+-Location: http://mochi.test:8888/chrome/toolkit/identity/tests/chrome/sandbox_content.html
+diff --git a/toolkit/identity/tests/chrome/test_sandbox.xul b/toolkit/identity/tests/chrome/test_sandbox.xul
+deleted file mode 100644
+--- a/toolkit/identity/tests/chrome/test_sandbox.xul
++++ /dev/null
+@@ -1,327 +0,0 @@
+-<?xml version="1.0"?>
+-<?xml-stylesheet type="text/css" href="chrome://global/skin"?>
+-<?xml-stylesheet type="text/css" href="/tests/SimpleTest/test.css"?>
+-<!-- Any copyright is dedicated to the Public Domain.
+-     http://creativecommons.org/publicdomain/zero/1.0/ -->
+-<!--
+-https://bugzilla.mozilla.org/show_bug.cgi?id=762993
+--->
+-<window title="Mozilla Bug 762993"
+-        xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+-        onload="run_next_test();">
+-  <script type="application/javascript"
+-          src="chrome://mochikit/content/tests/SimpleTest/SimpleTest.js"/>
+-
+-  <!-- test results are displayed in the html:body -->
+-  <body xmlns="http://www.w3.org/1999/xhtml">
+-  <a href="https://bugzilla.mozilla.org/show_bug.cgi?id=762993"
+-     target="_blank">Mozilla Bug 762993</a>
+-  </body>
+-
+-  <!-- test code goes here -->
+-  <script type="application/javascript;version=1.8">
+-  <![CDATA[
+-
+-  /** Test for Bug 762993 **/
+-
+-"use strict";
+-
+-SimpleTest.expectAssertions(2);
+-
+-SimpleTest.waitForExplicitFinish();
+-
+-const Cc = Components.classes;
+-const Ci = Components.interfaces;
+-const Cu = Components.utils;
+-const OSX_10_5 = navigator.oscpu == "Intel Mac OS X 10.5";
+-
+-const secMan = Cc["@mozilla.org/scriptsecuritymanager;1"].getService(Ci.nsIScriptSecurityManager);
+-
+-const TEST_URL_1 = "https://example.com/";
+-// No trailing slash plus port to test normalization
+-const TEST_URL_2 = "https://example.com:443";
+-
+-const TEST_BASE = "http://mochi.test:8888/chrome/toolkit/identity/tests/chrome/"
+-const STATE_URL = TEST_BASE + "sandbox_content.sjs"
+-
+-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+-Cu.import("resource://gre/modules/Services.jsm");
+-
+-Services.prefs.setBoolPref("toolkit.identity.debug", true);
+-
+-XPCOMUtils.defineLazyModuleGetter(this, "Sandbox",
+-                                  "resource://gre/modules/identity/Sandbox.jsm");
+-
+-function check_sandbox(aSandbox, aURL) {
+-  ok(aSandbox.id > 0, "valid ID");
+-  is(aSandbox._url, aURL, "matching URL (with normalization)");
+-  isnot(aSandbox._frame, null, "frame");
+-  isnot(aSandbox._container, null, "container");
+-  let docPrincipal = aSandbox._frame.contentDocument.nodePrincipal;
+-  is(secMan.isSystemPrincipal(docPrincipal), false,
+-     "principal must not be system");
+-}
+-
+-/**
+- * Free the sandbox and make sure all properties that are not booleans,
+- * functions or numbers were freed.
+- */
+-function free_and_check_sandbox(aSandbox) {
+-  SimpleTest.executeSoon(function() {
+-    aSandbox.free();
+-
+-    for(let prop in aSandbox) {
+-      // Don't trigger the "id" getter when the frame is supposed to be freed already
+-      if (prop == "id")
+-        continue;
+-      let propType = typeof(aSandbox[prop]);
+-      if (propType == "boolean" || propType == "function" || propType == "number")
+-        continue;
+-      is(aSandbox[prop], null, "freed " + prop);
+-    }
+-    run_next_test();
+-  });
+-}
+-
+-function reset_server_state() {
+-  // Now reset the server state
+-  let resetReq = new XMLHttpRequest();
+-  resetReq.open("GET", STATE_URL + "?reset", false);
+-  resetReq.send();
+-}
+-
+-function test_creation() {
+-  new Sandbox(TEST_URL_1, function sandboxCB(aSandbox) {
+-    check_sandbox(aSandbox, TEST_URL_1);
+-    free_and_check_sandbox(aSandbox);
+-  });
+-}
+-
+-function test_reload() {
+-  new Sandbox(TEST_URL_1, function sandboxCB(aSandbox) {
+-    check_sandbox(aSandbox, TEST_URL_1);
+-    let originalId = aSandbox.id;
+-
+-    aSandbox.reload(function sandboxReloadCB(aSandbox) {
+-      check_sandbox(aSandbox, TEST_URL_1);
+-      is(aSandbox.id, originalId, "Sandbox ID should be the same after reload");
+-      free_and_check_sandbox(aSandbox);
+-    });
+-  });
+-}
+-
+-function test_url_normalization() {
+-  new Sandbox(TEST_URL_2, function sandboxCB(aSandbox) {
+-    // TEST_URL_2 should be normalized into the form of TEST_URL_1
+-    check_sandbox(aSandbox, TEST_URL_1);
+-    free_and_check_sandbox(aSandbox);
+-  });
+-}
+-
+-/**
+- * Check with the server's state to see what content was loaded then reset it.
+- */
+-function check_loaded_content(aSandbox, aNothingShouldLoad, aCallback) {
+-
+-  let xhr = new XMLHttpRequest();
+-  xhr.open("GET", STATE_URL + "?get_loaded", true);
+-  xhr.onload = function() {
+-    let res = xhr.responseText;
+-    is(xhr.status, 200, "Check successful response");
+-
+-    if (aNothingShouldLoad) {
+-      is(res, "NOTHING", "Check that nothing was loaded on the server");
+-    } else if (!OSX_10_5) {
+-      let allowedTypes = [ "application/javascript", "text/html", "video/webm",
+-                           "audio/ogg", "application/x-test" ];
+-      let loadedTypes = res == "NOTHING" ? [] : res.split(",");
+-
+-      for (let loadedType of loadedTypes) {
+-        isnot(allowedTypes.indexOf(loadedType), -1, "Check that " + loadedType + " was expected to load");
+-      }
+-
+-      // TODO: Media should be disabled after bug 759964.
+-      isnot(loadedTypes.indexOf("application/javascript"), -1, "Check JS was loaded");
+-      isnot(loadedTypes.indexOf("text/html"), -1, "Check iframe was loaded");
+-      //todo_is(loadedTypes.indexOf("video/webm"), -1, "Check webm was not loaded");
+-      //todo_is(loadedTypes.indexOf("audio/ogg"), -1, "Check ogg was not loaded");
+-
+-      // Check that no plugin tags have a type other than TYPE_NULL (failed load)
+-      // --
+-      // Checking if a channel was opened is not sufficient for plugin tags --
+-      // An object tag may still be allowed to load a sub-document, but not a
+-      // plugin, so it will open a channel but then abort when it gets a
+-      // plugin-type.
+-      let doc = aSandbox._frame.contentDocument;
+-      let nullType = Components.interfaces.nsIObjectLoadingContent.TYPE_NULL;
+-      for (let tag of doc.querySelectorAll("embed, object, applet")) {
+-        tag instanceof Components.interfaces.nsIObjectLoadingContent;
+-        is(tag.displayedType, nullType, "Check that plugin did not load content");
+-      }
+-    }
+-
+-    reset_server_state();
+-
+-    aCallback();
+-  };
+-  xhr.send();
+-}
+-
+-/**
+- * Helper to check that only certain content is loaded on creation and during reload.
+- */
+-function check_disabled_content(aSandboxURL, aNothingShouldLoad = false) {
+-  new Sandbox(aSandboxURL, function sandboxCB(aSandbox) {
+-    check_sandbox(aSandbox, aSandboxURL);
+-    let originalId = aSandbox.id;
+-
+-    setTimeout(function() {
+-      check_loaded_content(aSandbox, aNothingShouldLoad, function checkFinished() {
+-
+-        info("reload the sandbox content");
+-        aSandbox.reload(function sandboxReloadCB(aSandbox) {
+-          check_sandbox(aSandbox, aSandboxURL);
+-          is(aSandbox.id, originalId, "Sandbox ID should be the same after reload");
+-
+-          setTimeout(function() {
+-            check_loaded_content(aSandbox, aNothingShouldLoad, function reloadCheckFinished() {
+-              free_and_check_sandbox(aSandbox);
+-            });
+-          }, 5000);
+-        });
+-      });
+-    }, 5000);
+-  });
+-}
+-
+-function test_disabled_content() {
+-  let url = TEST_BASE + "sandbox_content.html";
+-  check_disabled_content(url);
+-}
+-
+-// Same as test above but with content in an iframe.
+-function test_disabled_content_framed() {
+-  let url = TEST_BASE + "sandbox_content_framed.html";
+-  check_disabled_content(url);
+-}
+-
+-function test_redirect() {
+-  let url = TEST_BASE + "sandbox_content_redirect.html";
+-  check_disabled_content(url);
+-}
+-
+-function WindowObserver(aCallback) {
+-  this.observe = function(aSubject, aTopic, aData) {
+-    if (aTopic != "domwindowopened") {
+-      return;
+-    }
+-    Services.ww.unregisterNotification(this);
+-
+-    let domWin = aSubject.QueryInterface(Ci.nsIDOMWindow);
+-    ok(!domWin, "No window should be opened");
+-    SimpleTest.executeSoon(function() {
+-      info("Closing opened window");
+-      domWin.close();
+-      aCallback();
+-    });
+-  }
+-}
+-
+-// Can the sandbox call window.alert() or popup other UI?
+-function test_alert() {
+-  let alertURL = TEST_BASE + "sandbox_content_alert.html";
+-
+-  new Sandbox(alertURL, function sandboxCB(aSandbox) {
+-    check_sandbox(aSandbox, alertURL);
+-    setTimeout(function() {
+-
+-      let win = Services.wm.getMostRecentWindow(null);
+-      isnot(win.document.documentElement.getAttribute("id"), "commonDialog",
+-                 "Make sure most recent window is not a dialog");
+-      if (win.document.documentElement.getAttribute("id") == "commonDialog") {
+-        // If a dialog did open, close it so we don't interfere with future tests
+-        win.close()
+-      }
+-
+-      free_and_check_sandbox(aSandbox);
+-    }, 1000);
+-  });
+-}
+-
+-// Can the sandboxed page open a popup with window.open?
+-function test_popup() {
+-  let alertURL = TEST_BASE + "sandbox_content_popup.html";
+-  let theSandbox;
+-  function continueTest() {
+-    // avoid double-free
+-    if (!theSandbox)
+-      return;
+-    free_and_check_sandbox(theSandbox);
+-    theSandbox = null;
+-  }
+-  let winObs = new WindowObserver(continueTest);
+-  Services.ww.registerNotification(winObs);
+-  new Sandbox(alertURL, function sandboxCB(aSandbox) {
+-    theSandbox = aSandbox;
+-    check_sandbox(aSandbox, alertURL);
+-    // Wait 5 seconds to see if the window is going to open.
+-    setTimeout(function() {
+-      Services.ww.unregisterNotification(winObs);
+-      continueTest();
+-    }, 5000);
+-  });
+-}
+-
+-// Loading a page with a bad cert
+-function test_bad_cert() {
+-  let url = TEST_BASE + "sandbox_content.sjs?text/html";
+-  url = url.replace("http://mochi.test:8888", "https://untrusted.example.com");
+-  check_disabled_content(url, /*nothingShouldLoad=*/true);
+-}
+-
+-// Loading a page to check window.top and other permissions.
+-function test_frame_perms() {
+-  let url = TEST_BASE + "sandbox_content_perms.html";
+-  new Sandbox(url, function sandboxCB(aSandbox) {
+-    check_sandbox(aSandbox, url);
+-
+-    // Give the content time to load
+-    setTimeout(function() {
+-      let xhr = new XMLHttpRequest();
+-      xhr.open("GET", STATE_URL + "?get_loaded", true);
+-      xhr.responseType = "json";
+-      xhr.onload = function() {
+-        is(xhr.status, 200, "Check successful response");
+-        is(typeof(xhr.response), "object", "Check response is object");
+-        is(Object.keys(xhr.response).length, 3, "Check the number of perm. tests");
+-        for (let test in xhr.response) {
+-          ok(xhr.response[test], "Check result of " + test);
+-        }
+-
+-        reset_server_state();
+-        free_and_check_sandbox(aSandbox);
+-      };
+-      xhr.send();
+-    }, 3000);
+-  });
+-}
+-
+-let TESTS = [test_creation, test_reload, test_url_normalization];
+-TESTS.push(test_disabled_content, test_disabled_content_framed);
+-TESTS.push(test_alert, test_popup, test_bad_cert);
+-TESTS.push(test_redirect, test_frame_perms);
+-
+-function run_next_test() {
+-  if (TESTS.length) {
+-    let test = TESTS.shift();
+-    info(test.name);
+-    test();
+-  } else {
+-    Services.prefs.clearUserPref("toolkit.identity.debug");
+-    SimpleTest.finish();
+-  }
+-}
+-
+-  ]]>
+-  </script>
+-</window>
+diff --git a/toolkit/identity/tests/unit/data/idp_1/.well-known/browserid b/toolkit/identity/tests/unit/data/idp_1/.well-known/browserid
+deleted file mode 100644
+--- a/toolkit/identity/tests/unit/data/idp_1/.well-known/browserid
++++ /dev/null
+@@ -1,5 +0,0 @@
+-{
+-    "public-key": {"algorithm":"RS","n":"65718905405105134410187227495885391609221288015566078542117409373192106382993306537273677557482085204736975067567111831005921322991127165013340443563713385983456311886801211241492470711576322130577278575529202840052753612576061450560588102139907846854501252327551303482213505265853706269864950437458242988327","e":"65537"},
+-    "authentication": "/browserid/sign_in.html",
+-    "provisioning": "/browserid/provision.html"
+-}
+diff --git a/toolkit/identity/tests/unit/data/idp_invalid_1/.well-known/browserid b/toolkit/identity/tests/unit/data/idp_invalid_1/.well-known/browserid
+deleted file mode 100644
+--- a/toolkit/identity/tests/unit/data/idp_invalid_1/.well-known/browserid
++++ /dev/null
+@@ -1,5 +0,0 @@
+-{
+-    "public-key": {"algorithm":"RS","n":"65718905405105134410187227495885391609221288015566078542117409373192106382993306537273677557482085204736975067567111831005921322991127165013340443563713385983456311886801211241492470711576322130577278575529202840052753612576061450560588102139907846854501252327551303482213505265853706269864950437458242988327","e":"65537"},
+-    "authentication": "/browserid/sign_in.html",
+-    // missing "provisioning"
+-}
+diff --git a/toolkit/identity/tests/unit/test_authentication.js b/toolkit/identity/tests/unit/test_authentication.js
+deleted file mode 100644
+--- a/toolkit/identity/tests/unit/test_authentication.js
++++ /dev/null
+@@ -1,159 +0,0 @@
+-/* Any copyright is dedicated to the Public Domain.
+-   http://creativecommons.org/publicdomain/zero/1.0/ */
+-
+-"use strict";
+-
+-XPCOMUtils.defineLazyModuleGetter(this, "IDService",
+-                                  "resource://gre/modules/identity/Identity.jsm",
+-                                  "IdentityService");
+-
+-XPCOMUtils.defineLazyModuleGetter(this, "jwcrypto",
+-                                  "resource://gre/modules/identity/jwcrypto.jsm");
+-
+-function test_begin_authentication_flow() {
+-  do_test_pending();
+-  let _provId = null;
+-
+-  // set up a watch, to be consistent
+-  let mockedDoc = mock_doc(null, TEST_URL, function(action, params) {});
+-  IDService.RP.watch(mockedDoc);
+-
+-  // The identity-auth notification is sent up to the UX from the
+-  // _doAuthentication function.  Be ready to receive it and call
+-  // beginAuthentication
+-  makeObserver("identity-auth", function (aSubject, aTopic, aData) {
+-    do_check_neq(aSubject, null);
+-
+-    do_check_eq(aSubject.wrappedJSObject.provId, _provId);
+-
+-    do_test_finished();
+-    run_next_test();
+-  });
+-
+-  setup_provisioning(
+-    TEST_USER,
+-    function(caller) {
+-      _provId = caller.id;
+-      IDService.IDP.beginProvisioning(caller);
+-    }, function() {},
+-    {
+-      beginProvisioningCallback: function(email, duration_s) {
+-
+-        // let's say this user needs to authenticate
+-        IDService.IDP._doAuthentication(_provId, {idpParams:TEST_IDPPARAMS});
+-      }
+-    }
+-  );
+-}
+-
+-function test_complete_authentication_flow() {
+-  do_test_pending();
+-  let _provId = null;
+-  let _authId = null;
+-  let id = TEST_USER;
+-
+-  let callbacksFired = false;
+-  let loginStateChanged = false;
+-  let identityAuthComplete = false;
+-
+-  // The result of authentication should be a successful login
+-  IDService.reset();
+-
+-  setup_test_identity(id, TEST_CERT, function() {
+-    // set it up so we're supposed to be logged in to TEST_URL
+-
+-    get_idstore().setLoginState(TEST_URL, true, id);
+-
+-    // When we authenticate, our ready callback will be fired.
+-    // At the same time, a separate topic will be sent up to the
+-    // the observer in the UI.  The test is complete when both
+-    // events have occurred.
+-    let mockedDoc = mock_doc(id, TEST_URL, call_sequentially(
+-      function(action, params) {
+-        do_check_eq(action, 'ready');
+-        do_check_eq(params, undefined);
+-
+-        // if notification already received by observer, test is done
+-        callbacksFired = true;
+-        if (loginStateChanged && identityAuthComplete) {
+-          do_test_finished();
+-          run_next_test();
+-        }
+-      }
+-    ));
+-
+-    makeObserver("identity-auth-complete", function(aSubject, aTopic, aData) {
+-      identityAuthComplete = true;
+-      do_test_finished();
+-      run_next_test();
+-    });
+-
+-    makeObserver("identity-login-state-changed", function (aSubject, aTopic, aData) {
+-      do_check_neq(aSubject, null);
+-
+-      do_check_eq(aSubject.wrappedJSObject.rpId, mockedDoc.id);
+-      do_check_eq(aData, id);
+-
+-      // if callbacks in caller doc already fired, test is done.
+-      loginStateChanged = true;
+-      if (callbacksFired && identityAuthComplete) {
+-        do_test_finished();
+-        run_next_test();
+-      }
+-    });
+-
+-    IDService.RP.watch(mockedDoc);
+-
+-    // Create a provisioning flow for our auth flow to attach to
+-    setup_provisioning(
+-      TEST_USER,
+-      function(provFlow) {
+-        _provId = provFlow.id;
+-
+-        IDService.IDP.beginProvisioning(provFlow);
+-      }, function() {},
+-      {
+-        beginProvisioningCallback: function(email, duration_s) {
+-          // let's say this user needs to authenticate
+-          IDService.IDP._doAuthentication(_provId, {idpParams:TEST_IDPPARAMS});
+-
+-          // test_begin_authentication_flow verifies that the right
+-          // message is sent to the UI.  So that works.  Moving on,
+-          // the UI calls setAuthenticationFlow ...
+-          _authId = uuid();
+-          IDService.IDP.setAuthenticationFlow(_authId, _provId);
+-
+-          // ... then the UI calls beginAuthentication ...
+-          authCaller.id = _authId;
+-          IDService.IDP._provisionFlows[_provId].caller = authCaller;
+-          IDService.IDP.beginAuthentication(authCaller);
+-        }
+-      }
+-    );
+-  });
+-
+-  // A mock calling context
+-  let authCaller = {
+-    doBeginAuthenticationCallback: function doBeginAuthenticationCallback(identity) {
+-      do_check_eq(identity, TEST_USER);
+-      // completeAuthentication will emit "identity-auth-complete"
+-      IDService.IDP.completeAuthentication(_authId);
+-    },
+-
+-    doError: function(err) {
+-      log("OW! My doError callback hurts!", err);
+-    },
+-  };
+-
+-}
+-
+-let TESTS = [];
+-
+-TESTS.push(test_begin_authentication_flow);
+-TESTS.push(test_complete_authentication_flow);
+-
+-TESTS.forEach(add_test);
+-
+-function run_test() {
+-  run_next_test();
+-}
+diff --git a/toolkit/identity/tests/unit/test_identity.js b/toolkit/identity/tests/unit/test_identity.js
+deleted file mode 100644
+--- a/toolkit/identity/tests/unit/test_identity.js
++++ /dev/null
+@@ -1,114 +0,0 @@
+-/* Any copyright is dedicated to the Public Domain.
+-   http://creativecommons.org/publicdomain/zero/1.0/ */
+-
+-"use strict";
+-
+-XPCOMUtils.defineLazyModuleGetter(this, "IDService",
+-                                  "resource://gre/modules/identity/Identity.jsm",
+-                                  "IdentityService");
+-
+-function test_overall() {
+-  do_check_neq(IDService, null);
+-  run_next_test();
+-}
+-
+-function test_mock_doc() {
+-  do_test_pending();
+-  let mockedDoc = mock_doc(null, TEST_URL, function(action, params) {
+-    do_check_eq(action, 'coffee');
+-    do_test_finished();
+-    run_next_test();
+-  });
+-
+-  mockedDoc.doCoffee();
+-}
+-
+-function test_add_identity() {
+-  IDService.reset();
+-
+-  IDService.addIdentity(TEST_USER);
+-
+-  let identities = IDService.RP.getIdentitiesForSite(TEST_URL);
+-  do_check_eq(identities.result.length, 1);
+-  do_check_eq(identities.result[0], TEST_USER);
+-
+-  run_next_test();
+-}
+-
+-function test_select_identity() {
+-  do_test_pending();
+-
+-  IDService.reset();
+-
+-  let id = "ishtar@mockmyid.com";
+-  setup_test_identity(id, TEST_CERT, function() {
+-    let gotAssertion = false;
+-    let mockedDoc = mock_doc(null, TEST_URL, call_sequentially(
+-      function(action, params) {
+-        // ready emitted from first watch() call
+-        do_check_eq(action, 'ready');
+-        do_check_null(params);
+-      },
+-      // first the login call
+-      function(action, params) {
+-        do_check_eq(action, 'login');
+-        do_check_neq(params, null);
+-
+-        // XXX - check that the assertion is for the right email
+-
+-        gotAssertion = true;
+-      },
+-      // then the ready call
+-      function(action, params) {
+-        do_check_eq(action, 'ready');
+-        do_check_null(params);
+-
+-        // we should have gotten the assertion already
+-        do_check_true(gotAssertion);
+-
+-        do_test_finished();
+-        run_next_test();
+-      }));
+-
+-    // register the callbacks
+-    IDService.RP.watch(mockedDoc);
+-
+-    // register the request UX observer
+-    makeObserver("identity-request", function (aSubject, aTopic, aData) {
+-      // do the select identity
+-      // we expect this to succeed right away because of test_identity
+-      // so we don't mock network requests or otherwise
+-      IDService.selectIdentity(aSubject.wrappedJSObject.rpId, id);
+-    });
+-
+-    // do the request
+-    IDService.RP.request(mockedDoc.id, {});
+-  });
+-}
+-
+-function test_parse_good_email() {
+-  var parsed = IDService.parseEmail('prime-minister@jed.gov');
+-  do_check_eq(parsed.username, 'prime-minister');
+-  do_check_eq(parsed.domain, 'jed.gov');
+-  run_next_test();
+-}
+-
+-function test_parse_bogus_emails() {
+-  do_check_eq(null, IDService.parseEmail('@evil.org'));
+-  do_check_eq(null, IDService.parseEmail('foo@bar@baz.com'));
+-  do_check_eq(null, IDService.parseEmail('you@wellsfargo.com/accounts/transfer?to=dolske&amt=all'));
+-  run_next_test();
+-}
+-
+-let TESTS = [test_overall, test_mock_doc];
+-
+-TESTS.push(test_add_identity);
+-TESTS.push(test_select_identity);
+-TESTS.push(test_parse_good_email);
+-TESTS.push(test_parse_bogus_emails);
+-
+-TESTS.forEach(add_test);
+-
+-function run_test() {
+-  run_next_test();
+-}
+diff --git a/toolkit/identity/tests/unit/test_minimalidentity.js b/toolkit/identity/tests/unit/test_minimalidentity.js
+deleted file mode 100644
+--- a/toolkit/identity/tests/unit/test_minimalidentity.js
++++ /dev/null
+@@ -1,133 +0,0 @@
+-"use strict";
+-
+-XPCOMUtils.defineLazyModuleGetter(this, "MinimalIDService",
+-                                  "resource://gre/modules/identity/MinimalIdentity.jsm",
+-                                  "IdentityService");
+-
+-Cu.import("resource://gre/modules/identity/LogUtils.jsm");
+-
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["test_minimalidentity"].concat(aMessageArgs));
+-}
+-
+-function test_overall() {
+-  do_check_neq(MinimalIDService, null);
+-  run_next_test();
+-}
+-
+-function test_mock_doc() {
+-  do_test_pending();
+-  let mockedDoc = mock_doc(null, TEST_URL, function(action, params) {
+-    do_check_eq(action, 'coffee');
+-    do_test_finished();
+-    run_next_test();
+-  });
+-
+-  mockedDoc.doCoffee();
+-}
+-
+-/*
+- * Test that the "identity-controller-watch" signal is emitted correctly
+- */
+-function test_watch() {
+-  do_test_pending();
+-
+-  let mockedDoc = mock_doc(null, TEST_URL);
+-  makeObserver("identity-controller-watch", function (aSubject, aTopic, aData) {
+-    do_check_eq(aSubject.wrappedJSObject.id, mockedDoc.id);
+-    do_check_eq(aSubject.wrappedJSObject.origin, TEST_URL);
+-    do_test_finished();
+-    run_next_test();
+-   });
+-
+-  MinimalIDService.RP.watch(mockedDoc);
+-}
+-
+-/*
+- * Test that the "identity-controller-request" signal is emitted correctly
+- */
+-function test_request() {
+-  do_test_pending();
+-
+-  let mockedDoc = mock_doc(null, TEST_URL);
+-  makeObserver("identity-controller-request", function (aSubject, aTopic, aData) {
+-    do_check_eq(aSubject.wrappedJSObject.id, mockedDoc.id);
+-    do_check_eq(aSubject.wrappedJSObject.origin, TEST_URL);
+-    do_test_finished();
+-    run_next_test();
+-  });
+-
+-  MinimalIDService.RP.watch(mockedDoc);
+-  MinimalIDService.RP.request(mockedDoc.id, {});
+-}
+-
+-/*
+- * Test that the forceAuthentication flag can be sent
+- */
+-function test_request_forceAuthentication() {
+-  do_test_pending();
+-
+-  let mockedDoc = mock_doc(null, TEST_URL);
+-  makeObserver("identity-controller-request", function (aSubject, aTopic, aData) {
+-    do_check_eq(aSubject.wrappedJSObject.id, mockedDoc.id);
+-    do_check_eq(aSubject.wrappedJSObject.origin, TEST_URL);
+-    do_check_eq(aSubject.wrappedJSObject.forceAuthentication, true);
+-    do_test_finished();
+-    run_next_test();
+-   });
+-
+-  MinimalIDService.RP.watch(mockedDoc);
+-  MinimalIDService.RP.request(mockedDoc.id, {forceAuthentication: true});
+-}
+-
+-/*
+- * Test that the issuer can be forced
+- */
+-function test_request_forceIssuer() {
+-  do_test_pending();
+-
+-  let mockedDoc = mock_doc(null, TEST_URL);
+-  makeObserver("identity-controller-request", function (aSubject, aTopic, aData) {
+-    do_check_eq(aSubject.wrappedJSObject.id, mockedDoc.id);
+-    do_check_eq(aSubject.wrappedJSObject.origin, TEST_URL);
+-    do_check_eq(aSubject.wrappedJSObject.issuer, "https://jed.gov");
+-    do_test_finished();
+-    run_next_test();
+-   });
+-
+-  MinimalIDService.RP.watch(mockedDoc);
+-  MinimalIDService.RP.request(mockedDoc.id, {issuer: "https://jed.gov"});
+-}
+-
+-/*
+- * Test that the "identity-controller-logout" signal is emitted correctly
+- */
+-function test_logout() {
+-  do_test_pending();
+-
+-  let mockedDoc = mock_doc(null, TEST_URL);
+-  makeObserver("identity-controller-logout", function (aSubject, aTopic, aData) {
+-    do_check_eq(aSubject.wrappedJSObject.id, mockedDoc.id);
+-    do_test_finished();
+-    run_next_test();
+-  });
+-
+-  MinimalIDService.RP.watch(mockedDoc);
+-  MinimalIDService.RP.logout(mockedDoc.id, {});
+-}
+-
+-let TESTS = [
+-  test_overall,
+-  test_mock_doc,
+-  test_watch,
+-  test_request,
+-  test_request_forceAuthentication,
+-  test_request_forceIssuer,
+-  test_logout
+-];
+-
+-TESTS.forEach(add_test);
+-
+-function run_test() {
+-  run_next_test();
+-}
+diff --git a/toolkit/identity/tests/unit/test_observer_topics.js b/toolkit/identity/tests/unit/test_observer_topics.js
+deleted file mode 100644
+--- a/toolkit/identity/tests/unit/test_observer_topics.js
++++ /dev/null
+@@ -1,114 +0,0 @@
+-/* Any copyright is dedicated to the Public Domain.
+-   http://creativecommons.org/publicdomain/zero/1.0/ */
+-
+-/**
+- * By their nature, these tests duplicate some of the functionality of
+- * other tests for Identity, RelyingParty, and IdentityProvider.
+- *
+- * In particular, "identity-auth-complete" and
+- * "identity-login-state-changed" are tested in test_authentication.js
+- */
+-
+-"use strict";
+-
+-XPCOMUtils.defineLazyModuleGetter(this, "IDService",
+-                                  "resource://gre/modules/identity/Identity.jsm",
+-                                  "IdentityService");
+-
+-function test_smoke() {
+-  do_check_neq(IDService, null);
+-  run_next_test();
+-}
+-
+-function test_identity_request() {
+-  // In response to navigator.id.request(), initiate a login with user
+-  // interaction by notifying observers of 'identity-request'
+-
+-  do_test_pending();
+-
+-  IDService.reset();
+-
+-  let id = "landru@mockmyid.com";
+-  setup_test_identity(id, TEST_CERT, function() {
+-    // deliberately adding a trailing final slash on the domain
+-    // to test path composition
+-    let mockedDoc = mock_doc(null, "http://jed.gov/", function() {});
+-
+-    // by calling watch() we create an rp flow.
+-    IDService.RP.watch(mockedDoc);
+-
+-    // register the request UX observer
+-    makeObserver("identity-request", function (aSubject, aTopic, aData) {
+-      do_check_eq(aTopic, "identity-request");
+-      do_check_eq(aData, null);
+-
+-      // check that all the URLs are properly resolved
+-      let subj = aSubject.wrappedJSObject;
+-      do_check_eq(subj.privacyPolicy, "http://jed.gov/pp.html");
+-      do_check_eq(subj.termsOfService, "http://jed.gov/tos.html");
+-
+-      do_test_finished();
+-      run_next_test();
+-    });
+-
+-    let requestOptions = {
+-      privacyPolicy: "/pp.html",
+-      termsOfService: "/tos.html"
+-    };
+-    IDService.RP.request(mockedDoc.id, requestOptions);
+-  });
+-
+-}
+-
+-function test_identity_auth() {
+-  // see test_authentication.js for "identity-auth-complete"
+-  // and "identity-login-state-changed"
+-
+-  do_test_pending();
+-  let _provId = "bogus";
+-
+-  // Simulate what would be returned by IDService._fetchWellKnownFile
+-  // for a given domain.
+-  let idpParams = {
+-    domain: "myfavoriteflan.com",
+-    idpParams: {
+-      authentication: "/foo/authenticate.html",
+-      provisioning: "/foo/provision.html"
+-    }
+-  };
+-
+-  // Create an RP flow
+-  let mockedDoc = mock_doc(null, TEST_URL, function(action, params) {});
+-  IDService.RP.watch(mockedDoc);
+-
+-  // The identity-auth notification is sent up to the UX from the
+-  // _doAuthentication function.  Be ready to receive it and call
+-  // beginAuthentication
+-  makeObserver("identity-auth", function (aSubject, aTopic, aData) {
+-    do_check_neq(aSubject, null);
+-    do_check_eq(aTopic, "identity-auth");
+-    do_check_eq(aData, "https://myfavoriteflan.com/foo/authenticate.html");
+-
+-    do_check_eq(aSubject.wrappedJSObject.provId, _provId);
+-    do_test_finished();
+-    run_next_test();
+-  });
+-
+-  // Even though our provisioning flow id is bogus, IdentityProvider
+-  // won't look at it until farther along in the authentication
+-  // process.  So this test can pass with a fake provId.
+-  IDService.IDP._doAuthentication(_provId, idpParams);
+-}
+-
+-let TESTS = [
+-    test_smoke,
+-    test_identity_request,
+-    test_identity_auth,
+-  ];
+-
+-
+-TESTS.forEach(add_test);
+-
+-function run_test() {
+-  run_next_test();
+-}
+diff --git a/toolkit/identity/tests/unit/test_provisioning.js b/toolkit/identity/tests/unit/test_provisioning.js
+deleted file mode 100644
+--- a/toolkit/identity/tests/unit/test_provisioning.js
++++ /dev/null
+@@ -1,242 +0,0 @@
+-/* Any copyright is dedicated to the Public Domain.
+-   http://creativecommons.org/publicdomain/zero/1.0/ */
+-
+-"use strict";
+-
+-Cu.import("resource://gre/modules/identity/IdentityProvider.jsm");
+-
+-function check_provision_flow_done(provId) {
+-  do_check_null(IdentityProvider._provisionFlows[provId]);
+-}
+-
+-function test_begin_provisioning() {
+-  do_test_pending();
+-
+-  setup_provisioning(
+-    TEST_USER,
+-    function(caller) {
+-      // call .beginProvisioning()
+-      IdentityProvider.beginProvisioning(caller);
+-    }, function() {},
+-    {
+-      beginProvisioningCallback: function(email, duration_s) {
+-        do_check_eq(email, TEST_USER);
+-        do_check_true(duration_s > 0);
+-        do_check_true(duration_s <= (24 * 3600));
+-
+-        do_test_finished();
+-        run_next_test();
+-      }
+-    });
+-}
+-
+-function test_raise_provisioning_failure() {
+-  do_test_pending();
+-  let _callerId = null;
+-
+-  setup_provisioning(
+-    TEST_USER,
+-    function(caller) {
+-      // call .beginProvisioning()
+-      _callerId = caller.id;
+-      IdentityProvider.beginProvisioning(caller);
+-    }, function(err) {
+-      // this should be invoked with a populated error
+-      do_check_neq(err, null);
+-      do_check_true(err.indexOf("can't authenticate this email") > -1);
+-
+-      do_test_finished();
+-      run_next_test();
+-    },
+-    {
+-      beginProvisioningCallback: function(email, duration_s) {
+-        // raise the failure as if we can't provision this email
+-        IdentityProvider.raiseProvisioningFailure(_callerId, "can't authenticate this email");
+-      }
+-    });
+-}
+-
+-function test_genkeypair_before_begin_provisioning() {
+-  do_test_pending();
+-
+-  setup_provisioning(
+-    TEST_USER,
+-    function(caller) {
+-      // call genKeyPair without beginProvisioning
+-      IdentityProvider.genKeyPair(caller.id);
+-    },
+-    // expect this to be called with an error
+-    function(err) {
+-      do_check_neq(err, null);
+-
+-      do_test_finished();
+-      run_next_test();
+-    },
+-    {
+-      // this should not be called at all!
+-      genKeyPairCallback: function(pk) {
+-        // a test that will surely fail because we shouldn't be here.
+-        do_check_true(false);
+-
+-        do_test_finished();
+-        run_next_test();
+-      }
+-    }
+-  );
+-}
+-
+-function test_genkeypair() {
+-  do_test_pending();
+-  let _callerId = null;
+-
+-  setup_provisioning(
+-    TEST_USER,
+-    function(caller) {
+-      _callerId = caller.id;
+-      IdentityProvider.beginProvisioning(caller);
+-    },
+-    function(err) {
+-      // should not be called!
+-      do_check_true(false);
+-
+-      do_test_finished();
+-      run_next_test();
+-    },
+-    {
+-      beginProvisioningCallback: function(email, time_s) {
+-        IdentityProvider.genKeyPair(_callerId);
+-      },
+-      genKeyPairCallback: function(kp) {
+-        do_check_neq(kp, null);
+-
+-        // yay!
+-        do_test_finished();
+-        run_next_test();
+-      }
+-    }
+-  );
+-}
+-
+-// we've already ensured that genkeypair can't be called
+-// before beginProvisioning, so this test should be enough
+-// to ensure full sequential call of the 3 APIs.
+-function test_register_certificate_before_genkeypair() {
+-  do_test_pending();
+-  let _callerID = null;
+-
+-  setup_provisioning(
+-    TEST_USER,
+-    function(caller) {
+-      // do the right thing for beginProvisioning
+-      _callerID = caller.id;
+-      IdentityProvider.beginProvisioning(caller);
+-    },
+-    // expect this to be called with an error
+-    function(err) {
+-      do_check_neq(err, null);
+-
+-      do_test_finished();
+-      run_next_test();
+-    },
+-    {
+-      beginProvisioningCallback: function(email, duration_s) {
+-        // now we try to register cert but no keygen has been done
+-        IdentityProvider.registerCertificate(_callerID, "fake-cert");
+-      }
+-    }
+-  );
+-}
+-
+-function test_register_certificate() {
+-  do_test_pending();
+-  let _callerId = null;
+-
+-  setup_provisioning(
+-    TEST_USER,
+-    function(caller) {
+-      _callerId = caller.id;
+-      IdentityProvider.beginProvisioning(caller);
+-    },
+-    function(err) {
+-      // we should be cool!
+-      do_check_null(err);
+-
+-      // check that the cert is there
+-      let identity = get_idstore().fetchIdentity(TEST_USER);
+-      do_check_neq(identity,null);
+-      do_check_eq(identity.cert, "fake-cert-42");
+-
+-      do_execute_soon(function check_done() {
+-        // cleanup will happen after the callback is called
+-        check_provision_flow_done(_callerId);
+-
+-        do_test_finished();
+-        run_next_test();
+-      });
+-    },
+-    {
+-      beginProvisioningCallback: function(email, duration_s) {
+-        IdentityProvider.genKeyPair(_callerId);
+-      },
+-      genKeyPairCallback: function(pk) {
+-        IdentityProvider.registerCertificate(_callerId, "fake-cert-42");
+-      }
+-    }
+-  );
+-}
+-
+-
+-function test_get_assertion_after_provision() {
+-  do_test_pending();
+-  let _callerId = null;
+-
+-  setup_provisioning(
+-    TEST_USER,
+-    function(caller) {
+-      _callerId = caller.id;
+-      IdentityProvider.beginProvisioning(caller);
+-    },
+-    function(err) {
+-      // we should be cool!
+-      do_check_null(err);
+-
+-      // check that the cert is there
+-      let identity = get_idstore().fetchIdentity(TEST_USER);
+-      do_check_neq(identity,null);
+-      do_check_eq(identity.cert, "fake-cert-42");
+-
+-      do_execute_soon(function check_done() {
+-        // cleanup will happen after the callback is called
+-        check_provision_flow_done(_callerId);
+-
+-        do_test_finished();
+-        run_next_test();
+-      });
+-    },
+-    {
+-      beginProvisioningCallback: function(email, duration_s) {
+-        IdentityProvider.genKeyPair(_callerId);
+-      },
+-      genKeyPairCallback: function(pk) {
+-        IdentityProvider.registerCertificate(_callerId, "fake-cert-42");
+-      }
+-    }
+-  );
+-
+-}
+-
+-let TESTS = [];
+-
+-TESTS.push(test_begin_provisioning);
+-TESTS.push(test_raise_provisioning_failure);
+-TESTS.push(test_genkeypair_before_begin_provisioning);
+-TESTS.push(test_genkeypair);
+-TESTS.push(test_register_certificate_before_genkeypair);
+-TESTS.push(test_register_certificate);
+-TESTS.push(test_get_assertion_after_provision);
+-
+-TESTS.forEach(add_test);
+-
+-function run_test() {
+-  run_next_test();
+-}
+diff --git a/toolkit/identity/tests/unit/test_relying_party.js b/toolkit/identity/tests/unit/test_relying_party.js
+deleted file mode 100644
+--- a/toolkit/identity/tests/unit/test_relying_party.js
++++ /dev/null
+@@ -1,255 +0,0 @@
+-/* Any copyright is dedicated to the Public Domain.
+-   http://creativecommons.org/publicdomain/zero/1.0/ */
+-
+-"use strict";
+-
+-XPCOMUtils.defineLazyModuleGetter(this, "RelyingParty",
+-                                  "resource://gre/modules/identity/RelyingParty.jsm");
+-
+-function resetState() {
+-  get_idstore().reset();
+-  RelyingParty.reset();
+-}
+-
+-function test_watch_loggedin_ready() {
+-  do_test_pending();
+-
+-  resetState();
+-
+-  let id = TEST_USER;
+-  setup_test_identity(id, TEST_CERT, function() {
+-    let store = get_idstore();
+-
+-    // set it up so we're supposed to be logged in to TEST_URL
+-    store.setLoginState(TEST_URL, true, id);
+-    RelyingParty.watch(mock_doc(id, TEST_URL, function(action, params) {
+-      do_check_eq(action, 'ready');
+-      do_check_eq(params, undefined);
+-
+-      do_test_finished();
+-      run_next_test();
+-    }));
+-  });
+-}
+-
+-function test_watch_loggedin_login() {
+-  do_test_pending();
+-
+-  resetState();
+-
+-  let id = TEST_USER;
+-  setup_test_identity(id, TEST_CERT, function() {
+-    let store = get_idstore();
+-
+-    // set it up so we're supposed to be logged in to TEST_URL
+-    store.setLoginState(TEST_URL, true, id);
+-
+-    // check for first a login() call, then a ready() call
+-    RelyingParty.watch(mock_doc(null, TEST_URL, call_sequentially(
+-      function(action, params) {
+-        do_check_eq(action, 'login');
+-        do_check_neq(params, null);
+-      },
+-      function(action, params) {
+-        do_check_eq(action, 'ready');
+-        do_check_null(params);
+-
+-        do_test_finished();
+-        run_next_test();
+-      }
+-    )));
+-  });
+-}
+-
+-function test_watch_loggedin_logout() {
+-  do_test_pending();
+-
+-  resetState();
+-
+-  let id = TEST_USER;
+-  let other_id = "otherid@foo.com";
+-  setup_test_identity(other_id, TEST_CERT, function() {
+-    setup_test_identity(id, TEST_CERT, function() {
+-      let store = get_idstore();
+-
+-      // set it up so we're supposed to be logged in to TEST_URL
+-      // with id, not other_id
+-      store.setLoginState(TEST_URL, true, id);
+-
+-      // this should cause a login with an assertion for id,
+-      // not for other_id
+-      RelyingParty.watch(mock_doc(other_id, TEST_URL, call_sequentially(
+-        function(action, params) {
+-          do_check_eq(action, 'login');
+-          do_check_neq(params, null);
+-        },
+-        function(action, params) {
+-          do_check_eq(action, 'ready');
+-          do_check_null(params);
+-
+-          do_test_finished();
+-          run_next_test();
+-        }
+-      )));
+-    });
+-  });
+-}
+-
+-function test_watch_notloggedin_ready() {
+-  do_test_pending();
+-
+-  resetState();
+-
+-  RelyingParty.watch(mock_doc(null, TEST_URL, function(action, params) {
+-    do_check_eq(action, 'ready');
+-    do_check_eq(params, undefined);
+-
+-    do_test_finished();
+-    run_next_test();
+-  }));
+-}
+-
+-function test_watch_notloggedin_logout() {
+-  do_test_pending();
+-
+-  resetState();
+-
+-  RelyingParty.watch(mock_doc(TEST_USER, TEST_URL, call_sequentially(
+-    function(action, params) {
+-      do_check_eq(action, 'logout');
+-      do_check_eq(params, undefined);
+-
+-      let store = get_idstore();
+-      do_check_null(store.getLoginState(TEST_URL));
+-    },
+-    function(action, params) {
+-      do_check_eq(action, 'ready');
+-      do_check_eq(params, undefined);
+-      do_test_finished();
+-      run_next_test();
+-    }
+-  )));
+-}
+-
+-function test_request() {
+-  do_test_pending();
+-
+-  // set up a watch, to be consistent
+-  let mockedDoc = mock_doc(null, TEST_URL, function(action, params) {
+-    // this isn't going to be called for now
+-    // XXX but it is called - is that bad?
+-  });
+-
+-  RelyingParty.watch(mockedDoc);
+-
+-  // be ready for the UX identity-request notification
+-  makeObserver("identity-request", function (aSubject, aTopic, aData) {
+-    do_check_neq(aSubject, null);
+-
+-    do_check_eq(aSubject.wrappedJSObject.rpId, mockedDoc.id);
+-
+-    do_test_finished();
+-    run_next_test();
+-  });
+-
+-  RelyingParty.request(mockedDoc.id, {});
+-}
+-
+-/*
+- * ensure the forceAuthentication param can be passed through
+- */
+-function test_request_forceAuthentication() {
+-  do_test_pending();
+-
+-  let mockedDoc = mock_doc(null, TEST_URL, function(action, params) {});
+-
+-  RelyingParty.watch(mockedDoc);
+-
+-  makeObserver("identity-request", function(aSubject, aTopic, aData) {
+-    do_check_eq(aSubject.wrappedJSObject.rpId, mockedDoc.id);
+-    do_check_eq(aSubject.wrappedJSObject.forceAuthentication, true);
+-    do_test_finished();
+-    run_next_test();
+-  });
+-
+-  RelyingParty.request(mockedDoc.id, {forceAuthentication: true});
+-}
+-
+-/*
+- * ensure the issuer can be forced
+- */
+-function test_request_forceIssuer() {
+-  do_test_pending();
+-
+-  let mockedDoc = mock_doc(null, TEST_URL, function(action, params) {});
+-
+-  RelyingParty.watch(mockedDoc);
+-
+-  makeObserver("identity-request", function(aSubject, aTopic, aData) {
+-    do_check_eq(aSubject.wrappedJSObject.rpId, mockedDoc.id);
+-    do_check_eq(aSubject.wrappedJSObject.issuer, "https://ozten.co.uk");
+-    do_test_finished();
+-    run_next_test();
+-  });
+-
+-  RelyingParty.request(mockedDoc.id, {issuer: "https://ozten.co.uk"});
+-}
+-function test_logout() {
+-  do_test_pending();
+-
+-  resetState();
+-
+-  let id = TEST_USER;
+-  setup_test_identity(id, TEST_CERT, function() {
+-    let store = get_idstore();
+-
+-    // set it up so we're supposed to be logged in to TEST_URL
+-    store.setLoginState(TEST_URL, true, id);
+-
+-    let doLogout;
+-    let mockedDoc = mock_doc(id, TEST_URL, call_sequentially(
+-      function(action, params) {
+-        do_check_eq(action, 'ready');
+-        do_check_eq(params, undefined);
+-
+-        do_timeout(100, doLogout);
+-      },
+-      function(action, params) {
+-        do_check_eq(action, 'logout');
+-        do_check_eq(params, undefined);
+-      },
+-      function(action, params) {
+-        do_check_eq(action, 'ready');
+-        do_check_eq(params, undefined);
+-
+-        do_test_finished();
+-        run_next_test();
+-      }));
+-
+-    doLogout = function() {
+-      RelyingParty.logout(mockedDoc.id);
+-      do_check_false(store.getLoginState(TEST_URL).isLoggedIn);
+-      do_check_eq(store.getLoginState(TEST_URL).email, TEST_USER);
+-    };
+-
+-    RelyingParty.watch(mockedDoc);
+-  });
+-}
+-
+-let TESTS = [
+-  test_watch_loggedin_ready,
+-  test_watch_loggedin_login,
+-  test_watch_loggedin_logout,
+-  test_watch_notloggedin_ready,
+-  test_watch_notloggedin_logout,
+-  test_request,
+-  test_request_forceAuthentication,
+-  test_request_forceIssuer,
+-  test_logout
+-];
+-
+-TESTS.forEach(add_test);
+-
+-function run_test() {
+-  run_next_test();
+-}
+diff --git a/toolkit/identity/tests/unit/test_store.js b/toolkit/identity/tests/unit/test_store.js
+deleted file mode 100644
+--- a/toolkit/identity/tests/unit/test_store.js
++++ /dev/null
+@@ -1,64 +0,0 @@
+-/* Any copyright is dedicated to the Public Domain.
+-   http://creativecommons.org/publicdomain/zero/1.0/ */
+-
+-"use strict";
+-
+-XPCOMUtils.defineLazyModuleGetter(this, "IDService",
+-                                  "resource://gre/modules/identity/Identity.jsm",
+-                                  "IdentityService");
+-
+-function test_id_store() {
+-  // XXX - this is ugly, peaking in like this into IDService
+-  // probably should instantiate our own.
+-  var store = get_idstore();
+-
+-  // try adding an identity
+-  store.addIdentity(TEST_USER, TEST_PRIVKEY, TEST_CERT);
+-  do_check_neq(store.getIdentities()[TEST_USER], null);
+-  do_check_eq(store.getIdentities()[TEST_USER].cert, TEST_CERT);
+-
+-  // does fetch identity work?
+-  do_check_neq(store.fetchIdentity(TEST_USER), null);
+-  do_check_eq(store.fetchIdentity(TEST_USER).cert, TEST_CERT);
+-
+-  // clear the cert should keep the identity but not the cert
+-  store.clearCert(TEST_USER);
+-  do_check_neq(store.getIdentities()[TEST_USER], null);
+-  do_check_null(store.getIdentities()[TEST_USER].cert);
+-
+-  // remove it should remove everything
+-  store.removeIdentity(TEST_USER);
+-  do_check_eq(store.getIdentities()[TEST_USER], undefined);
+-
+-  // act like we're logged in to TEST_URL
+-  store.setLoginState(TEST_URL, true, TEST_USER);
+-  do_check_neq(store.getLoginState(TEST_URL), null);
+-  do_check_true(store.getLoginState(TEST_URL).isLoggedIn);
+-  do_check_eq(store.getLoginState(TEST_URL).email, TEST_USER);
+-
+-  // log out
+-  store.setLoginState(TEST_URL, false, TEST_USER);
+-  do_check_neq(store.getLoginState(TEST_URL), null);
+-  do_check_false(store.getLoginState(TEST_URL).isLoggedIn);
+-
+-  // email is still set
+-  do_check_eq(store.getLoginState(TEST_URL).email, TEST_USER);
+-
+-  // not logged into other site
+-  do_check_null(store.getLoginState(TEST_URL2));
+-
+-  // clear login state
+-  store.clearLoginState(TEST_URL);
+-  do_check_null(store.getLoginState(TEST_URL));
+-  do_check_null(store.getLoginState(TEST_URL2));
+-
+-  run_next_test();
+-}
+-
+-let TESTS = [test_id_store,];
+-
+-TESTS.forEach(add_test);
+-
+-function run_test() {
+-  run_next_test();
+-}
+diff --git a/toolkit/identity/tests/unit/test_well-known.js b/toolkit/identity/tests/unit/test_well-known.js
+deleted file mode 100644
+--- a/toolkit/identity/tests/unit/test_well-known.js
++++ /dev/null
+@@ -1,90 +0,0 @@
+-/* Any copyright is dedicated to the Public Domain.
+-   http://creativecommons.org/publicdomain/zero/1.0/ */
+-
+-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+-Cu.import("resource://gre/modules/Services.jsm");
+-
+-XPCOMUtils.defineLazyModuleGetter(this, "IDService",
+-                                  "resource://gre/modules/identity/Identity.jsm",
+-                                  "IdentityService");
+-
+-const WELL_KNOWN_PATH = "/.well-known/browserid";
+-
+-let SERVER_PORT = 8080;
+-
+-// valid IDP
+-function test_well_known_1() {
+-  do_test_pending();
+-
+-  let server = new HttpServer();
+-  server.registerFile(WELL_KNOWN_PATH, do_get_file("data/idp_1" + WELL_KNOWN_PATH));
+-  server.start(SERVER_PORT);
+-  let hostPort = "localhost:" + SERVER_PORT;
+-
+-  function check_well_known(aErr, aCallbackObj) {
+-    do_check_null(aErr);
+-    do_check_eq(aCallbackObj.domain, hostPort);
+-    let idpParams = aCallbackObj.idpParams;
+-    do_check_eq(idpParams['public-key'].algorithm, "RS");
+-    do_check_eq(idpParams.authentication, "/browserid/sign_in.html");
+-    do_check_eq(idpParams.provisioning, "/browserid/provision.html");
+-
+-    do_test_finished();
+-    server.stop(run_next_test);
+-  }
+-
+-  IDService._fetchWellKnownFile(hostPort, check_well_known, "http");
+-}
+-
+-// valid domain, non-exixtent browserid file
+-function test_well_known_404() {
+-  do_test_pending();
+-
+-  let server = new HttpServer();
+-  // Don't register the well-known file
+-  // Change ports to avoid HTTP caching
+-  SERVER_PORT++;
+-  server.start(SERVER_PORT);
+-
+-  let hostPort = "localhost:" + SERVER_PORT;
+-
+-  function check_well_known_404(aErr, aCallbackObj) {
+-    do_check_eq("Error", aErr);
+-    do_check_eq(undefined, aCallbackObj);
+-    do_test_finished();
+-    server.stop(run_next_test);
+-  }
+-
+-  IDService._fetchWellKnownFile(hostPort, check_well_known_404, "http");
+-}
+-
+-// valid domain, invalid browserid file (no "provisioning" member)
+-function test_well_known_invalid_1() {
+-  do_test_pending();
+-
+-  let server = new HttpServer();
+-  server.registerFile(WELL_KNOWN_PATH, do_get_file("data/idp_invalid_1" + WELL_KNOWN_PATH));
+-  // Change ports to avoid HTTP caching
+-  SERVER_PORT++;
+-  server.start(SERVER_PORT);
+-
+-  let hostPort = "localhost:" + SERVER_PORT;
+-
+-  function check_well_known_invalid_1(aErr, aCallbackObj) {
+-    // check for an error message
+-    do_check_true(aErr && aErr.length > 0);
+-    do_check_eq(undefined, aCallbackObj);
+-    do_test_finished();
+-    server.stop(run_next_test);
+-  }
+-
+-  IDService._fetchWellKnownFile(hostPort, check_well_known_invalid_1, "http");
+-}
+-
+-let TESTS = [test_well_known_1, test_well_known_404, test_well_known_invalid_1];
+-
+-TESTS.forEach(add_test);
+-
+-function run_test() {
+-  run_next_test();
+-}

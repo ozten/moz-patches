@@ -1,0 +1,2172 @@
+# HG changeset patch
+# Parent 0d234b56af410b296fba2c7856a8894980606bfb
+# User Jed Parsons <jparsons@mozilla.com>
+# Date Wed Apr 17 11:43:14 2013 PDT
+Bug 845546: Identity service: part 4, browser component
+
+diff --git a/browser/base/content/browser-identity.js b/browser/base/content/browser-identity.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/browser-identity.js
+@@ -0,0 +1,149 @@
++/* -*- Mode: js2; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- /
++/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
++ * You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// This JS shim contains the callbacks to fire DOMRequest events for
++// navigator.mozId API within the caller's scope.
++
++'use strict';
++
++let { classes: Cc, interfaces: Ci, utils: Cu } = Components;
++Cu.import('resource://gre/modules/XPCOMUtils.jsm');
++
++XPCOMUtils.defineLazyGetter(this, "logger", function() {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
++
++function IdentityShim() {
++  this.isLoaded = false;
++}
++
++IdentityShim.prototype = {
++  init: function IdentityShim_init() {
++    addMessageListener('identity-delegate-watch', this);
++    addMessageListener('identity-delegate-request', this);
++    addMessageListener('identity-delegate-logout', this);
++    sendAsyncMessage('identity-delegate-loaded');
++    logger.log('sent identity-delegate-loaded');
++    this.isLoaded = true;
++  },
++
++  uninit: function IdentityShim_uninit() {
++    if (this.isLoaded) {
++      removeMessageListener('identity-delegate-watch', this);
++      removeMessageListener('identity-delegate-request', this);
++      removeMessageListener('identity-delegate-logout', this);
++      sendAsyncMessage('identity-delegate-complete', null);
++      logger.log('sent identity-delegate-complete');
++      this.isLoaded = false;
++    }
++  },
++
++  receiveMessage: function IdentityShim_receiveMessage(aMessage) {
++    switch (aMessage.name) {
++      case 'identity-delegate-watch':
++        this.watch(aMessage.json);
++        break;
++      case 'identity-delegate-request':
++        this.request(aMessage.json);
++        break;
++      case 'identity-delegate-logout':
++        this.logout(aMessage.json);
++        break;
++      default:
++        //logger.error("received unexpected message:", aMessage.name);
++        break;
++    }
++  },
++
++  _identityDoMethod: function IdentityShim__identityDoMethod(message) {
++    sendAsyncMessage('identity-service-doMethod', message);
++  },
++
++  _close: function IdentityShim__close() {
++    this.uninit();
++  },
++
++  watch: function IdentityShim_watch(options) {
++    logger.log('doInternalWatch: isLoaded:', this.isLoaded, 'options:', options);
++    if (options) {
++      let BrowserID = content.wrappedJSObject.BrowserID;
++      let callback = function(aParams, aInternalParams) {
++        this._identityDoMethod(aParams);
++        if (aParams.method === 'ready') {
++          this._close();
++        }
++      }.bind(this);
++
++      BrowserID.internal.watch(
++        callback,
++        JSON.stringify(options),
++        function(...things) {
++          logger.log('internal watch returned:', things);
++        }
++      );
++    }
++  },
++
++  request: function IdentityShim_request(options) {
++    logger.log('doInternalRequest: isLoaded:', this.isLoaded, 'options:', options);
++    if (options) {
++      var stringifiedOptions = JSON.stringify(options);
++      let callback = function(assertion, internalParams) {
++        internalParams = internalParams || {};
++        if (assertion) {
++          logger.log("got assertion");
++          this._identityDoMethod({
++            method: 'login',
++            assertion: assertion,
++            _internal: options._internal,
++            _internalParams: internalParams});
++        }
++        this._close();
++      }.bind(this);
++
++      content.wrappedJSObject.BrowserID.internal.get(
++        options.origin,
++        callback,
++        stringifiedOptions
++      );
++    }
++  },
++
++  logout: function IdentityShim_logout(options) {
++    logger.log('doInternalLogout: isLoaded:', this.isLoaded, 'options:', options);
++    if (options) {
++      let BrowserID = content.wrappedJSObject.BrowserID;
++      let callback = function() {
++        this._identityDoMethod({method: 'logout', _internal: options._internal});
++        this._close();
++      }.bind(this);
++
++      BrowserID.internal.logout(options.origin, callback);
++    }
++  }
++};
++
++this.shim = null;
++
++addEventListener('DOMContentLoaded', function(e) {
++  content.addEventListener('load', function(e) {
++    logger.log('content loaded');
++    this.shim = new IdentityShim();
++    this.shim.init();
++  });
++});
++
++// Having an event listener for 'unload' prevents the page from
++// being cached.  So use 'pagehide' instead.
++// https://developer.mozilla.org/en-US/docs/Using_Firefox_1.5_caching
++content.addEventListener('pagehide', function(e) {
++  if (this.shim) {
++    this.shim.uninit();
++  }
++});
++
++
+diff --git a/browser/base/content/browser.css b/browser/base/content/browser.css
+--- a/browser/base/content/browser.css
++++ b/browser/base/content/browser.css
+@@ -262,36 +262,16 @@ panel[noactions] > richlistbox > richlis
+ #urlbar[pageproxystate="invalid"] > #urlbar-icons > .urlbar-icon:not(#go-button),
+ #urlbar[pageproxystate="valid"] > #urlbar-icons > #go-button,
+ #urlbar[pageproxystate="invalid"][focused="true"] > #urlbar-go-button ~ toolbarbutton,
+ #urlbar[pageproxystate="valid"] > #urlbar-go-button,
+ #urlbar:not([focused="true"]) > #urlbar-go-button {
+   visibility: collapse;
+ }
+ 
+-#urlbar[pageproxystate="invalid"] > #identity-box > #identity-icon-labels {
+-  visibility: collapse;
+-}
+-
+-#urlbar[pageproxystate="invalid"] > #identity-box {
+-  pointer-events: none;
+-}
+-
+-#identity-icon-labels {
+-  max-width: 18em;
+-}
+-
+-#identity-icon-country-label {
+-  direction: ltr;
+-}
+-
+-#identity-box.verifiedIdentity > #identity-icon-labels > #identity-icon-label {
+-  -moz-margin-end: 0.25em !important;
+-}
+-
+ #wrapper-search-container > #search-container > #searchbar > .searchbar-textbox > .autocomplete-textbox-container > .textbox-input-box > html|*.textbox-input {
+   visibility: hidden;
+ }
+ 
+ /* ::::: Unified Back-/Forward Button ::::: */
+ #back-button > .toolbarbutton-menu-dropmarker,
+ #forward-button > .toolbarbutton-menu-dropmarker {
+   display: none;
+@@ -377,26 +357,16 @@ window[chromehidden~="toolbar"] toolbar:
+ #historySwipeAnimationCurrentPage {
+   background-image: -moz-element(#historySwipeAnimationCurrentPageSnapshot);
+ }
+ 
+ #historySwipeAnimationNextPage {
+   background-image: -moz-element(#historySwipeAnimationNextPageSnapshot);
+ }
+ 
+-/* Identity UI */
+-#identity-popup-content-box.unknownIdentity > #identity-popup-connectedToLabel ,
+-#identity-popup-content-box.unknownIdentity > #identity-popup-runByLabel ,
+-#identity-popup-content-box.unknownIdentity > #identity-popup-content-host ,
+-#identity-popup-content-box.unknownIdentity > #identity-popup-content-owner ,
+-#identity-popup-content-box.verifiedIdentity > #identity-popup-connectedToLabel2 ,
+-#identity-popup-content-box.verifiedDomain > #identity-popup-connectedToLabel2 {
+-  display: none;
+-}
+-
+ /*  Full Screen UI */
+ 
+ #fullscr-toggler {
+   height: 1px;
+   background: black;
+ }
+ 
+ #full-screen-warning-container {
+diff --git a/browser/base/content/urlbarBindings.xml b/browser/base/content/urlbarBindings.xml
+--- a/browser/base/content/urlbarBindings.xml
++++ b/browser/base/content/urlbarBindings.xml
+@@ -1117,264 +1117,65 @@
+       <method name="onDownloadEnded">
+         <body><![CDATA[
+           this.updateProgress();
+         ]]></body>
+       </method>
+     </implementation>
+   </binding>
+ 
+-  <binding id="identity-request-notification" extends="chrome://global/content/bindings/notification.xml#popup-notification">
+-    <content align="start">
++  <binding 
++    id="identity-request-notification" 
++    extends="chrome://global/content/bindings/notification.xml#popup-notification">
+ 
+-      <xul:image class="popup-notification-icon"
+-                 xbl:inherits="popupid,src=icon"/>
++    <content>
++      <panel id="persona-container" anonid="persona-container" flex="1" />
++    </content>
+ 
+-      <xul:vbox flex="1">
+-        <xul:vbox anonid="identity-deck">
+-          <xul:vbox flex="1" pack="center"> <!-- 1: add an email -->
+-            <html:input type="email" anonid="email" required="required" size="30"/>
+-            <xul:description anonid="newidentitydesc"/>
+-            <xul:spacer flex="1"/>
+-            <xul:label class="text-link custom-link small-margin" anonid="chooseemail" hidden="true"/>
+-          </xul:vbox>
+-          <xul:vbox flex="1" hidden="true"> <!-- 2: choose an email -->
+-            <xul:description anonid="chooseidentitydesc"/>
+-            <xul:radiogroup anonid="identities">
+-            </xul:radiogroup>
+-            <xul:label class="text-link custom-link" anonid="newemail"/>
+-          </xul:vbox>
+-        </xul:vbox>
+-        <xul:hbox class="popup-notification-button-container"
+-                  pack="end" align="center">
+-          <xul:label anonid="tos" class="text-link" hidden="true"/>
+-          <xul:label anonid="privacypolicy" class="text-link" hidden="true"/>
+-          <xul:spacer flex="1"/>
+-          <xul:image anonid="throbber" src="chrome://browser/skin/tabbrowser/loading.png"
+-                     style="visibility:hidden" width="16" height="16"/>
+-          <xul:button anonid="button"
+-                      type="menu-button"
+-                      class="popup-notification-menubutton"
+-                      xbl:inherits="oncommand=buttoncommand,label=buttonlabel,accesskey=buttonaccesskey">
+-            <xul:menupopup anonid="menupopup"
+-                           xbl:inherits="oncommand=menucommand">
+-              <children/>
+-              <xul:menuitem class="menuitem-iconic popup-notification-closeitem"
+-                            label="&closeNotificationItem.label;"
+-                            xbl:inherits="oncommand=closeitemcommand"/>
+-            </xul:menupopup>
+-          </xul:button>
+-        </xul:hbox>
+-      </xul:vbox>
+-      <xul:vbox pack="start">
+-        <xul:toolbarbutton anonid="closebutton"
+-                           class="messageCloseButton popup-notification-closebutton tabbable"
+-                           xbl:inherits="oncommand=closebuttoncommand"
+-                           tooltiptext="&closeNotification.tooltip;"/>
+-      </xul:vbox>
+-    </content>
+-    <implementation>
++    <implementation implements="nsIObserver, nsIDOMEventListener">
+       <constructor><![CDATA[
+-        // this.notification.options.identity is used to pass identity-specific info to the binding
+-        let origin = this.identity.origin
++        this.complete = false;
+ 
+-        // Populate text
+-        this.emailField.placeholder = gNavigatorBundle.
+-                                      getString("identity.newIdentity.email.placeholder");
+-        this.newIdentityDesc.textContent = gNavigatorBundle.getFormattedString(
+-                                             "identity.newIdentity.description", [origin]);
+-        this.chooseIdentityDesc.textContent = gNavigatorBundle.getFormattedString(
+-                                                "identity.chooseIdentity.description", [origin]);
++        // Mark outgoing messages with the id of the caller
++        this.messageSubject = Components.classes["@mozilla.org/supports-string;1"]
++          .createInstance(Components.interfaces.nsISupportsString);
++        this.messageSubject.data = this.notification.options.context.id;
+ 
+-        // Show optional terms of service and privacy policy links
+-        this._populateLink(this.identity.termsOfService, "tos", "identity.termsOfService");
+-        this._populateLink(this.identity.privacyPolicy, "privacypolicy", "identity.privacyPolicy");
++        // adopt the iframe and display it in the panel
++        let personaIframe = this.notification.options.context.iframe;
++        let node = document.adoptNode(personaIframe);
++        let panel = document.getAnonymousElementByAttribute(this, "anonid", "persona-container");
++        panel.appendChild(node);
+ 
+-        // Populate the list of identities to choose from. The origin is used to provide
+-        // better suggestions.
+-        let identities = this.SignInToWebsiteUX.getIdentitiesForSite(origin);
++        // The dimensions of the panel are modified dynamically by
++        // SignInToWebsite.jsm.
+ 
+-        this._populateIdentityList(identities);
++        // Listen to messages from SignInToWebsite.jsm
++        Services.obs.addObserver(this, "identity-delegate-ui-close", false);
+ 
+-        if (typeof this.step == "undefined") {
+-          // First opening of this notification
+-          // Show the add email pane (0) if there are no existing identities otherwise show the list
+-          this.step = "result" in identities && identities.result.length ? 1 : 0;
+-        } else {
+-          // Already opened so restore previous state
+-          if (this.identity.typedEmail) {
+-            this.emailField.value = this.identity.typedEmail;
+-          }
+-          if (this.identity.selected) {
+-            // If the user already chose an identity then update the UI to reflect that
+-            this.onIdentitySelected();
+-          }
+-          // Update the view for the step
+-          this.step = this.step;
+-        }
+-
+-        // Fire notification with the chosen identity when main button is clicked
+-        this.button.addEventListener("command", this._onButtonCommand.bind(this), true);
+-
+-        // Do the same if enter is pressed in the email field
+-        this.emailField.addEventListener("keypress", function emailFieldKeypress(aEvent) {
+-          if (aEvent.keyCode != aEvent.DOM_VK_RETURN)
+-            return;
+-          this._onButtonCommand(aEvent);
+-        }.bind(this));
+-
+-        this.addEmailLink.value = gNavigatorBundle.getString("identity.newIdentity.label");
+-        this.addEmailLink.accessKey = gNavigatorBundle.getString("identity.newIdentity.accessKey");
+-        this.addEmailLink.addEventListener("click", function addEmailClick(evt) {
+-          this.step = 0;
+-        }.bind(this));
+-
+-        this.chooseEmailLink.value = gNavigatorBundle.getString("identity.chooseIdentity.label");
+-        this.chooseEmailLink.hidden = !("result" in identities && identities.result.length);
+-        this.chooseEmailLink.addEventListener("click", function chooseEmailClick(evt) {
+-          this.step = 1;
+-        }.bind(this));
+-
+-        this.emailField.addEventListener("blur", function onEmailBlur() {
+-          this.identity.typedEmail = this.emailField.value;
+-        }.bind(this));
++        // message back to SignInToWebsite that we've started
++        // and the flow with the given id can go ahead
++        Services.obs.notifyObservers(this.messageSubject, "identity-delegate-ui-open", null);
+       ]]></constructor>
+ 
+-      <field name="SignInToWebsiteUX" readonly="true">
+-        let sitw = {};
+-        Components.utils.import("resource:///modules/SignInToWebsite.jsm", sitw);
+-        sitw.SignInToWebsiteUX;
+-      </field>
++      <destructor><![CDATA[
++        if (!this.complete) {
++          Services.obs.notifyObservers(this.messageSubject, "identity-delegate-canceled", null);
++        }
++        Services.obs.removeObserver(this, "identity-delegate-ui-close", false);
++      ]]></destructor>
+ 
+-      <field name="newIdentityDesc" readonly="true">
+-        document.getAnonymousElementByAttribute(this, "anonid", "newidentitydesc");
+-      </field>
+-
+-      <field name="chooseIdentityDesc" readonly="true">
+-        document.getAnonymousElementByAttribute(this, "anonid", "chooseidentitydesc");
+-      </field>
+-
+-      <field name="identityList" readonly="true">
+-        document.getAnonymousElementByAttribute(this, "anonid", "identities");
+-      </field>
+-
+-      <field name="emailField" readonly="true">
+-        document.getAnonymousElementByAttribute(this, "anonid", "email");
+-      </field>
+-
+-      <field name="addEmailLink" readonly="true">
+-        document.getAnonymousElementByAttribute(this, "anonid", "newemail");
+-      </field>
+-
+-      <field name="chooseEmailLink" readonly="true">
+-        document.getAnonymousElementByAttribute(this, "anonid", "chooseemail");
+-      </field>
+-
+-      <field name="throbber" readonly="true">
+-        document.getAnonymousElementByAttribute(this, "anonid", "throbber");
+-      </field>
+-
+-      <field name="identity" readonly="true">
+-        this.notification.options.identity;
+-      </field>
+-
+-      <!-- persist the state on the identity object so we can re-create the
+-           notification state upon re-opening -->
+-      <property name="step">
+-        <getter>
+-          return this.identity.step;
+-        </getter>
+-        <setter><![CDATA[
+-          let deck = document.getAnonymousElementByAttribute(this, "anonid", "identity-deck");
+-          for (let i = 0; i < deck.children.length; i++) {
+-            deck.children[i].hidden = (val != i);
+-          }
+-          this.identity.step = val;
+-          switch (val) {
+-            case 0:
+-              this.emailField.focus();
+-              break;
+-          }]]>
+-        </setter>
+-      </property>
+-
+-      <method name="onIdentitySelected">
++      <method name="observe">
++        <parameter name="aSubject"/>
++        <parameter name="aTopic"/>
++        <parameter name="aData"/>
+         <body><![CDATA[
+-          this.throbber.style.visibility = "visible";
+-          this.button.disabled = true;
+-          this.emailField.value = this.identity.selected
+-          this.emailField.disabled = true;
+-          this.identityList.disabled = true;
+-        ]]></body>
+-      </method>
+-
+-      <method name="_populateLink">
+-        <parameter name="aURL"/>
+-        <parameter name="aLinkId"/>
+-        <parameter name="aStringId"/>
+-        <body><![CDATA[
+-          if (aURL) {
+-            // Show optional link to aURL
+-            let link = document.getAnonymousElementByAttribute(this, "anonid", aLinkId);
+-            link.value = gNavigatorBundle.getString(aStringId);
+-            link.href = aURL;
+-            link.hidden = false;
+-          }
+-        ]]></body>
+-      </method>
+-
+-      <method name="_populateIdentityList">
+-        <parameter name="aIdentities"/>
+-        <body><![CDATA[
+-          let foundLastUsed = false;
+-          let lastUsed = this.identity.selected || aIdentities.lastUsed;
+-          for (let id in aIdentities.result) {
+-            let label = aIdentities.result[id];
+-            let opt = this.identityList.appendItem(label);
+-            if (label == lastUsed) {
+-              this.identityList.selectedItem = opt;
+-              foundLastUsed = true;
+-            }
+-          }
+-          if (!foundLastUsed) {
+-            this.identityList.selectedIndex = -1;
+-          }
+-        ]]></body>
+-      </method>
+-
+-      <method name="_onButtonCommand">
+-        <parameter name="aEvent"/>
+-        <body><![CDATA[
+-          if (aEvent.target != aEvent.currentTarget)
+-            return;
+-          let chosenId;
+-          switch (this.step) {
+-            case 0:
+-              aEvent.stopPropagation();
+-              if (!this.emailField.validity.valid) {
+-                this.emailField.focus();
+-                return;
+-              }
+-              chosenId = this.emailField.value;
+-              break;
+-            case 1:
+-              aEvent.stopPropagation();
+-              let selectedItem = this.identityList.selectedItem
+-              chosenId = selectedItem ? selectedItem.label : null;
+-              if (!chosenId)
+-                return;
+-              break;
+-            default:
+-              throw new Error("Unknown case");
+-              return;
+-          }
+-          // Actually select the identity
+-          this.SignInToWebsiteUX.selectIdentity(this.identity.rpId, chosenId);
+-          this.identity.selected = chosenId;
+-          this.onIdentitySelected();
++          // The only message we observe is identity-delegate-ui-close
++          this.complete = true;
++          this.notification.remove();
+         ]]></body>
+       </method>
+ 
+     </implementation>
+   </binding>
+ 
+   <binding id="center-item">
+     <content align="center">
+diff --git a/browser/base/jar.mn b/browser/base/jar.mn
+--- a/browser/base/jar.mn
++++ b/browser/base/jar.mn
+@@ -53,16 +53,17 @@ browser.jar:
+         content/browser/abouthealthreport/abouthealth.css     (content/abouthealthreport/abouthealth.css)
+ #endif
+         content/browser/aboutRobots-icon.png          (content/aboutRobots-icon.png)
+         content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
+         content/browser/aboutSocialError.xhtml        (content/aboutSocialError.xhtml)
+ *       content/browser/browser.css                   (content/browser.css)
+ *       content/browser/browser.js                    (content/browser.js)
+ *       content/browser/browser.xul                   (content/browser.xul)
++        content/browser/browser-identity.js           (content/browser-identity.js)
+ *       content/browser/browser-tabPreviews.xml       (content/browser-tabPreviews.xml)
+         content/browser/content.js                    (content/content.js)
+         content/browser/newtab/newTab.xul             (content/newtab/newTab.xul)
+ *       content/browser/newtab/newTab.js              (content/newtab/newTab.js)
+         content/browser/newtab/newTab.css             (content/newtab/newTab.css)
+         content/browser/newtab/preload.xhtml          (content/newtab/preload.xhtml)
+ *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
+         content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
+diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
+--- a/browser/modules/SignInToWebsite.jsm
++++ b/browser/modules/SignInToWebsite.jsm
+@@ -1,247 +1,449 @@
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+-"use strict";
++'use strict';
+ 
+-this.EXPORTED_SYMBOLS = ["SignInToWebsiteUX"];
++this.EXPORTED_SYMBOLS = ['SignInToWebsiteUX', 'HostFrame', 'Pipe'];
+ 
+ const Cc = Components.classes;
+ const Ci = Components.interfaces;
+ const Cu = Components.utils;
+ 
+-Cu.import("resource://gre/modules/Services.jsm");
+-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++Cu.import('resource://gre/modules/Services.jsm');
++Cu.import('resource://gre/modules/XPCOMUtils.jsm');
++Cu.import('resource://gre/modules/identity/IdentityUtils.jsm');
+ 
+-XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
+-                                  "resource://gre/modules/identity/Identity.jsm");
++// The features used by this module, and the persona internal_api extensions
++// upon which it depends, are slated to arrive in person.org in production in
++// early Q3, 2013.  Until then, we use the personatest integration server.
++// (Note that the native navigator.mozId is still for experimental use.  It is
++// preffed off by default.)
++const kInteractivePersonaIframe = 'https://picl.personatest.org/sign_in#NATIVE';
++const kHiddenPersonaIframe = 'https://picl.personatest.org/communication_iframe';
+ 
+-XPCOMUtils.defineLazyModuleGetter(this, "Logger",
+-                                  "resource://gre/modules/identity/LogUtils.jsm");
++const PANEL_MIN_HEIGHT = 440;
++const PANEL_MIN_WIDTH = 300;
+ 
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["SignInToWebsiteUX"].concat(aMessageArgs));
++XPCOMUtils.defineLazyModuleGetter(this, 'IdentityService',
++                                  'resource://gre/modules/identity/IdentityService.jsm');
++
++XPCOMUtils.defineLazyGetter(this, "logger", function() {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
++
++/**
++ * Ripped off from the resize watcher in base/content/browser-social.js
++ */
++
++function sizePanelToContent(iframe) {
++  // FIXME: bug 764787: Maybe we can use nsIDOMWindowUtils.getRootBounds() here?
++  let doc = iframe.contentDocument;
++  if (!doc || !doc.body) {
++    return;
++  }
++  let body = doc.body;
++
++  // offsetHeight/Width don't include margins, so account for that.
++  let cs = doc.defaultView.getComputedStyle(body);
++  let computedHeight = parseInt(cs.marginTop) + body.offsetHeight + parseInt(cs.marginBottom);
++  let height = Math.max(computedHeight, PANEL_MIN_HEIGHT);
++  let computedWidth = parseInt(cs.marginLeft) + body.offsetWidth + parseInt(cs.marginRight);
++  let width = Math.max(computedWidth, PANEL_MIN_WIDTH);
++
++  // The panel can only resize vertically; otherwise, we would have to
++  // compensate for leftward or rightward shifts here
++  iframe.style.height = height + "px";
++  iframe.style.width = width + "px";
+ }
+ 
+-this.SignInToWebsiteUX = {
++function ResizeWatcher(iframe) {
++  this._mutationObserver = null;
++  this._iframe = iframe;
+ 
+-  init: function SignInToWebsiteUX_init() {
++  this.start();
++}
+ 
+-    /*
+-     * bug 793906 - temporarily disabling desktop UI so we can
+-     * focus on b2g without worrying about desktop as well
+-     *
+-    Services.obs.addObserver(this, "identity-request", false);
+-    Services.obs.addObserver(this, "identity-auth", false);
+-    Services.obs.addObserver(this, "identity-auth-complete", false);
+-    Services.obs.addObserver(this, "identity-login-state-changed", false);
+-     */
++ResizeWatcher.prototype = {
++  start: function ResizeWatcher_start() {
++    this.stop(); // just in case...
++    let doc = this._iframe.contentDocument;
++
++    this._mutationObserver = new this._iframe.contentWindow.MutationObserver(
++      function(mutations) {
++        sizePanelToContent(this._iframe);
++      }.bind(this));
++
++    // Observe anything that causes the size to change.
++    let config = {
++      attributes: true,
++      characterData: true,
++      childList: true,
++      subtree: true
++    };
++
++    this._mutationObserver.observe(doc, config);
++
++    // and since this may be setup after the load event has fired we do an
++    // initial resize now.
++    sizePanelToContent(this._iframe);
+   },
+ 
+-  uninit: function SignInToWebsiteUX_uninit() {
+-    /*
+-     * As above:
+-     * bug 793906 - temporarily disabling desktop UI so we can
+-     * focus on b2g without worrying about desktop as well
+-     *
+-    Services.obs.removeObserver(this, "identity-request");
+-    Services.obs.removeObserver(this, "identity-auth");
+-    Services.obs.removeObserver(this, "identity-auth-complete");
+-    Services.obs.removeObserver(this, "identity-login-state-changed");
+-     */
++  stop: function ResizeWatcher_stop() {
++    if (this._mutationObserver) {
++      try {
++        this._mutationObserver.disconnect();
++      } catch (ex) {
++        // may get "TypeError: can't access dead object" which seems strange,
++        // but doesn't seem to indicate a real problem, so ignore it...
++      }
++      this._mutationObserver = null;
++    }
++  }
++};
++
++/**
++ * Return the chrome window and <browser> for the given outer window ID.
++ */
++function getUIForWindowID(aWindowId) {
++  let someWindow = Services.wm.getMostRecentWindow('navigator:browser');
++  if (!someWindow) {
++    logger.error("no window");
++    return {};
++  }
++
++  let windowUtils = someWindow.QueryInterface(Ci.nsIInterfaceRequestor)
++                              .getInterface(Ci.nsIDOMWindowUtils);
++  let content = windowUtils.getOuterWindowWithId(aWindowId);
++
++  if (content) {
++    let browser = content.QueryInterface(Ci.nsIInterfaceRequestor)
++                         .getInterface(Ci.nsIWebNavigation)
++                         .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
++    //let browser = someWindow.gBrowser;
++    let chromeWin = browser.ownerDocument.defaultView;
++
++    return {
++      content: content,
++      browser: browser,
++      chromeWin: chromeWin
++    };
++  }
++  logger.error("no content");
++
++  return {};
++}
++
++function requestUI(aContext) {
++  logger.log('requestUI for windowId', aContext.id);
++  let UI = getUIForWindowID(aContext.id);
++
++  let mainAction = null;
++  let secondaryActions = [];
++  let options = {
++    context: aContext
++  };
++
++  UI.chromeWin.PopupNotifications.show(UI.browser,
++                                       'identity-request', aContext.id,
++                                       'identity-notification-icon', mainAction,
++                                       [], options);
++}
++
++this.HostFrame = function HostFrame() {
++  this._iframe = null;
++  this._resizeWatcher = null;
++}
++
++HostFrame.prototype = {
++  /*
++   * getIframe - adds iframe to aOptions
++   */
++  getIframe: function HostFrame_getIframe(aOptions, aCallback) {
++    if (this._gotIframe) {
++      logger.error("Can only get iframe once with HostFrame helper");
++      return;
++    }
++
++    this._createIframe(aOptions);
++    let subject = {
++      id: aOptions.id
++    }
++    if (typeof aCallback === 'function') {
++      aCallback();
++    } else {
++      logger.error("No callback was given to getIframe");
++    }
+   },
+ 
+-  observe: function SignInToWebsiteUX_observe(aSubject, aTopic, aData) {
+-    log("observe: received", aTopic, "with", aData, "for", aSubject);
+-    let options = null;
+-    if (aSubject) {
+-      options = aSubject.wrappedJSObject;
++  cleanUp: function HostFrame_cleanUp() {
++    if (this._resizeWatcher) {
++      this._resizeWatcher.stop();
+     }
+-    switch(aTopic) {
+-      case "identity-request":
+-        this.requestLogin(options);
++  },
++
++  _createIframe: function HostFrame_createIframe(aOptions) {
++    let hiddenDoc = Services.appShell.hiddenDOMWindow.document;
++    this._iframe = hiddenDoc.createElementNS('http://www.w3.org/1999/xhtml', 'iframe');
++
++    //this._iframe.setAttribute('mozbrowser', true);
++    this._iframe.setAttribute('mozframetype', 'content');
++    this._iframe.setAttribute('id', 'persona-host-frame');
++    this._iframe.setAttribute('src', aOptions.src);
++
++    // implement a dynamic resize watcher a la Social API
++    this._iframe.style.height = "440px";
++    this._iframe.style.width = "300px";
++
++    aOptions.iframe = this._iframe;
++
++    if (!!aOptions.showUI) {
++      // synchronous, so we can call _injectShim below with no race condition
++      requestUI(aOptions);
++      this._resizeWatcher = new ResizeWatcher(this._iframe);
++    } else {
++      hiddenDoc.documentElement.appendChild(this._iframe);
++    }
++    this._injectShim(this._iframe);
++  },
++
++  _injectShim: function HostFrame_injectShim(aIframe) {
++    let mm = aIframe.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader.messageManager;
++    logger.log("injecting browser-identity.js shim");
++    mm.loadFrameScript('chrome://browser/content/browser-identity.js', true);
++  }
++};
++
++this.Pipe = function Pipe(aOptions, aController) {
++  this.options = aOptions;
++  this.controller = aController;
++  this.mm = null;
++  this._closed = false;
++  return this;
++}
++
++Pipe.prototype = {
++  observe: function pipe_observe(aSubject, aTopic, aData) {
++    logger.log('pipe observed', aTopic);
++    switch (aTopic) {
++      case 'identity-delegate-canceled':
++        this._close();
++        this.controller.serviceDoMethod({method: 'cancel'}, this.options.id);
+         break;
+-      case "identity-auth":
+-        this._openAuthenticationUI(aData, options);
+-        break;
+-      case "identity-auth-complete":
+-        this._closeAuthenticationUI(aData);
+-        break;
+-      case "identity-login-state-changed":
+-        let emailAddress = aData;
+-        if (emailAddress) {
+-          this._removeRequestUI(options);
+-          this._showLoggedInUI(emailAddress, options);
+-        } else {
+-          this._removeLoggedInUI(options);
+-        }
+-        break;
++
+       default:
+-        Logger.reportError("SignInToWebsiteUX", "Unknown observer notification:", aTopic);
++        logger.error('pipe observed unexpected topic: ' + aTopic);
+         break;
+     }
+   },
+ 
+-  /**
+-   * The website is requesting login so the user must choose an identity to use.
+-   */
+-  requestLogin: function SignInToWebsiteUX_requestLogin(aOptions) {
+-    let windowID = aOptions.rpId;
+-    log("requestLogin", aOptions);
+-    let [chromeWin, browserEl] = this._getUIForWindowID(windowID);
++  _close: function pipe__delegateClose() {
++    this._closed = true;
++    Services.obs.removeObserver(this, 'identity-delegate-canceled');
++    if (this.mm) {
++      this.mm.removeMessageListener('identity-service-doMethod', this._serviceDoMethod);
++      this.mm.removeMessageListener('identity-delegate-complete', this._delegateComplete);
++      this.mm.removeMessageListener('identity-delegate-loaded', this._delegateLoaded);
++    }
++    let subject = Cc['@mozilla.org/supports-string;1'].createInstance(Ci.nsISupportsString);
++    subject.data = this.options.id;
++    Services.obs.notifyObservers(subject, 'identity-delegate-ui-close', null);
+ 
+-    // message is not shown in the UI but is required
+-    let message = aOptions.origin;
+-    let mainAction = {
+-      label: chromeWin.gNavigatorBundle.getString("identity.next.label"),
+-      accessKey: chromeWin.gNavigatorBundle.getString("identity.next.accessKey"),
+-      callback: function() {}, // required
+-    };
+-    let options = {
+-      identity: {
+-        origin: aOptions.origin,
+-      },
+-    };
+-    let secondaryActions = [];
+-
+-    // add some extra properties to the notification to store some identity-related state
+-    for (let opt in aOptions) {
+-      options.identity[opt] = aOptions[opt];
++    if (typeof this.options.onComplete === 'function') {
++      this.options.onComplete();
+     }
+-    log("requestLogin: rpId: ", options.identity.rpId);
+-
+-    chromeWin.PopupNotifications.show(browserEl, "identity-request", message,
+-                                      "identity-notification-icon", mainAction,
+-                                      [], options);
+   },
+ 
+-  /**
+-   * Get the list of possible identities to login to the given origin.
+-   */
+-  getIdentitiesForSite: function SignInToWebsiteUX_getIdentitiesForSite(aOrigin) {
+-    return IdentityService.RP.getIdentitiesForSite(aOrigin);
++  _delegateLoaded: function pipe__delegateLoaded() {
++    this.mm.sendAsyncMessage(this.options.message, this.options.rpOptions);
++    // XXX maybe here ??
++    //this.resizer = new ResizeWatcher();
++    //this.resizer.start( ... );
+   },
+ 
+-  /**
+-   * User chose a new or existing identity from the doorhanger after a request() call
+-   */
+-  selectIdentity: function SignInToWebsiteUX_selectIdentity(aRpId, aIdentity) {
+-    log("selectIdentity: rpId: ", aRpId, " identity: ", aIdentity);
+-    IdentityService.selectIdentity(aRpId, aIdentity);
++  _delegateComplete: function pipe__delegateComplete() {
++    this._close();
+   },
+ 
+-  // Private
++  _serviceDoMethod: function pipe__doMethod(aMethodOptions) {
++    let message = aMethodOptions.json;
++    if (typeof message === 'string') {
++      try {
++        message = JSON.parse(message);
++      } catch (err) {
++        logger.error('Bad json message: ' + message);
++        return;
++      }
++    }
++    this.controller.serviceDoMethod(message, this.options.id);
++  },
+ 
+-  /**
+-   * Return the chrome window and <browser> for the given outer window ID.
+-   */
+-  _getUIForWindowID: function(aWindowID) {
+-    let someWindow = Services.wm.getMostRecentWindow("navigator:browser");
+-    if (!someWindow) {
+-      Logger.reportError("SignInToWebsiteUX", "no window");
+-      return [null, null];
++  communicate: function pipe_communicate() {
++    if (this._closed) {
++      logger.error('Cannot communicate with persona frame; pipe already closed');
++      return;
++    }
++    Services.obs.addObserver(this, 'identity-delegate-canceled', false);
++
++    let frameLoader = this.options.iframe.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader;
++    if (frameLoader) {
++      this.mm = frameLoader.messageManager;
++      this.mm.addMessageListener('identity-service-doMethod', this._serviceDoMethod.bind(this));
++      this.mm.addMessageListener('identity-delegate-loaded', this._delegateLoaded.bind(this));
++      this.mm.addMessageListener('identity-delegate-complete', this._delegateComplete.bind(this));
++    } else {
++      logger.error('FrameLoader unavailable; Frame did not get attached properly?');
++    }
++  }
++};
++
++this.SignInToWebsiteUX = {
++  init: function SignInToWebsiteUX_init(pipeConstructor) {
++    this.PipeConstructor = pipeConstructor || Pipe;
++    this.contexts = {};
++    Services.obs.addObserver(this, 'identity-controller-watch', false);
++    Services.obs.addObserver(this, 'identity-controller-request', false);
++    Services.obs.addObserver(this, 'identity-controller-logout', false);
++    Services.obs.addObserver(this, 'identity-controller-canceled', false);
++  },
++
++  uninit: function SignInToWebsiteUX_uninit() {
++    Services.obs.removeObserver(this, 'identity-controller-watch');
++    Services.obs.removeObserver(this, 'identity-controller-request');
++    Services.obs.removeObserver(this, 'identity-controller-logout');
++    Services.obs.removeObserver(this, 'identity-controller-canceled');
++  },
++
++  observe: function SignInToWebsiteUX_observe(aSubject, aTopic, aData) {
++    logger.log('controller observed:', aTopic);
++    // XXX need to detect page unload of any of our flows
++    // XXX we get strings from xul, and objects from elsewhere
++    let rpOptions = {};
++    if (aSubject) {
++      if (aSubject.wrappedJSObject) {
++        rpOptions = aSubject.wrappedJSObject;
++      } else {
++        rpOptions = {id: aSubject.QueryInterface(Ci.nsISupportsString).data};
++      }
++    }
++    if (!rpOptions.id) {
++      logger.error('Got a message with no RP id');
++      return;
+     }
+ 
+-    let windowUtils = someWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+-                                .getInterface(Ci.nsIDOMWindowUtils);
+-    let content = windowUtils.getOuterWindowWithId(aWindowID);
++    let rpId = rpOptions.id;
++    let UI = getUIForWindowID(rpId);
+ 
+-    if (content) {
+-      let browser = content.QueryInterface(Ci.nsIInterfaceRequestor)
+-                           .getInterface(Ci.nsIWebNavigation)
+-                           .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
+-      let chromeWin = browser.ownerDocument.defaultView;
+-      return [chromeWin, browser];
++    let options = {
++      id: rpOptions.id,
++      rpOptions: rpOptions
++    };
++
++    switch (aTopic) {
++      case 'identity-controller-watch':
++        this.doWatch(options);
++        break;
++
++      case 'identity-controller-request':
++        this.doRequest(options);
++        break;
++
++      case 'identity-controller-logout':
++        this.doLogout(options);
++        break;
++
++      default:
++        logger.error('SignInToWebsiteUX', 'Unknown observer notification:', aTopic);
++        break;
+     }
+-    Logger.reportError("SignInToWebsiteUX", "no content");
+-
+-    return [null, null];
+   },
+ 
+-  /**
+-   * Open UI with a content frame displaying aAuthURI so that the user can authenticate with their
+-   * IDP.  Then tell Identity.jsm the identifier for the window so that it knows that the DOM API
+-   * calls are for this authentication flow.
+-   */
+-  _openAuthenticationUI: function _openAuthenticationUI(aAuthURI, aContext) {
+-    // Open a tab/window with aAuthURI with an identifier (aID) attached so that the DOM APIs know this is an auth. window.
+-    let chromeWin = Services.wm.getMostRecentWindow('navigator:browser');
+-    let features = "chrome=false,width=640,height=480,centerscreen,location=yes,resizable=yes,scrollbars=yes,status=yes";
+-    log("aAuthURI: ", aAuthURI);
+-    let authWin = Services.ww.openWindow(chromeWin, "about:blank", "", features, null);
+-    let windowID = authWin.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindowUtils).outerWindowID;
+-    log("authWin outer id: ", windowID);
++  serviceDoMethod: function SignInToWebsiteUX_doMethod(aMessage, aId) {
++    logger.log('serviceDoMethod received:', aMessage);
++    switch (aMessage.method) {
++      case 'ready':
++        IdentityService.doReady(aId);
++        break;
+ 
+-    let provId = aContext.provId;
+-    // Tell the ID service about the id before loading the url
+-    IdentityService.IDP.setAuthenticationFlow(windowID, provId);
++      case 'login':
++        if (aMessage._internalParams) {
++          IdentityService.doLogin(aId, aMessage.assertion, aMessage._internalParams);
++        } else {
++          IdentityService.doLogin(aId, aMessage.assertion);
++        }
++        break;
+ 
+-    authWin.location = aAuthURI;
++      case 'logout':
++        IdentityService.doLogout(aId);
++        break;
++
++      case 'cancel':
++        IdentityService.doCancel(aId);
++        break;
++
++      default:
++        logger.error('Unknown identity method: ' + aMessage.method);
++        break;
++    }
+   },
+ 
+-  _closeAuthenticationUI: function _closeAuthenticationUI(aAuthId) {
+-    log("_closeAuthenticationUI:", aAuthId);
+-    let [chromeWin, browserEl] = this._getUIForWindowID(aAuthId);
+-    if (chromeWin)
+-      chromeWin.close();
+-    else
+-      Logger.reportError("SignInToWebsite", "Could not close window with ID", aAuthId);
++  cleanUp: function SignInToWebsiteUX_cleanUp(aId) {
++    let context = this.contexts[aId];
++    if (context) {
++      if (context.hostFrame) {
++        context.hostFrame.cleanUp();
++      }
++      if (context.iframe && context.iframe.parentNode) {
++        context.iframe.parentNode.removeChild(context.iframe);
++        delete context.iframe;
++      }
++      this.contexts[aId] = {};
++      delete this.contexts[aId];
++    }
+   },
+ 
+-  /**
+-   * Show a doorhanger indicating the currently logged-in user.
+-   */
+-  _showLoggedInUI: function _showLoggedInUI(aIdentity, aContext) {
+-    let windowID = aContext.rpId;
+-    log("_showLoggedInUI for ", windowID);
+-    let [chromeWin, browserEl] = this._getUIForWindowID(windowID);
++  delegate: function SignInToWebsiteUX_delegate(aOptions) {
++    let hostFrame = new HostFrame();
++    hostFrame.getIframe(aOptions, function() {
++      // iframe has been added to aOptions
+ 
+-    let message = chromeWin.gNavigatorBundle.getFormattedString("identity.loggedIn.description",
+-                                                          [aIdentity]);
+-    let mainAction = {
+-      label: chromeWin.gNavigatorBundle.getString("identity.loggedIn.signOut.label"),
+-      accessKey: chromeWin.gNavigatorBundle.getString("identity.loggedIn.signOut.accessKey"),
+-      callback: function() {
+-        log("sign out callback fired");
+-        IdentityService.RP.logout(windowID);
+-      },
+-    };
+-    let secondaryActions = [];
+-    let options = {
+-      dismissed: true,
+-    };
+-    let loggedInNot = chromeWin.PopupNotifications.show(browserEl, "identity-logged-in", message,
+-                                                  "identity-notification-icon", mainAction,
+-                                                  secondaryActions, options);
+-    loggedInNot.rpId = windowID;
++      // callback for the pipe when flow is complete
++      aOptions.onComplete = function pipe_onComplete() {
++        logger.log("pipe clean up now");
++        this.cleanUp(aOptions.id);
++      }.bind(this);
++
++      // store context and communicate with pipe
++      this.contexts[aOptions.id] = aOptions;
++      this.contexts[aOptions.id].hostFrame = hostFrame;
++
++      let pipe = new this.PipeConstructor(aOptions, this);
++      pipe.communicate();
++    }.bind(this));
+   },
+ 
+-  /**
+-   * Remove the doorhanger indicating the currently logged-in user.
+-   */
+-  _removeLoggedInUI: function _removeLoggedInUI(aContext) {
+-    let windowID = aContext.rpId;
+-    log("_removeLoggedInUI for ", windowID);
+-    if (!windowID)
+-      throw "_removeLoggedInUI: Invalid RP ID";
+-    let [chromeWin, browserEl] = this._getUIForWindowID(windowID);
+-
+-    let loggedInNot = chromeWin.PopupNotifications.getNotification("identity-logged-in", browserEl);
+-    if (loggedInNot)
+-      chromeWin.PopupNotifications.remove(loggedInNot);
++  doWatch: function SignInToWebsiteUX_doWatch(aOptions) {
++    aOptions.message = 'identity-delegate-watch';
++    aOptions.src = kHiddenPersonaIframe;
++    aOptions.showUI = false;
++    logger.log("options:", aOptions);
++    this.delegate(aOptions);
+   },
+ 
+-  /**
+-   * Remove the doorhanger indicating the currently logged-in user.
+-   */
+-  _removeRequestUI: function _removeRequestUI(aContext) {
+-    let windowID = aContext.rpId;
+-    log("_removeRequestUI for ", windowID);
+-    let [chromeWin, browserEl] = this._getUIForWindowID(windowID);
+-
+-    let requestNot = chromeWin.PopupNotifications.getNotification("identity-request", browserEl);
+-    if (requestNot)
+-      chromeWin.PopupNotifications.remove(requestNot);
++  doRequest: function SignInToWebsiteUX_doRequest(aOptions) {
++    aOptions.message = 'identity-delegate-request';
++    aOptions.src = kInteractivePersonaIframe;
++    aOptions.showUI = true;
++    logger.log("options:", aOptions);
++    this.delegate(aOptions);
+   },
+ 
++  doLogout: function SignInToWebsiteUX_doLogout(aOptions) {
++    aOptions.message = 'identity-delegate-logout';
++    aOptions.src = kHiddenPersonaIframe;
++    aOptions.showUI = false;
++    logger.log("options:", aOptions);
++    this.delegate(aOptions);
++  }
+ };
+diff --git a/browser/modules/test/Makefile.in b/browser/modules/test/Makefile.in
+--- a/browser/modules/test/Makefile.in
++++ b/browser/modules/test/Makefile.in
+@@ -8,21 +8,21 @@ srcdir		= @srcdir@
+ VPATH		= @srcdir@
+ relativesrcdir  = @relativesrcdir@
+ 
+ include $(DEPTH)/config/autoconf.mk
+ 
+ include $(topsrcdir)/config/rules.mk
+ 
+ _BROWSER_FILES = \
+-                 browser_NetworkPrioritizer.js \
+-                 # bug 793906 - temporarily disabling desktop UI while working on b2g
+-                 # browser_SignInToWebsite.js \
+-                 $(NULL)
++	browser_NetworkPrioritizer.js \
++	browser_SignInToWebsite.js \
++	mock_personaIframe.html \
++	$(NULL)
+ 
+ ifeq ($(MOZ_WIDGET_TOOLKIT),windows)
+ _BROWSER_FILES += \
+-                 browser_taskbar_preview.js \
+-                 $(NULL)
++	browser_taskbar_preview.js \
++	$(NULL)
+ endif
+ 
+ libs::	$(_BROWSER_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/test/browser_SignInToWebsite.js
+--- a/browser/modules/test/browser_SignInToWebsite.js
++++ b/browser/modules/test/browser_SignInToWebsite.js
+@@ -1,549 +1,215 @@
+ /* Any copyright is dedicated to the Public Domain.
+  * http://creativecommons.org/publicdomain/zero/1.0/ */
+ 
++/**
++ * TO TEST:
++ * - SignInToWebsiteUX receives/sends the right signals
++ * - delegation through UI communication pipe works
++ * - HostFrame hosts frames
++ * - getUIForWindowID
++ * - ResizeWatcher responds to window mutations
++ */
++
+ "use strict";
+ 
+-/**
+- * TO TEST:
+- * - test state saved on doorhanger dismissal
+- * - links to switch steps
+- * - TOS and PP link clicks
+- * - identityList is populated correctly
+- */
++const Cc = Components.classes;
++const Ci = Components.interfaces;
++const Cu = Components.utils;
+ 
++Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++Cu.import("resource://gre/modules/Services.jsm");
++
++// Print identity debug messages to console
+ Services.prefs.setBoolPref("toolkit.identity.debug", true);
+ 
+ XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
+-                                  "resource://gre/modules/identity/Identity.jsm");
++                                  "resource://gre/modules/identity/IdentityService.jsm",
++                                  "IdentityService");
++
++let sitw = {};
++Cu.import("resource:///modules/SignInToWebsite.jsm", sitw);
++let HostFrame = sitw.HostFrame;
++let Pipe = sitw.Pipe;
++
++XPCOMUtils.defineLazyServiceGetter(this,
++                                   "uuidGenerator",
++                                   "@mozilla.org/uuid-generator;1",
++                                   "nsIUUIDGenerator");
+ 
+ const TEST_ORIGIN = "https://example.com";
+ const TEST_EMAIL = "user@example.com";
+ 
+-let gTestIndex = 0;
+-let outerWinId = gBrowser.contentWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+-                         .getInterface(Ci.nsIDOMWindowUtils).outerWindowID;
++//let outerWinId = gBrowser.contentWindow.QueryInterface(Ci.nsIInterfaceRequestor)
++//                         .getInterface(Ci.nsIDOMWindowUtils).outerWindowID;
+ 
+-function NotificationBase(aNotId) {
+-  this.id = aNotId;
+-}
+-NotificationBase.prototype = {
+-  message: TEST_ORIGIN,
+-  mainAction: {
+-    label: "",
+-    callback: function() {
+-      this.mainActionClicked = true;
+-    }.bind(this),
+-  },
+-  secondaryActions: [],
+-  options: {
+-    "identity": {
+-      origin: TEST_ORIGIN,
+-      rpId: outerWinId,
+-    },
+-  },
+-};
+ 
+ let tests = [
+   {
+-    name: "test_request_required_typed",
++    what: "the IdentityService exports are available",
++    run: function run_testSmoke() {
++      ok(IdentityService !== null);
++      ok(typeof HostFrame === 'function');
++      runNextTest();
++    }
++  },
+ 
+-    run: function() {
+-      setupRPFlow();
+-      this.notifyOptions = {
+-        rpId: outerWinId,
+-        origin: TEST_ORIGIN,
++  {
++    what: "we can mock a document",
++    run: function run_test_mockedDoc() {
++      let mockedDoc = mockDoc(null, TEST_ORIGIN, function(action, params) {
++        ok(action === 'cancel');
++        runNextTest();
++      });
++
++      mockedDoc.doCancel();
++    }
++  },
++
++  {
++    what: "we can host an iframe with HostFrame",
++    run: function run_testHostFrame() {
++      let options = {
++        src: "chrome://browser/browser/modules/test/mock_personaIframe.html",
+       };
+-      this.notifyObj = new NotificationBase("identity-request");
+-      Services.obs.notifyObservers({wrappedJSObject: this.notifyOptions},
+-                                   "identity-request", null);
+-    },
++      let hostFrame = new HostFrame();
++      hostFrame.getIframe(options, function() {
++        ok(options.iframe !== null);
++        ok(options.iframe.src === options.src);
++        runNextTest();
++      });
++    }
++  },
+ 
+-    onShown: function(popup) {
+-      checkPopup(popup, this.notifyObj);
+-      let notification = popup.childNodes[0];
++  {
++    what: "we can delegate the persona watch() method",
++    run: function run_testWatch() {
++      makePipeDelegate('identity-delegate-watch', function doMethodCallback(options, id) {
++        ok(options.method === 'ready');
++        runNextTest();
++      });
++    }
++  },
+ 
+-      // Check identity popup state
+-      let state = notification.identity;
+-      ok(!state.typedEmail, "Nothing should be typed yet");
+-      ok(!state.selected, "Identity should not be selected yet");
+-      ok(!state.termsOfService, "No TOS specified");
+-      ok(!state.privacyPolicy, "No PP specified");
+-      is(state.step, 0, "Step should be persisted with default value");
+-      is(state.rpId, outerWinId, "Check rpId");
+-      is(state.origin, TEST_ORIGIN, "Check origin");
++  {
++    what: "we can delegate the persona request() method",
++    run: function run_testRequest() {
++      makePipeDelegate('identity-delegate-request', function doMethodCallback(options, id) {
++        ok(options.method === 'login');
++        ok(options.assertion === "I love your shoes!");
++        runNextTest();
++      });
++    }
++  },
+ 
+-      is(notification.step, 0, "Should be on the new email step");
+-      is(notification.chooseEmailLink.hidden, true, "Identity list is empty so link to list view should be hidden");
+-      is(notification.addEmailLink.parentElement.hidden, true, "We are already on the email input step so choose email pane should be hidden");
+-      is(notification.emailField.value, "", "Email field should default to empty on a new notification");
+-      let notifDoc = notification.ownerDocument;
+-      ok(notifDoc.getAnonymousElementByAttribute(notification, "anonid", "tos").hidden,
+-         "TOS link should be hidden");
+-      ok(notifDoc.getAnonymousElementByAttribute(notification, "anonid", "privacypolicy").hidden,
+-         "PP link should be hidden");
+-
+-      // Try to continue with a missing email address
+-      triggerMainCommand(popup);
+-      is(notification.throbber.style.visibility, "hidden", "is throbber visible");
+-      ok(!notification.button.disabled, "Button should not be disabled");
+-      is(window.gIdentitySelected, null, "Check no identity selected");
+-
+-      // Fill in an invalid email address and try again
+-      notification.emailField.value = "foo";
+-      triggerMainCommand(popup);
+-      is(notification.throbber.style.visibility, "hidden", "is throbber visible");
+-      ok(!notification.button.disabled, "Button should not be disabled");
+-      is(window.gIdentitySelected, null, "Check no identity selected");
+-
+-      // Fill in an email address and try again
+-      notification.emailField.value = TEST_EMAIL;
+-      triggerMainCommand(popup);
+-      is(window.gIdentitySelected.rpId, outerWinId, "Check identity selected rpId");
+-      is(window.gIdentitySelected.identity, TEST_EMAIL, "Check identity selected email");
+-      is(notification.identity.selected, TEST_EMAIL, "Check persisted email");
+-      is(notification.throbber.style.visibility, "visible", "is throbber visible");
+-      ok(notification.button.disabled, "Button should be disabled");
+-      ok(notification.emailField.disabled, "Email field should be disabled");
+-      ok(notification.identityList.disabled, "Identity list should be disabled");
+-
+-      PopupNotifications.getNotification("identity-request").remove();
+-    },
+-
+-    onHidden: function(popup) { },
+-  },
+   {
+-    name: "test_request_optional",
+-
+-    run: function() {
+-      this.notifyOptions = {
+-        rpId: outerWinId,
+-        origin: TEST_ORIGIN,
+-        privacyPolicy: TEST_ORIGIN + "/pp.txt",
+-        termsOfService: TEST_ORIGIN + "/tos.tzt",
+-      };
+-      this.notifyObj = new NotificationBase("identity-request");
+-      Services.obs.notifyObservers({ wrappedJSObject: this.notifyOptions },
+-                                   "identity-request", null);
+-    },
+-
+-    onShown: function(popup) {
+-      checkPopup(popup, this.notifyObj);
+-      let notification = popup.childNodes[0];
+-
+-      // Check identity popup state
+-      let state = notification.identity;
+-      ok(!state.typedEmail, "Nothing should be typed yet");
+-      ok(!state.selected, "Identity should not be selected yet");
+-      is(state.termsOfService, this.notifyOptions.termsOfService, "Check TOS URL");
+-      is(state.privacyPolicy, this.notifyOptions.privacyPolicy, "Check PP URL");
+-      is(state.step, 0, "Step should be persisted with default value");
+-      is(state.rpId, outerWinId, "Check rpId");
+-      is(state.origin, TEST_ORIGIN, "Check origin");
+-
+-      is(notification.step, 0, "Should be on the new email step");
+-      is(notification.chooseEmailLink.hidden, true, "Identity list is empty so link to list view should be hidden");
+-      is(notification.addEmailLink.parentElement.hidden, true, "We are already on the email input step so choose email pane should be hidden");
+-      is(notification.emailField.value, "", "Email field should default to empty on a new notification");
+-      let notifDoc = notification.ownerDocument;
+-      let tosLink = notifDoc.getAnonymousElementByAttribute(notification, "anonid", "tos");
+-      ok(!tosLink.hidden, "TOS link should be visible");
+-      is(tosLink.href, this.notifyOptions.termsOfService, "Check TOS link URL");
+-      let ppLink = notifDoc.getAnonymousElementByAttribute(notification, "anonid", "privacypolicy");
+-      ok(!ppLink.hidden, "PP link should be visible");
+-      is(ppLink.href, this.notifyOptions.privacyPolicy, "Check PP link URL");
+-
+-      // Try to continue with a missing email address
+-      triggerMainCommand(popup);
+-      is(notification.throbber.style.visibility, "hidden", "is throbber visible");
+-      ok(!notification.button.disabled, "Button should not be disabled");
+-      is(window.gIdentitySelected, null, "Check no identity selected");
+-
+-      // Fill in an invalid email address and try again
+-      notification.emailField.value = "foo";
+-      triggerMainCommand(popup);
+-      is(notification.throbber.style.visibility, "hidden", "is throbber visible");
+-      ok(!notification.button.disabled, "Button should not be disabled");
+-      is(window.gIdentitySelected, null, "Check no identity selected");
+-
+-      // Fill in an email address and try again
+-      notification.emailField.value = TEST_EMAIL;
+-      triggerMainCommand(popup);
+-      is(window.gIdentitySelected.rpId, outerWinId, "Check identity selected rpId");
+-      is(window.gIdentitySelected.identity, TEST_EMAIL, "Check identity selected email");
+-      is(notification.identity.selected, TEST_EMAIL, "Check persisted email");
+-      is(notification.throbber.style.visibility, "visible", "is throbber visible");
+-      ok(notification.button.disabled, "Button should be disabled");
+-      ok(notification.emailField.disabled, "Email field should be disabled");
+-      ok(notification.identityList.disabled, "Identity list should be disabled");
+-
+-      PopupNotifications.getNotification("identity-request").remove();
+-    },
+-
+-    onHidden: function(popup) {},
+-  },
+-  {
+-    name: "test_login_state_changed",
+-    run: function () {
+-      this.notifyOptions = {
+-        rpId: outerWinId,
+-      };
+-      this.notifyObj = new NotificationBase("identity-logged-in");
+-      this.notifyObj.message = "Signed in as: user@example.com";
+-      this.notifyObj.mainAction.label = "Sign Out";
+-      this.notifyObj.mainAction.accessKey = "O";
+-      Services.obs.notifyObservers({ wrappedJSObject: this.notifyOptions },
+-                                   "identity-login-state-changed", TEST_EMAIL);
+-      executeSoon(function() {
+-        PopupNotifications.getNotification("identity-logged-in").anchorElement.click();
++    what: "we can delegate the persona logout() method",
++    run: function run_testLogout() {
++      makePipeDelegate('identity-delegate-logout', function doMethodCallback(options, id) {
++        ok(options.method === 'logout');
++        runNextTest();
+       });
+-    },
+-
+-    onShown: function(popup) {
+-      checkPopup(popup, this.notifyObj);
+-
+-      // Fire the notification that the user is no longer logged-in to close the UI.
+-      Services.obs.notifyObservers({ wrappedJSObject: this.notifyOptions },
+-                                   "identity-login-state-changed", null);
+-    },
+-
+-    onHidden: function(popup) {},
+-  },
+-  {
+-    name: "test_login_state_changed_logout",
+-    run: function () {
+-      this.notifyOptions = {
+-        rpId: outerWinId,
+-      };
+-      this.notifyObj = new NotificationBase("identity-logged-in");
+-      this.notifyObj.message = "Signed in as: user@example.com";
+-      this.notifyObj.mainAction.label = "Sign Out";
+-      this.notifyObj.mainAction.accessKey = "O";
+-      Services.obs.notifyObservers({ wrappedJSObject: this.notifyOptions },
+-                                   "identity-login-state-changed", TEST_EMAIL);
+-      executeSoon(function() {
+-        PopupNotifications.getNotification("identity-logged-in").anchorElement.click();
+-      });
+-    },
+-
+-    onShown: function(popup) {
+-      checkPopup(popup, this.notifyObj);
+-
+-      // This time trigger the Sign Out button and make sure the UI goes away.
+-      triggerMainCommand(popup);
+-    },
+-
+-    onHidden: function(popup) {},
+-  },
++    }
++  }
+ ];
+ 
+-function test_auth() {
+-  let notifyOptions = {
+-    provId: outerWinId,
+-    origin: TEST_ORIGIN,
++// Exercise the Pipe, HostFrame, and browser-identity.js shim.
++// Mocks the functionality of SignInToWebsite's delegate() method.  
++// Here, we delegatebrowserid method calls up to an iframe that 
++// mocks the persona internal_api calls.  
++function makePipeDelegate(aMessage, aCallback) {
++  let controller = mockController(aCallback);
++  let options = {
++    id: 42,
++    message: aMessage,
++    src: "http://example.org/browser/browser/modules/test/mock_personaIframe.html",
++    rpOptions: {
++      origin: TEST_ORIGIN
++    }
+   };
+ 
+-  Services.obs.addObserver(function() {
+-    // prepare to send auth-complete and close the window
+-    let winCloseObs = new WindowObserver(function(closedWin) {
+-      info("closed window");
+-      finish();
+-    }, "domwindowclosed");
+-    Services.ww.registerNotification(winCloseObs);
+-    Services.obs.notifyObservers(null, "identity-auth-complete", IdentityService.IDP.authenticationFlowSet.authId);
+-
+-  }, "test-identity-auth-window", false);
+-
+-  let winObs = new WindowObserver(function(authWin) {
+-    ok(authWin, "Authentication window opened");
+-    ok(authWin.contentWindow.location);
+-  });
+-
+-  Services.ww.registerNotification(winObs);
+-
+-  Services.obs.notifyObservers({ wrappedJSObject: notifyOptions },
+-                               "identity-auth", TEST_ORIGIN + "/auth");
+-}
+-
+-function test() {
+-  waitForExplicitFinish();
+-
+-  registerCleanupFunction(cleanUp);
+-
+-  let sitw = {};
+-  Components.utils.import("resource:///modules/SignInToWebsite.jsm", sitw);
+-
+-  ok(sitw.SignInToWebsiteUX, "SignInToWebsiteUX object exists");
+-
+-  // Replace implementation of ID Service functions for testing
+-  window.selectIdentity = sitw.SignInToWebsiteUX.selectIdentity;
+-  sitw.SignInToWebsiteUX.selectIdentity = function(aRpId, aIdentity) {
+-    info("Identity selected: " + aIdentity);
+-    window.gIdentitySelected = {rpId: aRpId, identity: aIdentity};
+-  };
+-
+-  window.setAuthenticationFlow = IdentityService.IDP.setAuthenticationFlow;
+-  IdentityService.IDP.setAuthenticationFlow = function(aAuthId, aProvId) {
+-    info("setAuthenticationFlow: " + aAuthId + " : " + aProvId);
+-    this.authenticationFlowSet = { authId: aAuthId, provId: aProvId };
+-    Services.obs.notifyObservers(null, "test-identity-auth-window", aAuthId);
+-  };
+-
+-  runNextTest();
+-}
+-
+-// Cleanup between tests
+-function resetState() {
+-  delete window.gIdentitySelected;
+-  delete IdentityService.IDP.authenticationFlowSet;
+-  IdentityService.reset();
+-}
+-
+-// Cleanup after all tests
+-function cleanUp() {
+-  info("cleanup");
+-  resetState();
+-
+-  for (let topic in gActiveObservers)
+-    Services.obs.removeObserver(gActiveObservers[topic], topic);
+-  for (let eventName in gActiveListeners)
+-    PopupNotifications.panel.removeEventListener(eventName, gActiveListeners[eventName], false);
+-  delete IdentityService.RP._rpFlows[outerWinId];
+-
+-  // Put the JSM functions back to how they were
+-  IdentityService.IDP.setAuthenticationFlow = window.setAuthenticationFlow;
+-  delete window.setAuthenticationFlow;
+-
+-  let sitw = {};
+-  Components.utils.import("resource:///modules/SignInToWebsite.jsm", sitw);
+-  sitw.SignInToWebsiteUX.selectIdentity = window.selectIdentity;
+-  delete window.selectIdentity;
+-
+-  Services.prefs.clearUserPref("toolkit.identity.debug");
+-}
+-
+-let gActiveListeners = {};
+-let gActiveObservers = {};
+-let gShownState = {};
+-
+-function runNextTest() {
+-  let nextTest = tests[gTestIndex];
+-
+-  function goNext() {
+-    resetState();
+-    if (++gTestIndex == tests.length)
+-      executeSoon(test_auth);
+-    else
+-      executeSoon(runNextTest);
++  function gotIframe() {
++    options.onComplete = function() {};
++    let pipe = new Pipe(options, controller);
++    pipe.communicate();
+   }
+ 
+-  function addObserver(topic) {
+-    function observer() {
+-      Services.obs.removeObserver(observer, "PopupNotifications-" + topic);
+-      delete gActiveObservers["PopupNotifications-" + topic];
+-
+-      info("[Test #" + gTestIndex + "] observer for " + topic + " called");
+-      nextTest[topic]();
+-      goNext();
+-    }
+-    Services.obs.addObserver(observer, "PopupNotifications-" + topic, false);
+-    gActiveObservers["PopupNotifications-" + topic] = observer;
+-  }
+-
+-  if (nextTest.backgroundShow) {
+-    addObserver("backgroundShow");
+-  } else if (nextTest.updateNotShowing) {
+-    addObserver("updateNotShowing");
+-  } else {
+-    doOnPopupEvent("popupshowing", function () {
+-      info("[Test #" + gTestIndex + "] popup showing");
+-    });
+-    doOnPopupEvent("popupshown", function () {
+-      gShownState[gTestIndex] = true;
+-      info("[Test #" + gTestIndex + "] popup shown");
+-      nextTest.onShown(this);
+-    });
+-
+-    // We allow multiple onHidden functions to be defined in an array.  They're
+-    // called in the order they appear.
+-    let onHiddenArray = nextTest.onHidden instanceof Array ?
+-                        nextTest.onHidden :
+-                        [nextTest.onHidden];
+-    doOnPopupEvent("popuphidden", function () {
+-      if (!gShownState[gTestIndex]) {
+-        // TODO: needed?
+-        info("Popup from test " + gTestIndex + " was hidden before its popupshown fired");
+-      }
+-
+-      let onHidden = onHiddenArray.shift();
+-      info("[Test #" + gTestIndex + "] popup hidden (" + onHiddenArray.length + " hides remaining)");
+-      executeSoon(function () {
+-        onHidden.call(nextTest, this);
+-        if (!onHiddenArray.length)
+-          goNext();
+-      }.bind(this));
+-    }, onHiddenArray.length);
+-    info("[Test #" + gTestIndex + "] added listeners; panel state: " + PopupNotifications.isPanelOpen);
+-  }
+-
+-  info("[Test #" + gTestIndex + "] running test");
+-  nextTest.run();
+-}
+-
+-function doOnPopupEvent(eventName, callback, numExpected) {
+-  gActiveListeners[eventName] = function (event) {
+-    if (event.target != PopupNotifications.panel)
+-      return;
+-    if (typeof(numExpected) === "number")
+-      numExpected--;
+-    if (!numExpected) {
+-      PopupNotifications.panel.removeEventListener(eventName, gActiveListeners[eventName], false);
+-      delete gActiveListeners[eventName];
+-    }
+-
+-    callback.call(PopupNotifications.panel);
+-  };
+-  PopupNotifications.panel.addEventListener(eventName, gActiveListeners[eventName], false);
+-}
+-
+-function checkPopup(popup, notificationObj) {
+-  info("[Test #" + gTestIndex + "] checking popup");
+-
+-  let notifications = popup.childNodes;
+-  is(notifications.length, 1, "only one notification displayed");
+-  let notification = notifications[0];
+-  let icon = document.getAnonymousElementByAttribute(notification, "class", "popup-notification-icon");
+-  is(notification.getAttribute("label"), notificationObj.message, "message matches");
+-  is(notification.id, notificationObj.id + "-notification", "id matches");
+-  if (notificationObj.id != "identity-request" && notificationObj.mainAction) {
+-    is(notification.getAttribute("buttonlabel"), notificationObj.mainAction.label, "main action label matches");
+-    is(notification.getAttribute("buttonaccesskey"), notificationObj.mainAction.accessKey, "main action accesskey matches");
+-  }
+-  let actualSecondaryActions = notification.childNodes;
+-  let secondaryActions = notificationObj.secondaryActions || [];
+-  let actualSecondaryActionsCount = actualSecondaryActions.length;
+-  if (secondaryActions.length) {
+-    let lastChild = actualSecondaryActions.item(actualSecondaryActions.length - 1);
+-    is(lastChild.tagName, "menuseparator", "menuseparator exists");
+-    actualSecondaryActionsCount--;
+-  }
+-  is(actualSecondaryActionsCount, secondaryActions.length, actualSecondaryActions.length + " secondary actions");
+-  secondaryActions.forEach(function (a, i) {
+-    is(actualSecondaryActions[i].getAttribute("label"), a.label, "label for secondary action " + i + " matches");
+-    is(actualSecondaryActions[i].getAttribute("accesskey"), a.accessKey, "accessKey for secondary action " + i + " matches");
+-  });
+-}
+-
+-function triggerMainCommand(popup) {
+-  info("[Test #" + gTestIndex + "] triggering main command");
+-  let notifications = popup.childNodes;
+-  ok(notifications.length > 0, "at least one notification displayed");
+-  let notification = notifications[0];
+-
+-  // 20, 10 so that the inner button is hit
+-  EventUtils.synthesizeMouse(notification.button, 20, 10, {});
+-}
+-
+-function triggerSecondaryCommand(popup, index) {
+-  info("[Test #" + gTestIndex + "] triggering secondary command");
+-  let notifications = popup.childNodes;
+-  ok(notifications.length > 0, "at least one notification displayed");
+-  let notification = notifications[0];
+-
+-  notification.button.focus();
+-
+-  popup.addEventListener("popupshown", function () {
+-    popup.removeEventListener("popupshown", arguments.callee, false);
+-
+-    // Press down until the desired command is selected
+-    for (let i = 0; i <= index; i++)
+-      EventUtils.synthesizeKey("VK_DOWN", {});
+-
+-    // Activate
+-    EventUtils.synthesizeKey("VK_ENTER", {});
+-  }, false);
+-
+-  // One down event to open the popup
+-  EventUtils.synthesizeKey("VK_DOWN", { altKey: (navigator.platform.indexOf("Mac") == -1) });
+-}
+-
+-function dismissNotification(popup) {
+-  info("[Test #" + gTestIndex + "] dismissing notification");
+-  executeSoon(function () {
+-    EventUtils.synthesizeKey("VK_ESCAPE", {});
+-  });
++  let hostFrame = new HostFrame();
++  hostFrame.getIframe(options, gotIframe);
+ }
+ 
+ function partial(fn) {
+   let args = Array.prototype.slice.call(arguments, 1);
+   return function() {
+     return fn.apply(this, args.concat(Array.prototype.slice.call(arguments)));
+   };
+ }
+ 
+ // create a mock "doc" object, which the Identity Service
+ // uses as a pointer back into the doc object
+-function mock_doc(aIdentity, aOrigin, aDoFunc) {
++function mockDoc(aIdentity, aOrigin, aDoFunc) {
+   let mockedDoc = {};
+-  mockedDoc.id = outerWinId;
+-  mockedDoc.loggedInEmail = aIdentity;
++  mockedDoc.id = uuidGenerator.generateUUID().toString();
++  mockedDoc.loggedInUser = aIdentity;
+   mockedDoc.origin = aOrigin;
+   mockedDoc['do'] = aDoFunc;
+   mockedDoc.doReady = partial(aDoFunc, 'ready');
+   mockedDoc.doLogin = partial(aDoFunc, 'login');
+   mockedDoc.doLogout = partial(aDoFunc, 'logout');
+   mockedDoc.doError = partial(aDoFunc, 'error');
+   mockedDoc.doCancel = partial(aDoFunc, 'cancel');
+-  mockedDoc.doCoffee = partial(aDoFunc, 'coffee');
+ 
+   return mockedDoc;
+ }
+ 
+-// takes a list of functions and returns a function that
+-// when called the first time, calls the first func,
+-// then the next time the second, etc.
+-function call_sequentially() {
+-  let numCalls = 0;
+-  let funcs = arguments;
+-
+-  return function() {
+-    if (!funcs[numCalls]) {
+-      let argString = Array.prototype.slice.call(arguments).join(",");
+-      ok(false, "Too many calls: " + argString);
+-      return;
+-    }
+-    funcs[numCalls].apply(funcs[numCalls], arguments);
+-    numCalls += 1;
++// create a mock controller for use with a Pipe.
++function mockController(aDoMethodFunc) {
++  let mockedController = {};
++  mockedController.serviceDoMethod = function mockController_doMethod(aOptions, aId) {
++    aDoMethodFunc(aOptions, aId)
+   };
++  return mockedController;
+ }
+ 
+-function setupRPFlow(aIdentity) {
+-  IdentityService.RP.watch(mock_doc(aIdentity, TEST_ORIGIN, call_sequentially(
+-    function(action, params) {
+-      is(action, "ready", "1st callback");
+-      is(params, null);
+-    },
+-    function(action, params) {
+-      is(action, "logout", "2nd callback");
+-      is(params, null);
+-    },
+-    function(action, params) {
+-      is(action, "ready", "3rd callback");
+-      is(params, null);
++// mimicking callback funtionality for ease of testing
++// this observer auto-removes itself after the observe function
++// is called, so this is meant to observe only ONE event.
++function makeObserver(aObserveTopic, aObserveFunc) {
++  let observer = {
++    // nsISupports provides type management in C++
++    // nsIObserver is to be an observer
++    QueryInterface: XPCOMUtils.generateQI([Ci.nsISupports, Ci.nsIObserver]),
++
++    observe: function (aSubject, aTopic, aData) {
++      if (aTopic == aObserveTopic) {
++        aObserveFunc(aSubject, aTopic, aData);
++        Services.obs.removeObserver(observer, aObserveTopic);
++      }
+     }
+-  )));
++  };
++
++  Services.obs.addObserver(observer, aObserveTopic, false);
+ }
+ 
+-function WindowObserver(aCallback, aObserveTopic = "domwindowopened") {
+-  this.observe = function(aSubject, aTopic, aData) {
+-    if (aTopic != aObserveTopic) {
+-      return;
+-    }
+-    info(aObserveTopic);
+-    Services.ww.unregisterNotification(this);
++registerCleanupFunction(function cleanup() {
++  // nothing to clean up
++});
+ 
+-    SimpleTest.executeSoon(function() {
+-      let domWin = aSubject.QueryInterface(Ci.nsIDOMWindow);
+-      aCallback(domWin);
+-    });
+-  };
++let testNum = 0;
++
++function runNextTest() {
++  if (tests.length) {
++    testNum += 1;
++    let test = tests.shift();
++    info("[Test #" + testNum + "] Show that " + test.what);
++    waitForFocus(test.run);
++  } else {
++    finish();
++  }
++};
++
++function test() {
++  waitForExplicitFinish();
++
++  runNextTest();
+ }
++
+diff --git a/browser/modules/test/mock_personaIframe.html b/browser/modules/test/mock_personaIframe.html
+new file mode 100644
+--- /dev/null
++++ b/browser/modules/test/mock_personaIframe.html
+@@ -0,0 +1,34 @@
++<html>
++  <head>
++    <meta charset="utf-8" />
++    <title>Mock Persona IFrame</title>
++  </head>
++  <body>
++
++    <div>
++      Mock Persona IFrame
++    </div>
++
++    <script language="javascript">
++      window.onload = function() {
++        window.BrowserID = { internal: {} };
++        var internal = BrowserID.internal;
++
++        internal.watch = function internal_watch(callback, options, logger) {
++          callback({method: 'ready'});
++        };
++
++        internal.get = function internal_get(origin, callback, options) {
++          var assertion = "I love your shoes!";
++          callback(assertion);
++        };
++
++        internal.logout = function internal_logout(origin, callback) {
++          callback({method: 'logout'});
++        };
++      };
++    </script>
++
++  </body>
++</html>
++
+diff --git a/browser/modules/test/unit/head_identity.js b/browser/modules/test/unit/head_identity.js
+new file mode 100644
+--- /dev/null
++++ b/browser/modules/test/unit/head_identity.js
+@@ -0,0 +1,112 @@
++/* Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/ */
++
++"use strict";
++
++const Cc = Components.classes;
++const Ci = Components.interfaces;
++const Cu = Components.utils;
++
++Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++Cu.import("resource://gre/modules/Services.jsm");
++
++// Print identity debug messages to console
++Services.prefs.setBoolPref("toolkit.identity.debug", true);
++
++XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
++                                  "resource://gre/modules/identity/IdentityService.jsm");
++
++XPCOMUtils.defineLazyServiceGetter(this,
++                                   "uuidGenerator",
++                                   "@mozilla.org/uuid-generator;1",
++                                   "nsIUUIDGenerator");
++
++XPCOMUtils.defineLazyGetter(this, "logger", function() {
++  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
++  return getLogger("Identity", "toolkit.identity.debug");
++});
++
++const TEST_ORIGIN = "https://example.com";
++const TEST_EMAIL = "user@example.com";
++
++//let outerWinId = gBrowser.contentWindow.QueryInterface(Ci.nsIInterfaceRequestor)
++//                         .getInterface(Ci.nsIDOMWindowUtils).outerWindowID;
++
++function partial(fn) {
++  let args = Array.prototype.slice.call(arguments, 1);
++  return function() {
++    return fn.apply(this, args.concat(Array.prototype.slice.call(arguments)));
++  };
++}
++
++// create a mock "doc" object, which the Identity Service
++// uses as a pointer back into the doc object
++function mockDoc(aIdentity, aOrigin, aDoFunc) {
++  let mockedDoc = {};
++  mockedDoc.id = uuidGenerator.generateUUID().toString();
++  mockedDoc.loggedInUser = aIdentity;
++  mockedDoc.origin = aOrigin;
++  mockedDoc['do'] = aDoFunc;
++  mockedDoc.doReady = partial(aDoFunc, 'ready');
++  mockedDoc.doLogin = partial(aDoFunc, 'login');
++  mockedDoc.doLogout = partial(aDoFunc, 'logout');
++  mockedDoc.doError = partial(aDoFunc, 'error');
++  mockedDoc.doCancel = partial(aDoFunc, 'cancel');
++  mockedDoc.doCoffee = partial(aDoFunc, 'coffee');
++
++  return mockedDoc;
++}
++
++function mockController(aDoMethodFunc) {
++  logger.log("got mock controller");
++  let mockedController = {};
++  mockedController.serviceDoMethod = function mockController_doMethod(aOptions, aId) {
++    logger.log("do method:", aOptions.method);
++    aDoMethodFunc(aOptions, aId)
++  };
++}
++
++function getHostFrame() {
++  logger.log();
++
++  //let hwin = Cc["@mozilla.org/appshell/appShellService;1"]
++  //             .getService(Ci.nsIAppShellService).hiddenDOMWindow;
++  let hwin = Services.appShell.hiddenDOMWindow;
++
++  let doc = hwin.document;
++  let iframe = doc.createElementNS('http://www.w3.org/1999/xhtml', 'iframe');
++  logger.log("got iframe", iframe);
++
++  iframe.setAttribute('mozbrowser', true);
++  iframe.setAttribute('mozframetype', 'content');
++  iframe.setAttribute('type', 'content');
++  iframe.setAttribute('id', 'persona-host-iframe');
++  iframe.setAttribute('src', '');
++
++  let mm = iframe.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader.messageManager;
++  mm.loadFrameScript('chrome://browser/content/browser-identity.js', true);
++
++  logger.log("returning iframe");
++  return iframe;
++}
++
++// mimicking callback funtionality for ease of testing
++// this observer auto-removes itself after the observe function
++// is called, so this is meant to observe only ONE event.
++function makeObserver(aObserveTopic, aObserveFunc) {
++  let observer = {
++    // nsISupports provides type management in C++
++    // nsIObserver is to be an observer
++    QueryInterface: XPCOMUtils.generateQI([Ci.nsISupports, Ci.nsIObserver]),
++
++    observe: function (aSubject, aTopic, aData) {
++      if (aTopic == aObserveTopic) {
++        aObserveFunc(aSubject, aTopic, aData);
++        Services.obs.removeObserver(observer, aObserveTopic);
++      }
++    }
++  };
++
++  Services.obs.addObserver(observer, aObserveTopic, false);
++}
++
+diff --git a/browser/modules/test/unit/test_SignInToWebsite.js b/browser/modules/test/unit/test_SignInToWebsite.js
+new file mode 100644
+--- /dev/null
++++ b/browser/modules/test/unit/test_SignInToWebsite.js
+@@ -0,0 +1,66 @@
++/* Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/ */
++
++/**
++ * TO TEST:
++ * - SignInToWebsiteUX receives/sends the right signals
++ * - delegation through UI communication pipe works
++ * - HostFrame hosts frames
++ * - getUIForWindowID
++ * - ResizeWatcher responds to window mutations
++ */
++
++
++"use strict";
++
++function makePipeDelegate(message) {
++  let mockedController = mockController();
++  let iframe = getHostFrame();
++  let options = {
++    iframe: iframe,
++    message: message,
++    onComplete: function pipe_onComplete() {
++      do_test_finished();
++      run_next_test();
++    }
++  };
++  let pipe = new Pipe(options, mockedController);
++  pipe.communicate();
++}
++
++function test_smoke() {
++  do_check_neq(IdentityService, null);
++  run_next_test();
++}
++
++function test_mockDoc() {
++  do_test_pending();
++  let mockedDoc = mockDoc(null, TEST_ORIGIN, function(action, params) {
++    do_check_eq(action, 'coffee');
++    do_test_finished();
++    run_next_test();
++  });
++
++  mockedDoc.doCoffee();
++  // XXX todo: get me a danish
++}
++
++function test_watch() {
++  makePipeDelegate('navigator-delegate-watch');
++}
++
++
++let TESTS = [
++  test_smoke,
++  test_mockDoc,
++  test_watch,
++  //test_HostFrame,
++  //test_getUIForWindowID,
++  //test_ResizeWatcher
++];
++
++TESTS.forEach(add_test);
++
++function run_test() {
++  run_next_test();
++}
+diff --git a/browser/modules/test/unit/xpcshell.ini b/browser/modules/test/unit/xpcshell.ini
+new file mode 100644
+--- /dev/null
++++ b/browser/modules/test/unit/xpcshell.ini
+@@ -0,0 +1,6 @@
++[DEFAULT]
++head = head_identity.js
++tail = 
++
++[test_SignInToWebsite.js]
++
