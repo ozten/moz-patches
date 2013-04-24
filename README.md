@@ -8,7 +8,7 @@ https://vimeo.com/62828580
 
 You can download try builds of these for MacOSX, Linux, and Windows here:
 
-http://ftp.mozilla.org/pub/mozilla.org/firefox/try-builds/jparsons@mozilla.com-c4ea7c9d58ae/
+http://people.mozilla.org/~jparsons/firefox/picl-builds/
 
 Those builds are packaged like Firefox nightlies, so you just need to download
 and install them.  No compiling necessary.
