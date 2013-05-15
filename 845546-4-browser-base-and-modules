@@ -1,14 +1,13 @@
 # HG changeset patch
-# Parent 0d234b56af410b296fba2c7856a8894980606bfb
+# Parent aa39420a17dae6695ea9efe0520df3f7ab06b56c
 # User Jed Parsons <jparsons@mozilla.com>
-# Date Wed Apr 17 11:43:14 2013 PDT
 Bug 845546: Identity service: part 4, browser component
 
 diff --git a/browser/base/content/browser-identity.js b/browser/base/content/browser-identity.js
 new file mode 100644
 --- /dev/null
 +++ b/browser/base/content/browser-identity.js
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,151 @@
 +/* -*- Mode: js2; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- /
 +/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 +/* This Source Code Form is subject to the terms of the Mozilla Public
@@ -140,6 +139,8 @@ new file mode 100644
 +
 +this.shim = null;
 +
++// XXX wha?  why both events
++// dump out these events - should just be on 'load'
 +addEventListener('DOMContentLoaded', function(e) {
 +  content.addEventListener('load', function(e) {
 +    logger.log('content loaded');
@@ -161,7 +162,7 @@ new file mode 100644
 diff --git a/browser/base/content/browser.css b/browser/base/content/browser.css
 --- a/browser/base/content/browser.css
 +++ b/browser/base/content/browser.css
-@@ -262,36 +262,16 @@ panel[noactions] > richlistbox > richlis
+@@ -266,36 +266,16 @@ panel[noactions] > richlistbox > richlis
  #urlbar[pageproxystate="invalid"] > #urlbar-icons > .urlbar-icon:not(#go-button),
  #urlbar[pageproxystate="valid"] > #urlbar-icons > #go-button,
  #urlbar[pageproxystate="invalid"][focused="true"] > #urlbar-go-button ~ toolbarbutton,
@@ -198,7 +199,7 @@ diff --git a/browser/base/content/browser.css b/browser/base/content/browser.css
  #back-button > .toolbarbutton-menu-dropmarker,
  #forward-button > .toolbarbutton-menu-dropmarker {
    display: none;
-@@ -377,26 +357,16 @@ window[chromehidden~="toolbar"] toolbar:
+@@ -380,26 +360,16 @@ window[chromehidden~="toolbar"] toolbar:
  #historySwipeAnimationCurrentPage {
    background-image: -moz-element(#historySwipeAnimationCurrentPageSnapshot);
  }
@@ -228,7 +229,7 @@ diff --git a/browser/base/content/browser.css b/browser/base/content/browser.css
 diff --git a/browser/base/content/urlbarBindings.xml b/browser/base/content/urlbarBindings.xml
 --- a/browser/base/content/urlbarBindings.xml
 +++ b/browser/base/content/urlbarBindings.xml
-@@ -1117,264 +1117,65 @@
+@@ -1117,264 +1117,72 @@
        <method name="onDownloadEnded">
          <body><![CDATA[
            this.updateProgress();
@@ -246,6 +247,11 @@ diff --git a/browser/base/content/urlbarBindings.xml b/browser/base/content/urlb
 -      <xul:image class="popup-notification-icon"
 -                 xbl:inherits="popupid,src=icon"/>
 +    <content>
++    // can we hard-code the iframe here
++    // a xul iframe
++    // set its type to content
++    // in the constructor, load the framescript specifically for the iframe
++    // so it's not a global framescript
 +      <panel id="persona-container" anonid="persona-container" flex="1" />
 +    </content>
  
@@ -318,6 +324,8 @@ diff --git a/browser/base/content/urlbarBindings.xml b/browser/base/content/urlb
 +        let personaIframe = this.notification.options.context.iframe;
 +        let node = document.adoptNode(personaIframe);
 +        let panel = document.getAnonymousElementByAttribute(this, "anonid", "persona-container");
++        // change to this.appendChild
++        // this == <content> elem
 +        panel.appendChild(node);
  
 -        // Populate the list of identities to choose from. The origin is used to provide
@@ -554,56 +562,67 @@ diff --git a/browser/base/jar.mn b/browser/base/jar.mn
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
-@@ -1,247 +1,449 @@
+@@ -1,238 +1,457 @@
  /* This Source Code Form is subject to the terms of the Mozilla Public
   * License, v. 2.0. If a copy of the MPL was not distributed with this file,
   * You can obtain one at http://mozilla.org/MPL/2.0/. */
  
--"use strict";
-+'use strict';
+ "use strict";
  
 -this.EXPORTED_SYMBOLS = ["SignInToWebsiteUX"];
++// This is only applied to the identity frame when it is created; 
++// it's not a traditional frame script.
 +this.EXPORTED_SYMBOLS = ['SignInToWebsiteUX', 'HostFrame', 'Pipe'];
  
  const Cc = Components.classes;
  const Ci = Components.interfaces;
  const Cu = Components.utils;
  
--Cu.import("resource://gre/modules/Services.jsm");
--Cu.import("resource://gre/modules/XPCOMUtils.jsm");
-+Cu.import('resource://gre/modules/Services.jsm');
-+Cu.import('resource://gre/modules/XPCOMUtils.jsm');
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 +Cu.import('resource://gre/modules/identity/IdentityUtils.jsm');
  
--XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
--                                  "resource://gre/modules/identity/Identity.jsm");
-+// The features used by this module, and the persona internal_api extensions
-+// upon which it depends, are slated to arrive in person.org in production in
-+// early Q3, 2013.  Until then, we use the personatest integration server.
-+// (Note that the native navigator.mozId is still for experimental use.  It is
-+// preffed off by default.)
-+const kInteractivePersonaIframe = 'https://picl.personatest.org/sign_in#NATIVE';
-+const kHiddenPersonaIframe = 'https://picl.personatest.org/communication_iframe';
+ XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
+                                   "resource://gre/modules/identity/Identity.jsm");
  
 -XPCOMUtils.defineLazyModuleGetter(this, "Logger",
 -                                  "resource://gre/modules/identity/LogUtils.jsm");
-+const PANEL_MIN_HEIGHT = 440;
-+const PANEL_MIN_WIDTH = 300;
- 
--function log(...aMessageArgs) {
--  Logger.log.apply(Logger, ["SignInToWebsiteUX"].concat(aMessageArgs));
-+XPCOMUtils.defineLazyModuleGetter(this, 'IdentityService',
-+                                  'resource://gre/modules/identity/IdentityService.jsm');
-+
 +XPCOMUtils.defineLazyGetter(this, "logger", function() {
 +  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
 +  return getLogger("Identity", "toolkit.identity.debug");
 +});
-+
+ 
+-function log(...aMessageArgs) {
+-  Logger.log.apply(Logger, ["SignInToWebsiteUX"].concat(aMessageArgs));
++// The default persona uri; can be overwritten with toolkit.identity.uri pref.
++// Do this if you want to repoint to a different service for testing.
++//
++// XXX add an observer to listen for changes
++let kPersonaUri = "https://login.persona.org";
++try {
++  kPersonaUri = Services.prefs.getCharPref("toolkit.identity.uri");
++} catch(noSuchPref) {
++  // stick with the default value
+ }
+ 
+-this.SignInToWebsiteUX = {
++const PANEL_MIN_HEIGHT = 440;
++const PANEL_MIN_WIDTH = 300;
+ 
+-  init: function SignInToWebsiteUX_init() {
 +/**
 + * Ripped off from the resize watcher in base/content/browser-social.js
 + */
-+
+ 
+-    /*
+-     * bug 793906 - temporarily disabling desktop UI so we can
+-     * focus on b2g without worrying about desktop as well
+-     *
+-    Services.obs.addObserver(this, "identity-request", false);
+-    Services.obs.addObserver(this, "identity-auth", false);
+-    Services.obs.addObserver(this, "identity-auth-complete", false);
+-    Services.obs.addObserver(this, "identity-login-state-changed", false);
+-     */
 +function sizePanelToContent(iframe) {
 +  // FIXME: bug 764787: Maybe we can use nsIDOMWindowUtils.getRootBounds() here?
 +  let doc = iframe.contentDocument;
@@ -623,26 +642,15 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +  // compensate for leftward or rightward shifts here
 +  iframe.style.height = height + "px";
 +  iframe.style.width = width + "px";
- }
- 
--this.SignInToWebsiteUX = {
++ }
++ 
 +function ResizeWatcher(iframe) {
 +  this._mutationObserver = null;
 +  this._iframe = iframe;
- 
--  init: function SignInToWebsiteUX_init() {
 +  this.start();
 +}
- 
--    /*
--     * bug 793906 - temporarily disabling desktop UI so we can
--     * focus on b2g without worrying about desktop as well
--     *
--    Services.obs.addObserver(this, "identity-request", false);
--    Services.obs.addObserver(this, "identity-auth", false);
--    Services.obs.addObserver(this, "identity-auth-complete", false);
--    Services.obs.addObserver(this, "identity-login-state-changed", false);
--     */
++
++// XXX why this no worky?
 +ResizeWatcher.prototype = {
 +  start: function ResizeWatcher_start() {
 +    this.stop(); // just in case...
@@ -710,7 +718,6 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +    let browser = content.QueryInterface(Ci.nsIInterfaceRequestor)
 +                         .getInterface(Ci.nsIWebNavigation)
 +                         .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
-+    //let browser = someWindow.gBrowser;
 +    let chromeWin = browser.ownerDocument.defaultView;
 +
 +    return {
@@ -745,6 +752,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +  this._resizeWatcher = null;
 +}
 +
++// XXX document the crap out of this
 +HostFrame.prototype = {
 +  /*
 +   * getIframe - adds iframe to aOptions
@@ -778,8 +786,8 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 -    switch(aTopic) {
 -      case "identity-request":
 -        this.requestLogin(options);
-+  },
-+
++  }, 
++ 
 +  _createIframe: function HostFrame_createIframe(aOptions) {
 +    let hiddenDoc = Services.appShell.hiddenDOMWindow.document;
 +    this._iframe = hiddenDoc.createElementNS('http://www.w3.org/1999/xhtml', 'iframe');
@@ -806,6 +814,10 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +  },
 +
 +  _injectShim: function HostFrame_injectShim(aIframe) {
++    // XXX question - what exactly is frameLoader?
++    // is it a reference to the process as a whole?
++    // what view of the object is this giving us?
++    // this is probably fine - that there's a frameloader per docshell
 +    let mm = aIframe.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader.messageManager;
 +    logger.log("injecting browser-identity.js shim");
 +    mm.loadFrameScript('chrome://browser/content/browser-identity.js', true);
@@ -820,13 +832,13 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +  return this;
 +}
 +
++
 +Pipe.prototype = {
 +  observe: function pipe_observe(aSubject, aTopic, aData) {
 +    logger.log('pipe observed', aTopic);
 +    switch (aTopic) {
 +      case 'identity-delegate-canceled':
 +        this._close();
-+        this.controller.serviceDoMethod({method: 'cancel'}, this.options.id);
          break;
 -      case "identity-auth":
 -        this._openAuthenticationUI(aData, options);
@@ -905,8 +917,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +  _delegateLoaded: function pipe__delegateLoaded() {
 +    this.mm.sendAsyncMessage(this.options.message, this.options.rpOptions);
 +    // XXX maybe here ??
-+    //this.resizer = new ResizeWatcher();
-+    //this.resizer.start( ... );
++    //this.resizer = new ResizeWatcher(); etc.
    },
  
 -  /**
@@ -920,6 +931,18 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
    },
  
 -  // Private
+-
+-  /**
+-   * Return the chrome window and <browser> for the given outer window ID.
+-   */
+-  _getUIForWindowID: function(aWindowID) {
+-    let content = Services.wm.getOuterWindowWithId(aWindowID);
+-    if (content) {
+-      let browser = content.QueryInterface(Ci.nsIInterfaceRequestor)
+-                           .getInterface(Ci.nsIWebNavigation)
+-                           .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
+-      let chromeWin = browser.ownerDocument.defaultView;
+-      return [chromeWin, browser];
 +  _serviceDoMethod: function pipe__doMethod(aMethodOptions) {
 +    let message = aMethodOptions.json;
 +    if (typeof message === 'string') {
@@ -929,108 +952,11 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +        logger.error('Bad json message: ' + message);
 +        return;
 +      }
-+    }
-+    this.controller.serviceDoMethod(message, this.options.id);
-+  },
- 
--  /**
--   * Return the chrome window and <browser> for the given outer window ID.
--   */
--  _getUIForWindowID: function(aWindowID) {
--    let someWindow = Services.wm.getMostRecentWindow("navigator:browser");
--    if (!someWindow) {
--      Logger.reportError("SignInToWebsiteUX", "no window");
--      return [null, null];
-+  communicate: function pipe_communicate() {
-+    if (this._closed) {
-+      logger.error('Cannot communicate with persona frame; pipe already closed');
-+      return;
-+    }
-+    Services.obs.addObserver(this, 'identity-delegate-canceled', false);
-+
-+    let frameLoader = this.options.iframe.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader;
-+    if (frameLoader) {
-+      this.mm = frameLoader.messageManager;
-+      this.mm.addMessageListener('identity-service-doMethod', this._serviceDoMethod.bind(this));
-+      this.mm.addMessageListener('identity-delegate-loaded', this._delegateLoaded.bind(this));
-+      this.mm.addMessageListener('identity-delegate-complete', this._delegateComplete.bind(this));
-+    } else {
-+      logger.error('FrameLoader unavailable; Frame did not get attached properly?');
-+    }
-+  }
-+};
-+
-+this.SignInToWebsiteUX = {
-+  init: function SignInToWebsiteUX_init(pipeConstructor) {
-+    this.PipeConstructor = pipeConstructor || Pipe;
-+    this.contexts = {};
-+    Services.obs.addObserver(this, 'identity-controller-watch', false);
-+    Services.obs.addObserver(this, 'identity-controller-request', false);
-+    Services.obs.addObserver(this, 'identity-controller-logout', false);
-+    Services.obs.addObserver(this, 'identity-controller-canceled', false);
-+  },
-+
-+  uninit: function SignInToWebsiteUX_uninit() {
-+    Services.obs.removeObserver(this, 'identity-controller-watch');
-+    Services.obs.removeObserver(this, 'identity-controller-request');
-+    Services.obs.removeObserver(this, 'identity-controller-logout');
-+    Services.obs.removeObserver(this, 'identity-controller-canceled');
-+  },
-+
-+  observe: function SignInToWebsiteUX_observe(aSubject, aTopic, aData) {
-+    logger.log('controller observed:', aTopic);
-+    // XXX need to detect page unload of any of our flows
-+    // XXX we get strings from xul, and objects from elsewhere
-+    let rpOptions = {};
-+    if (aSubject) {
-+      if (aSubject.wrappedJSObject) {
-+        rpOptions = aSubject.wrappedJSObject;
-+      } else {
-+        rpOptions = {id: aSubject.QueryInterface(Ci.nsISupportsString).data};
-+      }
-+    }
-+    if (!rpOptions.id) {
-+      logger.error('Got a message with no RP id');
-+      return;
      }
- 
--    let windowUtils = someWindow.QueryInterface(Ci.nsIInterfaceRequestor)
--                                .getInterface(Ci.nsIDOMWindowUtils);
--    let content = windowUtils.getOuterWindowWithId(aWindowID);
-+    let rpId = rpOptions.id;
-+    let UI = getUIForWindowID(rpId);
- 
--    if (content) {
--      let browser = content.QueryInterface(Ci.nsIInterfaceRequestor)
--                           .getInterface(Ci.nsIWebNavigation)
--                           .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
--      let chromeWin = browser.ownerDocument.defaultView;
--      return [chromeWin, browser];
-+    let options = {
-+      id: rpOptions.id,
-+      rpOptions: rpOptions
-+    };
-+
-+    switch (aTopic) {
-+      case 'identity-controller-watch':
-+        this.doWatch(options);
-+        break;
-+
-+      case 'identity-controller-request':
-+        this.doRequest(options);
-+        break;
-+
-+      case 'identity-controller-logout':
-+        this.doLogout(options);
-+        break;
-+
-+      default:
-+        logger.error('SignInToWebsiteUX', 'Unknown observer notification:', aTopic);
-+        break;
-     }
--    Logger.reportError("SignInToWebsiteUX", "no content");
 -
+-    Logger.reportError("SignInToWebsiteUX", "no content");
 -    return [null, null];
++    this.controller.serviceDoMethod(message, this.options.id);
    },
  
 -  /**
@@ -1046,37 +972,37 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 -    let authWin = Services.ww.openWindow(chromeWin, "about:blank", "", features, null);
 -    let windowID = authWin.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindowUtils).outerWindowID;
 -    log("authWin outer id: ", windowID);
-+  serviceDoMethod: function SignInToWebsiteUX_doMethod(aMessage, aId) {
-+    logger.log('serviceDoMethod received:', aMessage);
-+    switch (aMessage.method) {
-+      case 'ready':
-+        IdentityService.doReady(aId);
-+        break;
++  communicate: function pipe_communicate() {
++    if (this._closed) {
++      logger.error('Cannot communicate with persona frame; pipe already closed');
++      return;
++    }
++    Services.obs.addObserver(this, 'identity-delegate-canceled', false);
  
 -    let provId = aContext.provId;
 -    // Tell the ID service about the id before loading the url
 -    IdentityService.IDP.setAuthenticationFlow(windowID, provId);
-+      case 'login':
-+        if (aMessage._internalParams) {
-+          IdentityService.doLogin(aId, aMessage.assertion, aMessage._internalParams);
-+        } else {
-+          IdentityService.doLogin(aId, aMessage.assertion);
-+        }
-+        break;
++    let frameLoader = this.options.iframe.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader;
++    if (frameLoader) {
++      this.mm = frameLoader.messageManager;
++      this.mm.addMessageListener('identity-service-doMethod', this._serviceDoMethod.bind(this));
++      this.mm.addMessageListener('identity-delegate-loaded', this._delegateLoaded.bind(this));
++      this.mm.addMessageListener('identity-delegate-complete', this._delegateComplete.bind(this));
++    } else {
++      logger.error('FrameLoader unavailable; Frame did not get attached properly?');
++    }
++  }
++};
  
 -    authWin.location = aAuthURI;
-+      case 'logout':
-+        IdentityService.doLogout(aId);
-+        break;
-+
-+      case 'cancel':
-+        IdentityService.doCancel(aId);
-+        break;
-+
-+      default:
-+        logger.error('Unknown identity method: ' + aMessage.method);
-+        break;
-+    }
++this.SignInToWebsiteUX = {
++  init: function SignInToWebsiteUX_init(pipeConstructor) {
++    this.PipeConstructor = pipeConstructor || Pipe;
++    this.contexts = {};
++    Services.obs.addObserver(this, 'identity-controller-watch', false);
++    Services.obs.addObserver(this, 'identity-controller-request', false);
++    Services.obs.addObserver(this, 'identity-controller-logout', false);
++    Services.obs.addObserver(this, 'identity-controller-canceled', false);
    },
  
 -  _closeAuthenticationUI: function _closeAuthenticationUI(aAuthId) {
@@ -1086,19 +1012,11 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 -      chromeWin.close();
 -    else
 -      Logger.reportError("SignInToWebsite", "Could not close window with ID", aAuthId);
-+  cleanUp: function SignInToWebsiteUX_cleanUp(aId) {
-+    let context = this.contexts[aId];
-+    if (context) {
-+      if (context.hostFrame) {
-+        context.hostFrame.cleanUp();
-+      }
-+      if (context.iframe && context.iframe.parentNode) {
-+        context.iframe.parentNode.removeChild(context.iframe);
-+        delete context.iframe;
-+      }
-+      this.contexts[aId] = {};
-+      delete this.contexts[aId];
-+    }
++  uninit: function SignInToWebsiteUX_uninit() {
++    Services.obs.removeObserver(this, 'identity-controller-watch');
++    Services.obs.removeObserver(this, 'identity-controller-request');
++    Services.obs.removeObserver(this, 'identity-controller-logout');
++    Services.obs.removeObserver(this, 'identity-controller-canceled');
    },
  
 -  /**
@@ -1108,10 +1026,30 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 -    let windowID = aContext.rpId;
 -    log("_showLoggedInUI for ", windowID);
 -    let [chromeWin, browserEl] = this._getUIForWindowID(windowID);
-+  delegate: function SignInToWebsiteUX_delegate(aOptions) {
-+    let hostFrame = new HostFrame();
-+    hostFrame.getIframe(aOptions, function() {
-+      // iframe has been added to aOptions
++  observe: function SignInToWebsiteUX_observe(aSubject, aTopic, aData) {
++    logger.log('controller observed:', aTopic);
++    // XXX need to detect page unload of any of our flows
++    // XXX we get strings from xul, and objects from elsewhere
++    let rpOptions = {};
++    if (aSubject) {
++      if (aSubject.wrappedJSObject) {
++        rpOptions = aSubject.wrappedJSObject;
++      } else {
++        rpOptions = {id: aSubject.QueryInterface(Ci.nsISupportsString).data};
++      }
++    }
++    if (!rpOptions.id) {
++      logger.error('Got a message with no RP id');
++      return;
++     }
++ 
++    let rpId = rpOptions.id;
++    let UI = getUIForWindowID(rpId);
++ 
++    let options = {
++      id: rpOptions.id,
++      rpOptions: rpOptions
++    };
  
 -    let message = chromeWin.gNavigatorBundle.getFormattedString("identity.loggedIn.description",
 -                                                          [aIdentity]);
@@ -1131,6 +1069,74 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 -                                                  "identity-notification-icon", mainAction,
 -                                                  secondaryActions, options);
 -    loggedInNot.rpId = windowID;
++    switch (aTopic) {
++      case 'identity-controller-watch':
++        this.doWatch(options);
++        break;
++
++      case 'identity-controller-request':
++        this.doRequest(options);
++        break;
++
++      case 'identity-controller-logout':
++        this.doLogout(options);
++        break;
++
++      default:
++        logger.error('SignInToWebsiteUX', 'Unknown observer notification:', aTopic);
++        break;
++     }
++   },
++ 
++  serviceDoMethod: function SignInToWebsiteUX_doMethod(aMessage, aId) {
++    logger.log('serviceDoMethod received:', aMessage);
++    switch (aMessage.method) {
++      case 'ready':
++        IdentityService.doReady(aId);
++        break;
++ 
++      case 'login':
++        if (aMessage._internalParams) {
++          IdentityService.doLogin(aId, aMessage.assertion, aMessage._internalParams);
++        } else {
++          IdentityService.doLogin(aId, aMessage.assertion);
++        }
++        break;
++ 
++      case 'logout':
++        IdentityService.doLogout(aId);
++        break;
++
++      case 'cancel':
++        IdentityService.doCancel(aId);
++        break;
++
++      default:
++        logger.error('Unknown identity method: ' + aMessage.method);
++        break;
++    }
++  },
++ 
++  cleanUp: function SignInToWebsiteUX_cleanUp(aId) {
++    let context = this.contexts[aId];
++    if (context) {
++      if (context.hostFrame) {
++        context.hostFrame.cleanUp();
++      }
++      if (context.iframe && context.iframe.parentNode) {
++        context.iframe.parentNode.removeChild(context.iframe);
++        delete context.iframe;
++      }
++      this.contexts[aId] = {};
++      delete this.contexts[aId];
++    }
++  },
++ 
++  delegate: function SignInToWebsiteUX_delegate(aOptions) {
++    let hostFrame = new HostFrame();
++    hostFrame.getIframe(aOptions, function() {
++      // iframe has been added to aOptions
++
 +      // callback for the pipe when flow is complete
 +      aOptions.onComplete = function pipe_onComplete() {
 +        logger.log("pipe clean up now");
@@ -1144,6 +1150,22 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +      let pipe = new this.PipeConstructor(aOptions, this);
 +      pipe.communicate();
 +    }.bind(this));
++  },
++ 
++  doWatch: function SignInToWebsiteUX_doWatch(aOptions) {
++    aOptions.message = 'identity-delegate-watch';
++    aOptions.src = kHiddenPersonaIframe;
++    aOptions.showUI = false;
++    logger.log("options:", aOptions);
++    this.delegate(aOptions);
++  },
++ 
++  doRequest: function SignInToWebsiteUX_doRequest(aOptions) {
++    aOptions.message = 'identity-delegate-request';
++    aOptions.src = kInteractivePersonaIframe;
++    aOptions.showUI = true;
++    logger.log("options:", aOptions);
++    this.delegate(aOptions);
    },
  
 -  /**
@@ -1159,14 +1181,8 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 -    let loggedInNot = chromeWin.PopupNotifications.getNotification("identity-logged-in", browserEl);
 -    if (loggedInNot)
 -      chromeWin.PopupNotifications.remove(loggedInNot);
-+  doWatch: function SignInToWebsiteUX_doWatch(aOptions) {
-+    aOptions.message = 'identity-delegate-watch';
-+    aOptions.src = kHiddenPersonaIframe;
-+    aOptions.showUI = false;
-+    logger.log("options:", aOptions);
-+    this.delegate(aOptions);
-   },
- 
+-  },
+-
 -  /**
 -   * Remove the doorhanger indicating the currently logged-in user.
 -   */
@@ -1178,14 +1194,8 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 -    let requestNot = chromeWin.PopupNotifications.getNotification("identity-request", browserEl);
 -    if (requestNot)
 -      chromeWin.PopupNotifications.remove(requestNot);
-+  doRequest: function SignInToWebsiteUX_doRequest(aOptions) {
-+    aOptions.message = 'identity-delegate-request';
-+    aOptions.src = kInteractivePersonaIframe;
-+    aOptions.showUI = true;
-+    logger.log("options:", aOptions);
-+    this.delegate(aOptions);
-   },
- 
+-  },
+-
 +  doLogout: function SignInToWebsiteUX_doLogout(aOptions) {
 +    aOptions.message = 'identity-delegate-logout';
 +    aOptions.src = kHiddenPersonaIframe;

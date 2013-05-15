@@ -1,7 +1,6 @@
 # HG changeset patch
-# Parent 162645e12e21574f022fb5d23e19d557a1d89318
+# Parent c10f806e84032f2f5aaace2de8faca2cedf69b02
 # User Jed Parsons <jparsons@mozilla.com>
-# Date Wed Apr 17 11:43:14 2013 PDT
 Bug 845546: Identity service: part 3, dom component
 
 diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
@@ -215,14 +214,14 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
 diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
 --- a/dom/identity/nsDOMIdentity.js
 +++ b/dom/identity/nsDOMIdentity.js
-@@ -18,22 +18,28 @@ const PREF_SYNTHETIC_EVENTS_OK = "dom.id
- const MAX_STRING_LENGTH = 2048;
- // Maximum number of times navigator.id.request can be called for a document
- const MAX_RP_CALLS = 100;
- 
+@@ -22,16 +22,21 @@ const MAX_RP_CALLS = 100;
  Cu.import("resource://gre/modules/Services.jsm");
  Cu.import("resource://gre/modules/XPCOMUtils.jsm");
  Cu.import("resource://gre/modules/identity/IdentityUtils.jsm");
+ 
+ XPCOMUtils.defineLazyServiceGetter(this, "uuidgen",
+                                    "@mozilla.org/uuid-generator;1",
+                                    "nsIUUIDGenerator");
  
 +XPCOMUtils.defineLazyGetter(this, "logger", function() {
 +  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
@@ -235,16 +234,9 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
                                     "nsIMessageSender");
  
  function nsDOMIdentity(aIdentityInternal) {
-+  logger.log("nsDOMIdentity constructor");
    this._identityInternal = aIdentityInternal;
  }
- nsDOMIdentity.prototype = {
-   __exposedProps__: {
-     // Relying Party (RP)
-     watch: 'r',
-     request: 'r',
-     logout: 'r',
-@@ -60,22 +66,27 @@ nsDOMIdentity.prototype = {
+@@ -64,22 +69,27 @@ nsDOMIdentity.prototype = {
      return true;
    },
  
@@ -274,7 +266,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
        if ((!(cbName in aOptions))
            || typeof(aOptions[cbName]) !== "function") {
             throw new Error(cbName + " callback is required.");
-@@ -84,16 +95,17 @@ nsDOMIdentity.prototype = {
+@@ -88,16 +98,17 @@ nsDOMIdentity.prototype = {
  
      // Optional callback "onready"
      if (aOptions["onready"]
@@ -292,7 +284,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      // but code should be changed to use loggedInUser instead.
      checkRenamed(aOptions, "loggedInEmail", "loggedInUser");
      message["loggedInUser"] = aOptions["loggedInUser"];
-@@ -108,44 +120,47 @@ nsDOMIdentity.prototype = {
+@@ -112,44 +123,47 @@ nsDOMIdentity.prototype = {
        // See HTMLInputElement::IsValidEmailAddress
        if (aOptions["loggedInUser"].indexOf("@") == -1
            || aOptions["loggedInUser"].length > MAX_STRING_LENGTH) {
@@ -342,7 +334,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
          if (!aOptions[propName] || aOptions[propName] === "undefined")
            continue;
          if (typeof(aOptions[propName]) !== "string") {
-@@ -166,16 +181,17 @@ nsDOMIdentity.prototype = {
+@@ -170,16 +184,17 @@ nsDOMIdentity.prototype = {
        }
      }
  
@@ -360,7 +352,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      }
  
      this._rpCalls++;
-@@ -238,72 +254,72 @@ nsDOMIdentity.prototype = {
+@@ -243,72 +258,72 @@ nsDOMIdentity.prototype = {
        onlogout: function get_onlogout() {},
        onready: function get_onready() {
          self.request(opts);
@@ -438,7 +430,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      }
      this._provisioningEnded = true;
  
-@@ -312,17 +328,17 @@ nsDOMIdentity.prototype = {
+@@ -317,17 +332,17 @@ nsDOMIdentity.prototype = {
      this._identityInternal._mm.sendAsyncMessage("Identity:IDP:ProvisioningFailure", message);
    },
  
@@ -457,7 +449,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      }
      if (!aCallback || typeof(aCallback) !== "function") {
        throw new Error("beginAuthentication callback is required.");
-@@ -400,54 +416,54 @@ nsDOMIdentity.prototype = {
+@@ -408,54 +423,54 @@ nsDOMIdentity.prototype = {
            return;
          }
          this._initializeState();
@@ -516,7 +508,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
          }
          break;
        case "Identity:IDP:CallBeginProvisioningCallback":
-@@ -457,20 +473,16 @@ nsDOMIdentity.prototype = {
+@@ -465,20 +480,16 @@ nsDOMIdentity.prototype = {
          this._callGenKeyPairCallback(msg);
          break;
        case "Identity:IDP:CallBeginAuthenticationCallback":
@@ -537,7 +529,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      function genPropDesc(value) {
        return {
          enumerable: true, configurable: true, writable: true, value: value
-@@ -520,17 +532,17 @@ nsDOMIdentity.prototype = {
+@@ -528,17 +539,17 @@ nsDOMIdentity.prototype = {
  
      // window origin
      message.origin = this._origin;
@@ -556,14 +548,14 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
  
  };
  
-@@ -593,17 +605,17 @@ nsDOMIdentityInternal.prototype = {
- 
-     this._identity._init(aWindow);
- 
-     let util = aWindow.QueryInterface(Ci.nsIInterfaceRequestor)
-                       .getInterface(Ci.nsIDOMWindowUtils);
-     this._id = util.outerWindowID;
+@@ -608,17 +619,17 @@ nsDOMIdentityInternal.prototype = {
+     this._id = uuidgen.generateUUID().toString();
      this._innerWindowID = util.currentInnerWindowID;
+ 
+     // nsDOMIdentity needs to know our _id, so this goes after
+     // its creation.
+     this._identity = new nsDOMIdentity(this);
+     this._identity._init(aWindow);
  
 -    this._log("init was called from " + aWindow.document.location);
 +    logger.log("init was called from", aWindow.document.location);
@@ -575,7 +567,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
        "Identity:ResetState",
        "Identity:RP:Watch:OnLogin",
        "Identity:RP:Watch:OnLogout",
-@@ -618,24 +630,16 @@ nsDOMIdentityInternal.prototype = {
+@@ -633,24 +644,16 @@ nsDOMIdentityInternal.prototype = {
      }, this);
  
      // Setup observers so we can remove message listeners.
@@ -600,31 +592,6 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
    ),
  
    classInfo: XPCOMUtils.generateCI({
-diff --git a/dom/identity/tests/Makefile.in b/dom/identity/tests/Makefile.in
-new file mode 100644
---- /dev/null
-+++ b/dom/identity/tests/Makefile.in
-@@ -0,0 +1,20 @@
-+# This Source Code Form is subject to the terms of the Mozilla Public
-+# License, v. 2.0. If a copy of the MPL was not distributed with this file,
-+# You can obtain one at http://mozilla.org/MPL/2.0/.
-+
-+DEPTH            = @DEPTH@
-+topsrcdir        = @top_srcdir@
-+srcdir           = @srcdir@
-+VPATH            = @srcdir@
-+
-+relativesrcdir   = @relativesrcdir@
-+
-+include $(DEPTH)/config/autoconf.mk
-+
-+MOCHITEST_FILES = \
-+  head_identity.js \
-+  test_rp.html \
-+  $(NULL)
-+
-+include $(topsrcdir)/config/rules.mk
-+
 diff --git a/dom/identity/tests/head_identity.js b/dom/identity/tests/head_identity.js
 new file mode 100644
 --- /dev/null

@@ -1,7 +1,6 @@
 # HG changeset patch
-# Parent b64b45bd43dec3baffadff066d25cdfdf99bfbd5
+# Parent c8936c7a3af1784d5c17cd73eada04a8bc2b151a
 # User Jed Parsons <jparsons@mozilla.com>
-# Date Wed Apr 17 11:43:14 2013 PDT
 Bug 845546: Identity service: part 2, toolkit component
 
 diff --git a/toolkit/identity/MinimalIdentity.jsm b/toolkit/identity/IdentityService.jsm
@@ -157,7 +156,7 @@ rename to toolkit/identity/IdentityService.jsm
     *                  is expected to have properties:
     *                  - id (unique, e.g. uuid)
     *                  - loggedInUser (string or null)
-@@ -125,51 +120,56 @@ IDService.prototype = {
+@@ -125,56 +120,60 @@ IDService.prototype = {
     *                  and a bunch of callbacks
     *                  - doReady()
     *                  - doLogin()
@@ -170,6 +169,9 @@ rename to toolkit/identity/IdentityService.jsm
 +  watch: function IDService_watch(aRpCaller) {
      // store the caller structure and notify the UI observers
      this._rpFlows[aRpCaller.id] = aRpCaller;
+ 
+-    log("flows:", Object.keys(this._rpFlows).join(', '));
++    logger.log("flows:", Object.keys(this._rpFlows).join(', '));
  
      let options = makeMessageObject(aRpCaller);
 -    log("sending identity-controller-watch:", options);
@@ -185,10 +187,9 @@ rename to toolkit/identity/IdentityService.jsm
 +  unwatch: function IDService_unwatch(aRpId, aTargetMM) {
      let rp = this._rpFlows[aRpId];
 +    if (!rp) {
-+      logger.warning("no rp to go with callerId " + aRpId + "\n");
++      logger.warning("no rp to go with callerId", aRpId);
 +      return;
 +    }
-+
      let options = makeMessageObject({
        id: aRpId,
        origin: rp.origin,
@@ -197,6 +198,9 @@ rename to toolkit/identity/IdentityService.jsm
 -    log("sending identity-controller-unwatch for id", options.id, options.origin);
 +    logger.log("sending identity-controller-unwatch for id", options.id, options.origin);
      Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-unwatch", null);
+ 
+     // Stop sending messages to this window
+     delete this._rpFlows[aRpId];
    },
  
    /**
@@ -219,7 +223,7 @@ rename to toolkit/identity/IdentityService.jsm
      objectCopy(aOptions, options);
      Services.obs.notifyObservers({wrappedJSObject: options}, "identity-controller-request", null);
    },
-@@ -177,269 +177,214 @@ IDService.prototype = {
+@@ -182,276 +181,214 @@ IDService.prototype = {
    /**
     * Invoked when a user wishes to logout of a site (for instance, when clicking
     * on an in-content logout button).
@@ -249,7 +253,6 @@ rename to toolkit/identity/IdentityService.jsm
      }, this);
    },
  
-+
 +  /**
 +   * Sign In To Browser functions:
 +   *   getIdentity()
@@ -341,8 +344,7 @@ rename to toolkit/identity/IdentityService.jsm
 +  doLogin: function IDService_doLogin(aRpCallerId, aAssertion, aInternalParams) {
      let rp = this._rpFlows[aRpCallerId];
      if (!rp) {
--      dump("WARNING: doLogin found no rp to go with callerId " + aRpCallerId + "\n");
-+      logger.warning("no rp to go with callerId " + aRpCallerId + "\n");
+       dump("WARNING: doLogin found no rp to go with callerId " + aRpCallerId + "\n");
        return;
      }
  
@@ -353,20 +355,25 @@ rename to toolkit/identity/IdentityService.jsm
 +  doLogout: function IDService_doLogout(aRpCallerId) {
      let rp = this._rpFlows[aRpCallerId];
      if (!rp) {
--      dump("WARNING: doLogout found no rp to go with callerId " + aRpCallerId + "\n");
-+      logger.warning("no rp to go with callerId " + aRpCallerId + "\n");
+       dump("WARNING: doLogout found no rp to go with callerId " + aRpCallerId + "\n");
        return;
      }
  
-     rp.doLogout();
+     // Logout from every site with the same origin
+     let origin = rp.origin;
+     Object.keys(this._rpFlows).forEach(function(key) {
+       let rp = this._rpFlows[key];
+       if (rp.origin === origin) {
+         rp.doLogout();
+       }
+     }.bind(this));
    },
  
 -  doReady: function doReady(aRpCallerId) {
 +  doReady: function IDService_doReady(aRpCallerId) {
      let rp = this._rpFlows[aRpCallerId];
      if (!rp) {
--      dump("WARNING: doReady found no rp to go with callerId " + aRpCallerId + "\n");
-+      logger.warning("no rp to go with callerId " + aRpCallerId + "\n");
+       dump("WARNING: doReady found no rp to go with callerId " + aRpCallerId + "\n");
        return;
      }
  
@@ -377,8 +384,7 @@ rename to toolkit/identity/IdentityService.jsm
 +  doCancel: function IDService_doCancel(aRpCallerId) {
      let rp = this._rpFlows[aRpCallerId];
      if (!rp) {
--      dump("WARNING: doCancel found no rp to go with callerId " + aRpCallerId + "\n");
-+      logger.warning("no rp to go with callerId " + aRpCallerId + "\n");
+       dump("WARNING: doCancel found no rp to go with callerId " + aRpCallerId + "\n");
        return;
      }
  
@@ -453,6 +459,16 @@ rename to toolkit/identity/IdentityService.jsm
 +      }
 +      delete(this._rpFlows[aRpCallerId]);
 +    }
++  },
++ 
++  doAccountExists: function IDService_doAccountExists(aRpCallerId, aExists) {
++    let rp = this._rpFlows[aRpCallerId];
++    if (rp) {
++      if (typeof rp.onAccountExists === 'function') {
++        rp.onAccountExists(aExists);
++      }
++      delete(this._rpFlows[aRpCallerId]);
++    }
    },
  
 -  /**
@@ -471,16 +487,8 @@ rename to toolkit/identity/IdentityService.jsm
 -   *                  being provisioned, provided by the IdP.
 -   */
 -  registerCertificate: function registerCertificate(aProvId, aCert) {
-+  doAccountExists: function IDService_doAccountExists(aRpCallerId, aExists) {
-+    let rp = this._rpFlows[aRpCallerId];
-+    if (rp) {
-+      if (typeof rp.onAccountExists === 'function') {
-+        rp.onAccountExists(aExists);
-+      }
-+      delete(this._rpFlows[aRpCallerId]);
-+    }
-   },
- 
+-  },
+-
 -  /**
 -   * The authentication frame has called navigator.id.beginAuthentication
 -   *
@@ -494,16 +502,8 @@ rename to toolkit/identity/IdentityService.jsm
 -   *
 -   */
 -  beginAuthentication: function beginAuthentication(aCaller) {
-+  doCreateAccount: function IDService_doCreateAccount(aRpCallerId, aAssertion) {
-+    let rp = this._rpFlows[aRpCallerId];
-+    if (rp) {
-+      if (typeof rp.onCreateAccount === 'function') {
-+        rp.onCreateAccount(aAssertion);
-+      }
-+      delete(this._rpFlows[aRpCallerId]);
-+    }
-   },
- 
+-  },
+-
 -  /**
 -   * The auth frame has called navigator.id.completeAuthentication
 -   *
@@ -542,7 +542,14 @@ rename to toolkit/identity/IdentityService.jsm
 -    var parsedEmail = this.parseEmail(aIdentity);
 -    if (parsedEmail === null) {
 -      return aCallback("Could not parse email: " + aIdentity);
--    }
++  doCreateAccount: function IDService_doCreateAccount(aRpCallerId, aAssertion) {
++    let rp = this._rpFlows[aRpCallerId];
++    if (rp) {
++      if (typeof rp.onCreateAccount === 'function') {
++        rp.onCreateAccount(aAssertion);
++      }
++      delete(this._rpFlows[aRpCallerId]);
+     }
 -    log("_discoverIdentityProvider: identity:", aIdentity, "domain:", parsedEmail.domain);
 -
 -    this._fetchWellKnownFile(parsedEmail.domain, function fetchedWellKnown(err, idpParams) {
@@ -621,10 +628,6 @@ rename to toolkit/identity/IdentityService.jsm
 -    req.send(null);
 -  },
 -
-+  doFoo: function doFoo() {
-+    let wm = Components.classes["@mozilla.org/appshell/window-mediator;1"]
-+                   .getService(Components.interfaces.nsIWindowMediator);
-+    let mainWindow = wm.getMostRecentWindow("navigator:browser");
 +  }
  };
  
@@ -1093,7 +1096,7 @@ diff --git a/toolkit/identity/tests/chrome/Makefile.in b/toolkit/identity/tests/
 diff --git a/toolkit/identity/tests/moz.build b/toolkit/identity/tests/moz.build
 --- a/toolkit/identity/tests/moz.build
 +++ b/toolkit/identity/tests/moz.build
-@@ -1,10 +1,10 @@
+@@ -1,11 +1,11 @@
  # -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
  # vim: set filetype=python:
  # This Source Code Form is subject to the terms of the Mozilla Public
@@ -1105,6 +1108,7 @@ diff --git a/toolkit/identity/tests/moz.build b/toolkit/identity/tests/moz.build
  
  MODULE = 'test_identity'
  
+ XPCSHELL_TESTS_MANIFESTS += ['unit/xpcshell.ini']
 diff --git a/toolkit/identity/tests/unit/head_identity.js b/toolkit/identity/tests/unit/head_identity.js
 --- a/toolkit/identity/tests/unit/head_identity.js
 +++ b/toolkit/identity/tests/unit/head_identity.js

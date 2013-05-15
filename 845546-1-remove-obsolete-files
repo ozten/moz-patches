@@ -1,7 +1,6 @@
 # HG changeset patch
 # Parent 53c2e7b9753bbaaed5fc5db747d0600f18d9e5af
 # User Jed Parsons <jparsons@mozilla.com>
-# Date Wed Apr 17 11:43:14 2013 PDT
 Bug 845546: Identity service: part 1, remove obsolete files
 
 diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm

@@ -1,7 +1,6 @@
 # HG changeset patch
-# Parent fd787e1a9c265fc51e223d89b4b42c88c1093d22
+# Parent 060e2a3f4e2c3296442b8de72ffc9861cdc5f1f5
 # User Jed Parsons <jparsons@mozilla.com>
-# Date Wed Apr 17 11:43:14 2013 PDT
 Bug 845546: Identity service: part 5, b2g component
 
 diff --git a/b2g/chrome/content/identity.js b/b2g/chrome/content/identity.js
@@ -169,14 +168,14 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
 -                                  "resource://gre/modules/identity/LogUtils.jsm");
 +                                  "resource://gre/modules/identity/IdentityService.jsm");
  
- // JS shim that contains the callback functions that
- // live within the identity UI provisioning frame.
- const kIdentityShimFile = "chrome://browser/content/identity.js";
- 
- // Type of MozChromeEvents to handle id dialogs.
- const kOpenIdentityDialog = "id-dialog-open";
- const kDoneIdentityDialog = "id-dialog-done";
-@@ -97,19 +94,21 @@ const kCloseIdentityDialog = "id-dialog-
+ // The default persona uri; can be overwritten with toolkit.identity.uri pref.
+ // Do this if you want to repoint to a different service for testing.
+ // There's no point in setting up an observer to monitor the pref, as b2g prefs
+ // can only be overwritten when the profie is recreated.  So just get the value
+ // on start-up.
+ let kPersonaUri = "https://firefoxos.persona.org";
+ try {
+@@ -109,21 +106,22 @@ const kCloseIdentityDialog = "id-dialog-
  const kIdentityDelegateWatch = "identity-delegate-watch";
  const kIdentityDelegateRequest = "identity-delegate-request";
  const kIdentityDelegateLogout = "identity-delegate-logout";
@@ -192,7 +191,9 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
 +  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
 +  return getLogger("Identity", "toolkit.identity.debug");
 +});
-+
+ 
+-log("persona uri =", kPersonaUri);
++logger.log("persona uri =", kPersonaUri);
  
  /*
   * ContentInterface encapsulates the our content functions.  There are only two:
@@ -201,7 +202,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
   * sendChromeEvent  - send a chromeEvent from the browser shell
   */
  let ContentInterface = {
-@@ -143,29 +142,29 @@ Pipe.prototype = {
+@@ -158,29 +156,29 @@ Pipe.prototype = {
  
    observe: function Pipe_observe(aSubject, aTopic, aData) {
      let options = {};
@@ -234,7 +235,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
        }
      }
      this._watchers.push({id: aId, count: 1, mm: aMm});
-@@ -189,45 +188,45 @@ Pipe.prototype = {
+@@ -204,45 +202,45 @@ Pipe.prototype = {
            this._watchers.splice(index, 1);
          }
        } else {
@@ -284,7 +285,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
        if (mm) {
          mm.removeMessageListener(kIdentityDelegateFinished, identityDelegateFinished);
          mm.removeMessageListener(kIdentityControllerDoMethod, aMessageCallback);
-@@ -238,17 +237,17 @@ Pipe.prototype = {
+@@ -253,17 +251,17 @@ Pipe.prototype = {
        removeMessageListeners();
  
        let detail = {
@@ -303,7 +304,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
        let msg = evt.detail;
        if (!msg.id.match(uuid)) {
          return;
-@@ -266,19 +265,19 @@ Pipe.prototype = {
+@@ -281,19 +279,19 @@ Pipe.prototype = {
              // the callbacks in the content script.  This could be either the
              // visible popup that the user interacts with, or it could be an
              // invisible frame.
@@ -312,11 +313,11 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
              mm = frameLoader.messageManager;
              try {
                mm.loadFrameScript(kIdentityShimFile, true);
--              log("Loaded shim " + kIdentityShimFile + "\n");
-+              logger.log("Loaded shim " + kIdentityShimFile + "\n");
+-              log("Loaded shim", kIdentityShimFile);
++              logger.log("Loaded shim", kIdentityShimFile);
              } catch (e) {
--              log("Error loading ", kIdentityShimFile, " as a frame script: ", e);
-+              logger.log("Error loading ", kIdentityShimFile, " as a frame script: ", e);
+-              log("Error loading", kIdentityShimFile, "as a frame script:", e);
++              logger.log("Error loading", kIdentityShimFile, "as a frame script:", e);
              }
  
              // There are two messages that the delegate can send back: a "do
@@ -325,7 +326,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
              // If we receive a "finished" event, then the delegate is done, so
              // we shut down the pipe and clean up.
              mm.addMessageListener(kIdentityControllerDoMethod, aMessageCallback);
-@@ -291,17 +290,17 @@ Pipe.prototype = {
+@@ -306,17 +304,17 @@ Pipe.prototype = {
          case kDoneIdentityDialog + '-' + uuid:
            // Received our assertion.  The message manager callbacks will handle
            // communicating back to the IDService.  All we have to do is remove
@@ -344,7 +345,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
      // Tell content to open the identity iframe or trusty popup. The parameter
      // showUI signals whether user interaction is needed.  If it is, content will
      // open a dialog; if not, a hidden iframe.  In each case, BrowserID is
-@@ -343,17 +342,17 @@ this.SignInToWebsiteController = {
+@@ -358,17 +356,17 @@ this.SignInToWebsiteController = {
  
    uninit: function SignInToWebsiteController_uninit() {
      Services.obs.removeObserver(this, "identity-controller-watch");
@@ -363,7 +364,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
        case "identity-controller-watch":
          this.doWatch(options);
          break;
-@@ -397,17 +396,17 @@ this.SignInToWebsiteController = {
+@@ -412,17 +410,17 @@ this.SignInToWebsiteController = {
            IdentityService.doLogout(aRpId);
            break;
  
@@ -382,7 +383,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
    doWatch: function SignInToWebsiteController_doWatch(aRpOptions) {
      // dom prevents watch from  being called twice
      let contentOptions = {
-@@ -417,30 +416,30 @@ this.SignInToWebsiteController = {
+@@ -432,30 +430,30 @@ this.SignInToWebsiteController = {
      this.pipe.communicate(aRpOptions, contentOptions,
          this._makeDoMethodCallback(aRpOptions.id));
    },
@@ -500,10 +501,17 @@ diff --git a/b2g/components/test/unit/test_signintowebsite.js b/b2g/components/t
    let subsetKeys = Object.keys(subset);
  
    // can't have fewer keys than the subset
-@@ -106,17 +96,17 @@ function test_watch() {
+@@ -101,23 +91,23 @@ function test_watch() {
+   do_test_pending();
+ 
+   setup_test_identity("pie@food.gov", TEST_CERT, function() {
+     let controller = SignInToWebsiteController;
+ 
      let mockedDoc = mockDoc({loggedInUser: null}, function(action, params) {
        do_check_eq(action, 'ready');
        controller.uninit();
+-      MinimalIDService.RP.unwatch(mockedDoc.id);
++      IdentityService.RP.unwatch(mockedDoc.id);
        do_test_finished();
        run_next_test();
      });
@@ -519,9 +527,17 @@ diff --git a/b2g/components/test/unit/test_signintowebsite.js b/b2g/components/t
  
    setup_test_identity("flan@food.gov", TEST_CERT, function() {
      let controller = SignInToWebsiteController;
-@@ -131,18 +121,18 @@ function test_request_login() {
+@@ -126,25 +116,25 @@ function test_request_login() {
+       function(action, params) {
+         do_check_eq(action, 'ready');
+         do_check_eq(params, undefined);
+       },
+       function(action, params) {
+         do_check_eq(action, 'login');
          do_check_eq(params, TEST_CERT);
          controller.uninit();
+-        MinimalIDService.RP.unwatch(mockedDoc.id);
++        IdentityService.RP.unwatch(mockedDoc.id);
          do_test_finished();
          run_next_test();
        }
@@ -540,9 +556,17 @@ diff --git a/b2g/components/test/unit/test_signintowebsite.js b/b2g/components/t
  
    setup_test_identity("flan@food.gov", TEST_CERT, function() {
      let controller = SignInToWebsiteController;
-@@ -157,18 +147,18 @@ function test_request_logout() {
+@@ -153,25 +143,25 @@ function test_request_logout() {
+       function(action, params) {
+         do_check_eq(action, 'ready');
+         do_check_eq(params, undefined);
+       },
+       function(action, params) {
+         do_check_eq(action, 'logout');
          do_check_eq(params, undefined);
          controller.uninit();
+-        MinimalIDService.RP.unwatch(mockedDoc.id);
++        IdentityService.RP.unwatch(mockedDoc.id);
          do_test_finished();
          run_next_test();
        }
@@ -561,9 +585,17 @@ diff --git a/b2g/components/test/unit/test_signintowebsite.js b/b2g/components/t
  
    setup_test_identity("unagi@food.gov", TEST_CERT, function() {
      let controller = SignInToWebsiteController;
-@@ -187,19 +177,19 @@ function test_request_login_logout() {
+@@ -184,26 +174,26 @@ function test_request_login_logout() {
+       function(action, params) {
+         do_check_eq(action, 'login');
+         do_check_eq(params, TEST_CERT);
+       },
+       function(action, params) {
+         do_check_eq(action, 'logout');
          do_check_eq(params, undefined);
          controller.uninit();
+-        MinimalIDService.RP.unwatch(mockedDoc.id);
++        IdentityService.RP.unwatch(mockedDoc.id);
          do_test_finished();
          run_next_test();
        }
@@ -579,12 +611,43 @@ diff --git a/b2g/components/test/unit/test_signintowebsite.js b/b2g/components/t
    });
  }
  
+ function test_logout_everywhere() {
+   do_test_pending();
+   let logouts = 0;
+ 
+   setup_test_identity("fugu@food.gov", TEST_CERT, function() {
+@@ -239,25 +229,25 @@ function test_logout_everywhere() {
+         if (++logouts === 2) {
+           do_test_finished();
+           run_next_test();
+         }
+       }
+     ));
+ 
+     controller.init({pipe: mockReceivingPipe()});
+-    MinimalIDService.RP.watch(mockedDoc1, {});
+-    MinimalIDService.RP.request(mockedDoc1.id, {});
++    IdentityService.RP.watch(mockedDoc1, {});
++    IdentityService.RP.request(mockedDoc1.id, {});
+ 
+-    MinimalIDService.RP.watch(mockedDoc2, {});
+-    MinimalIDService.RP.request(mockedDoc2.id, {});
++    IdentityService.RP.watch(mockedDoc2, {});
++    IdentityService.RP.request(mockedDoc2.id, {});
+ 
+     // Logs out of both docs because they share the
+     // same origin.
+-    MinimalIDService.RP.logout(mockedDoc2.id, {});
++    IdentityService.RP.logout(mockedDoc2.id, {});
+   });
+ }
+ 
  function test_options_pass_through() {
    do_test_pending();
  
    // An meaningless structure for testing that RP messages preserve
    // objects and their parameters as they are passed back and forth.
-@@ -218,32 +208,32 @@ function test_options_pass_through() {
+@@ -276,34 +266,34 @@ function test_options_pass_through() {
  
    function pipeOtherEnd(rpOptions, gaiaOptions) {
      // Ensure that every time we receive a message, our mixed
@@ -602,6 +665,9 @@ diff --git a/b2g/components/test/unit/test_signintowebsite.js b/b2g/components/t
          break;
        case "identity-delegate-logout":
          do_test_finished();
+         controller.uninit();
+-        MinimalIDService.RP.unwatch(mockedDoc.id);
++        IdentityService.RP.unwatch(mockedDoc.id);
          run_next_test();
          break;
      }
