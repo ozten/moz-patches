@@ -1,13 +1,80 @@
 # HG changeset patch
-# Parent aa39420a17dae6695ea9efe0520df3f7ab06b56c
+# Parent 14c74cb83902ea701c062c80f9ebcbb98fedcc57
 # User Jed Parsons <jparsons@mozilla.com>
 Bug 845546: Identity service: part 4, browser component
 
-diff --git a/browser/base/content/browser-identity.js b/browser/base/content/browser-identity.js
+diff --git a/browser/base/content/browser.css b/browser/base/content/browser.css
+--- a/browser/base/content/browser.css
++++ b/browser/base/content/browser.css
+@@ -266,36 +266,16 @@ panel[noactions] > richlistbox > richlis
+ #urlbar[pageproxystate="invalid"] > #urlbar-icons > .urlbar-icon:not(#go-button),
+ #urlbar[pageproxystate="valid"] > #urlbar-icons > #go-button,
+ #urlbar[pageproxystate="invalid"][focused="true"] > #urlbar-go-button ~ toolbarbutton,
+ #urlbar[pageproxystate="valid"] > #urlbar-go-button,
+ #urlbar:not([focused="true"]) > #urlbar-go-button {
+   visibility: collapse;
+ }
+ 
+-#urlbar[pageproxystate="invalid"] > #identity-box > #identity-icon-labels {
+-  visibility: collapse;
+-}
+-
+-#urlbar[pageproxystate="invalid"] > #identity-box {
+-  pointer-events: none;
+-}
+-
+-#identity-icon-labels {
+-  max-width: 18em;
+-}
+-
+-#identity-icon-country-label {
+-  direction: ltr;
+-}
+-
+-#identity-box.verifiedIdentity > #identity-icon-labels > #identity-icon-label {
+-  -moz-margin-end: 0.25em !important;
+-}
+-
+ #wrapper-search-container > #search-container > #searchbar > .searchbar-textbox > .autocomplete-textbox-container > .textbox-input-box > html|*.textbox-input {
+   visibility: hidden;
+ }
+ 
+ /* ::::: Unified Back-/Forward Button ::::: */
+ #back-button > .toolbarbutton-menu-dropmarker,
+ #forward-button > .toolbarbutton-menu-dropmarker {
+   display: none;
+@@ -380,26 +360,16 @@ window[chromehidden~="toolbar"] toolbar:
+ #historySwipeAnimationCurrentPage {
+   background-image: -moz-element(#historySwipeAnimationCurrentPageSnapshot);
+ }
+ 
+ #historySwipeAnimationNextPage {
+   background-image: -moz-element(#historySwipeAnimationNextPageSnapshot);
+ }
+ 
+-/* Identity UI */
+-#identity-popup-content-box.unknownIdentity > #identity-popup-connectedToLabel ,
+-#identity-popup-content-box.unknownIdentity > #identity-popup-runByLabel ,
+-#identity-popup-content-box.unknownIdentity > #identity-popup-content-host ,
+-#identity-popup-content-box.unknownIdentity > #identity-popup-content-owner ,
+-#identity-popup-content-box.verifiedIdentity > #identity-popup-connectedToLabel2 ,
+-#identity-popup-content-box.verifiedDomain > #identity-popup-connectedToLabel2 {
+-  display: none;
+-}
+-
+ /*  Full Screen UI */
+ 
+ #fullscr-toggler {
+   height: 1px;
+   background: black;
+ }
+ 
+ #full-screen-warning-container {
+diff --git a/browser/base/content/identity-framescript.js b/browser/base/content/identity-framescript.js
 new file mode 100644
 --- /dev/null
-+++ b/browser/base/content/browser-identity.js
-@@ -0,0 +1,151 @@
++++ b/browser/base/content/identity-framescript.js
+@@ -0,0 +1,148 @@
 +/* -*- Mode: js2; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- /
 +/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 +/* This Source Code Form is subject to the terms of the Mozilla Public
@@ -101,17 +168,14 @@ new file mode 100644
 +  request: function IdentityShim_request(options) {
 +    logger.log('doInternalRequest: isLoaded:', this.isLoaded, 'options:', options);
 +    if (options) {
-+      var stringifiedOptions = JSON.stringify(options);
-+      let callback = function(assertion, internalParams) {
++      let stringifiedOptions = JSON.stringify(options);
++      let callback = function shim_requestCallback(assertion, internalParams) {
 +        internalParams = internalParams || {};
-+        if (assertion) {
-+          logger.log("got assertion");
-+          this._identityDoMethod({
-+            method: 'login',
-+            assertion: assertion,
-+            _internal: options._internal,
-+            _internalParams: internalParams});
-+        }
++        this._identityDoMethod({
++          method: 'login',
++          assertion: assertion,
++          _internal: options._internal,
++          _internalParams: internalParams});
 +        this._close();
 +      }.bind(this);
 +
@@ -159,77 +223,10 @@ new file mode 100644
 +});
 +
 +
-diff --git a/browser/base/content/browser.css b/browser/base/content/browser.css
---- a/browser/base/content/browser.css
-+++ b/browser/base/content/browser.css
-@@ -266,36 +266,16 @@ panel[noactions] > richlistbox > richlis
- #urlbar[pageproxystate="invalid"] > #urlbar-icons > .urlbar-icon:not(#go-button),
- #urlbar[pageproxystate="valid"] > #urlbar-icons > #go-button,
- #urlbar[pageproxystate="invalid"][focused="true"] > #urlbar-go-button ~ toolbarbutton,
- #urlbar[pageproxystate="valid"] > #urlbar-go-button,
- #urlbar:not([focused="true"]) > #urlbar-go-button {
-   visibility: collapse;
- }
- 
--#urlbar[pageproxystate="invalid"] > #identity-box > #identity-icon-labels {
--  visibility: collapse;
--}
--
--#urlbar[pageproxystate="invalid"] > #identity-box {
--  pointer-events: none;
--}
--
--#identity-icon-labels {
--  max-width: 18em;
--}
--
--#identity-icon-country-label {
--  direction: ltr;
--}
--
--#identity-box.verifiedIdentity > #identity-icon-labels > #identity-icon-label {
--  -moz-margin-end: 0.25em !important;
--}
--
- #wrapper-search-container > #search-container > #searchbar > .searchbar-textbox > .autocomplete-textbox-container > .textbox-input-box > html|*.textbox-input {
-   visibility: hidden;
- }
- 
- /* ::::: Unified Back-/Forward Button ::::: */
- #back-button > .toolbarbutton-menu-dropmarker,
- #forward-button > .toolbarbutton-menu-dropmarker {
-   display: none;
-@@ -380,26 +360,16 @@ window[chromehidden~="toolbar"] toolbar:
- #historySwipeAnimationCurrentPage {
-   background-image: -moz-element(#historySwipeAnimationCurrentPageSnapshot);
- }
- 
- #historySwipeAnimationNextPage {
-   background-image: -moz-element(#historySwipeAnimationNextPageSnapshot);
- }
- 
--/* Identity UI */
--#identity-popup-content-box.unknownIdentity > #identity-popup-connectedToLabel ,
--#identity-popup-content-box.unknownIdentity > #identity-popup-runByLabel ,
--#identity-popup-content-box.unknownIdentity > #identity-popup-content-host ,
--#identity-popup-content-box.unknownIdentity > #identity-popup-content-owner ,
--#identity-popup-content-box.verifiedIdentity > #identity-popup-connectedToLabel2 ,
--#identity-popup-content-box.verifiedDomain > #identity-popup-connectedToLabel2 {
--  display: none;
--}
--
- /*  Full Screen UI */
- 
- #fullscr-toggler {
-   height: 1px;
-   background: black;
- }
- 
- #full-screen-warning-container {
 diff --git a/browser/base/content/urlbarBindings.xml b/browser/base/content/urlbarBindings.xml
 --- a/browser/base/content/urlbarBindings.xml
 +++ b/browser/base/content/urlbarBindings.xml
-@@ -1117,264 +1117,72 @@
+@@ -1117,264 +1117,74 @@
        <method name="onDownloadEnded">
          <body><![CDATA[
            this.updateProgress();
@@ -247,11 +244,13 @@ diff --git a/browser/base/content/urlbarBindings.xml b/browser/base/content/urlb
 -      <xul:image class="popup-notification-icon"
 -                 xbl:inherits="popupid,src=icon"/>
 +    <content>
++    <!--
 +    // can we hard-code the iframe here
 +    // a xul iframe
 +    // set its type to content
 +    // in the constructor, load the framescript specifically for the iframe
 +    // so it's not a global framescript
++    -->
 +      <panel id="persona-container" anonid="persona-container" flex="1" />
 +    </content>
  
@@ -541,28 +540,28 @@ diff --git a/browser/base/content/urlbarBindings.xml b/browser/base/content/urlb
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -53,16 +53,17 @@ browser.jar:
-         content/browser/abouthealthreport/abouthealth.css     (content/abouthealthreport/abouthealth.css)
- #endif
+@@ -55,16 +55,17 @@ browser.jar:
          content/browser/aboutRobots-icon.png          (content/aboutRobots-icon.png)
          content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
          content/browser/aboutSocialError.xhtml        (content/aboutSocialError.xhtml)
  *       content/browser/browser.css                   (content/browser.css)
  *       content/browser/browser.js                    (content/browser.js)
  *       content/browser/browser.xul                   (content/browser.xul)
-+        content/browser/browser-identity.js           (content/browser-identity.js)
  *       content/browser/browser-tabPreviews.xml       (content/browser-tabPreviews.xml)
          content/browser/content.js                    (content/content.js)
++        content/browser/identity-framescript.js       (content/identity-framescript.js)
          content/browser/newtab/newTab.xul             (content/newtab/newTab.xul)
  *       content/browser/newtab/newTab.js              (content/newtab/newTab.js)
          content/browser/newtab/newTab.css             (content/newtab/newTab.css)
-         content/browser/newtab/preload.xhtml          (content/newtab/preload.xhtml)
  *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
          content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
+         content/browser/pageinfo/pageInfo.css         (content/pageinfo/pageInfo.css)
+         content/browser/pageinfo/pageInfo.xml         (content/pageinfo/pageInfo.xml)
+         content/browser/pageinfo/feeds.js             (content/pageinfo/feeds.js)
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
-@@ -1,238 +1,457 @@
+@@ -1,238 +1,454 @@
  /* This Source Code Form is subject to the terms of the Mozilla Public
   * License, v. 2.0. If a copy of the MPL was not distributed with this file,
   * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -583,7 +582,8 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +Cu.import('resource://gre/modules/identity/IdentityUtils.jsm');
  
  XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
-                                   "resource://gre/modules/identity/Identity.jsm");
+-                                  "resource://gre/modules/identity/Identity.jsm");
++  "resource://gre/modules/identity/IdentityService.jsm");
  
 -XPCOMUtils.defineLazyModuleGetter(this, "Logger",
 -                                  "resource://gre/modules/identity/LogUtils.jsm");
@@ -598,7 +598,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +// Do this if you want to repoint to a different service for testing.
 +//
 +// XXX add an observer to listen for changes
-+let kPersonaUri = "https://login.persona.org";
++let kPersonaUri = "https://firefoxos.persona.org";
 +try {
 +  kPersonaUri = Services.prefs.getCharPref("toolkit.identity.uri");
 +} catch(noSuchPref) {
@@ -606,13 +606,12 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  }
  
 -this.SignInToWebsiteUX = {
-+const PANEL_MIN_HEIGHT = 440;
-+const PANEL_MIN_WIDTH = 300;
++const kInteractivePersonaIframe = kPersonaUri + "/sign_in#NATIVE";
++const kHiddenPersonaIframe = kPersonaUri + "/communication_iframe";
  
 -  init: function SignInToWebsiteUX_init() {
-+/**
-+ * Ripped off from the resize watcher in base/content/browser-social.js
-+ */
++const PANEL_MIN_HEIGHT = 440;
++const PANEL_MIN_WIDTH = 300;
  
 -    /*
 -     * bug 793906 - temporarily disabling desktop UI so we can
@@ -623,6 +622,10 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 -    Services.obs.addObserver(this, "identity-auth-complete", false);
 -    Services.obs.addObserver(this, "identity-login-state-changed", false);
 -     */
++/**
++ * Ripped off from the resize watcher in base/content/browser-social.js
++ */
++
 +function sizePanelToContent(iframe) {
 +  // FIXME: bug 764787: Maybe we can use nsIDOMWindowUtils.getRootBounds() here?
 +  let doc = iframe.contentDocument;
@@ -703,16 +706,10 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +/**
 + * Return the chrome window and <browser> for the given outer window ID.
 + */
-+function getUIForWindowID(aWindowId) {
-+  let someWindow = Services.wm.getMostRecentWindow('navigator:browser');
-+  if (!someWindow) {
-+    logger.error("no window");
-+    return {};
-+  }
-+
-+  let windowUtils = someWindow.QueryInterface(Ci.nsIInterfaceRequestor)
-+                              .getInterface(Ci.nsIDOMWindowUtils);
-+  let content = windowUtils.getOuterWindowWithId(aWindowId);
++function getUIForWindowID(aWindowID) {
++  // XXX b2g and desktop have different kinds of window ids
++  let outerWindowID = aWindowID.split("-")[0];
++  let content = Services.wm.getOuterWindowWithId(outerWindowID);
 +
 +  if (content) {
 +    let browser = content.QueryInterface(Ci.nsIInterfaceRequestor)
@@ -819,8 +816,8 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +    // what view of the object is this giving us?
 +    // this is probably fine - that there's a frameloader per docshell
 +    let mm = aIframe.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader.messageManager;
-+    logger.log("injecting browser-identity.js shim");
-+    mm.loadFrameScript('chrome://browser/content/browser-identity.js', true);
++    logger.log("injecting identity framscript");
++    mm.loadFrameScript('chrome://browser/content/identity-framescript.js', true);
 +  }
 +};
 +
@@ -1985,7 +1982,7 @@ diff --git a/browser/modules/test/unit/head_identity.js b/browser/modules/test/u
 new file mode 100644
 --- /dev/null
 +++ b/browser/modules/test/unit/head_identity.js
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,110 @@
 +/* Any copyright is dedicated to the Public Domain.
 + * http://creativecommons.org/publicdomain/zero/1.0/ */
 +
@@ -2057,8 +2054,6 @@ new file mode 100644
 +function getHostFrame() {
 +  logger.log();
 +
-+  //let hwin = Cc["@mozilla.org/appshell/appShellService;1"]
-+  //             .getService(Ci.nsIAppShellService).hiddenDOMWindow;
 +  let hwin = Services.appShell.hiddenDOMWindow;
 +
 +  let doc = hwin.document;
@@ -2072,7 +2067,7 @@ new file mode 100644
 +  iframe.setAttribute('src', '');
 +
 +  let mm = iframe.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader.messageManager;
-+  mm.loadFrameScript('chrome://browser/content/browser-identity.js', true);
++  mm.loadFrameScript('chrome://browser/content/identity-framescript.js', true);
 +
 +  logger.log("returning iframe");
 +  return iframe;
@@ -2180,3 +2175,25 @@ new file mode 100644
 +
 +[test_SignInToWebsite.js]
 +
+diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
+--- a/dom/identity/nsDOMIdentity.js
++++ b/dom/identity/nsDOMIdentity.js
+@@ -611,17 +611,17 @@ nsDOMIdentityInternal.prototype = {
+     let util = aWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+                       .getInterface(Ci.nsIDOMWindowUtils);
+ 
+     // To avoid cross-process windowId collisions, use a uuid as an
+     // almost certainly unique identifier.
+     //
+     // XXX Bug 869182 - use a combination of child process id and
+     // innerwindow id to construct the unique id.
+-    this._id = uuidgen.generateUUID().toString();
++    this._id = util.outerWindowID + '-' + uuidgen.generateUUID().toString();
+     this._innerWindowID = util.currentInnerWindowID;
+ 
+     // nsDOMIdentity needs to know our _id, so this goes after
+     // its creation.
+     this._identity = new nsDOMIdentity(this);
+     this._identity._init(aWindow);
+ 
+     logger.log("init was called from", aWindow.document.location);
