@@ -1,6 +1,6 @@
 # HG changeset patch
-# Parent 13f2e0451c545968f5eea735ad03de8ff00151f8
-try: -b o -p macosx64,linux64,win32 -u none -t none
+# Parent 11cae0044cd0af33f5385dbfb1f65d96d0353750
+try: -b do -p all -u all -t none
 
 diff --git a/browser/base/content/browser-id-signIn.html b/browser/base/content/browser-id-signIn.html
 new file mode 100644
@@ -10,7 +10,7 @@ new file mode 100644
 +<html>
 +  <head>
 +    <title>Sign In</title>
-+    <link href="https://static.login.persona.org/v/09d200fa65/production/en/browserid.css" rel="stylesheet" type="text/css"/>
++    <link href="https://firefoxos.persona.org/production/en/browserid.css" rel="stylesheet" type="text/css"/>
 +    <style type="text/css">
 +      .hidden {display: none;}
 +    </style>
@@ -159,29 +159,13 @@ new file mode 100644
 +    </script>
 +  </body>
 +</html>
-diff --git a/browser/base/content/browser-identity.js b/browser/base/content/browser-identity.js
---- a/browser/base/content/browser-identity.js
-+++ b/browser/base/content/browser-identity.js
-@@ -16,48 +16,89 @@ XPCOMUtils.defineLazyGetter(this, "logge
-   Cu.import('resource://gre/modules/identity/LogUtils.jsm');
-   return getLogger("Identity", "toolkit.identity.debug");
- });
- 
- function IdentityShim() {
+diff --git a/browser/base/content/identity-framescript.js b/browser/base/content/identity-framescript.js
+--- a/browser/base/content/identity-framescript.js
++++ b/browser/base/content/identity-framescript.js
+@@ -21,45 +21,75 @@ function IdentityShim() {
    this.isLoaded = false;
  }
  
-+function parseResult(val) {
-+  if (typeof val === 'string') {
-+    try {
-+      return JSON.parse(val);
-+    } catch (err) {
-+      return {error: "Bad return value: " + err}
-+    }
-+  }
-+  return val;
-+}
-+
  IdentityShim.prototype = {
    init: function IdentityShim_init() {
      addMessageListener('identity-delegate-watch', this);
@@ -246,81 +230,21 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +      case 'identity-delegate-createAccount':
 +        this.createAccount(options);
 +        break;
-+  
++
        default:
-         //logger.error("received unexpected message:", aMessage.name);
+-        //logger.error("received unexpected message:", aMessage.name);
++        logger.error("received unexpected message:", aMessage.name);
          break;
      }
    },
  
    _identityDoMethod: function IdentityShim__identityDoMethod(message) {
      sendAsyncMessage('identity-service-doMethod', message);
-@@ -66,69 +107,174 @@ IdentityShim.prototype = {
-   _close: function IdentityShim__close() {
-     this.uninit();
    },
  
-   watch: function IdentityShim_watch(options) {
-     logger.log('doInternalWatch: isLoaded:', this.isLoaded, 'options:', options);
-     if (options) {
+@@ -116,19 +146,127 @@ IdentityShim.prototype = {
        let BrowserID = content.wrappedJSObject.BrowserID;
--      let callback = function(aParams, aInternalParams) {
-+      let callback = function shim_watchCallback(aParams, aInternalParams) {
-         this._identityDoMethod(aParams);
-         if (aParams.method === 'ready') {
-           this._close();
-         }
-       }.bind(this);
- 
-       BrowserID.internal.watch(
-         callback,
-         JSON.stringify(options),
-         function(...things) {
--          logger.log('internal watch returned:', things);
-+          logger.log('BrowserID internal watch:', things);
-         }
-       );
-     }
-   },
- 
-   request: function IdentityShim_request(options) {
-     logger.log('doInternalRequest: isLoaded:', this.isLoaded, 'options:', options);
-     if (options) {
--      var stringifiedOptions = JSON.stringify(options);
--      let callback = function(assertion, internalParams) {
-+      let stringifiedOptions = JSON.stringify(options);
-+      let callback = function shim_requestCallback(assertion, internalParams) {
-         internalParams = internalParams || {};
--        if (assertion) {
--          logger.log("got assertion");
--          this._identityDoMethod({
--            method: 'login',
--            assertion: assertion,
--            _internal: options._internal,
--            _internalParams: internalParams});
--        }
-+        this._identityDoMethod({
-+          method: 'login',
-+          assertion: assertion,
-+          _internal: options._internal,
-+          _internalParams: internalParams});
-         this._close();
-       }.bind(this);
- 
-       content.wrappedJSObject.BrowserID.internal.get(
-         options.origin,
-         callback,
-         stringifiedOptions
-       );
-     }
-   },
- 
-   logout: function IdentityShim_logout(options) {
-     logger.log('doInternalLogout: isLoaded:', this.isLoaded, 'options:', options);
-     if (options) {
-       let BrowserID = content.wrappedJSObject.BrowserID;
--      let callback = function() {
-+      let callback = function shim_logoutCallback() {
+       let callback = function() {
          this._identityDoMethod({method: 'logout', _internal: options._internal});
          this._close();
        }.bind(this);
@@ -437,85 +361,79 @@ diff --git a/browser/base/content/browser-identity.js b/browser/base/content/bro
 +    BrowserID.internal.createAccount(stringifiedOptions, callback);
    }
  };
- 
+-
++ 
  this.shim = null;
  
+ // XXX wha?  why both events
+ // dump out these events - should just be on 'load'
  addEventListener('DOMContentLoaded', function(e) {
    content.addEventListener('load', function(e) {
      logger.log('content loaded');
-@@ -138,9 +284,8 @@ addEventListener('DOMContentLoaded', fun
- });
- 
- content.addEventListener('beforeunload', function(e) {
-   if (this.shim) {
-     this.shim.uninit();
-   }
- });
- 
--
-diff --git a/browser/base/jar.mn b/browser/base/jar.mn
---- a/browser/base/jar.mn
-+++ b/browser/base/jar.mn
-@@ -54,16 +54,17 @@ browser.jar:
- #endif
-         content/browser/aboutRobots-icon.png          (content/aboutRobots-icon.png)
-         content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
-         content/browser/aboutSocialError.xhtml        (content/aboutSocialError.xhtml)
- *       content/browser/browser.css                   (content/browser.css)
- *       content/browser/browser.js                    (content/browser.js)
- *       content/browser/browser.xul                   (content/browser.xul)
-         content/browser/browser-identity.js           (content/browser-identity.js)
-+        content/browser/browser-id-signIn.html        (content/browser-id-signIn.html)
- *       content/browser/browser-tabPreviews.xml       (content/browser-tabPreviews.xml)
-         content/browser/content.js                    (content/content.js)
-         content/browser/newtab/newTab.xul             (content/newtab/newTab.xul)
- *       content/browser/newtab/newTab.js              (content/newtab/newTab.js)
-         content/browser/newtab/newTab.css             (content/newtab/newTab.css)
-         content/browser/newtab/preload.xhtml          (content/newtab/preload.xhtml)
- *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
-         content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
+     this.shim = new IdentityShim();
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
-@@ -11,16 +11,19 @@ const Ci = Components.interfaces;
- const Cu = Components.utils;
+@@ -111,17 +111,26 @@ ResizeWatcher.prototype = {
+   }
+ };
  
- Cu.import('resource://gre/modules/Services.jsm');
- Cu.import('resource://gre/modules/XPCOMUtils.jsm');
- Cu.import('resource://gre/modules/identity/IdentityUtils.jsm');
+ /**
+  * Return the chrome window and <browser> for the given outer window ID.
+  */
+ function getUIForWindowID(aWindowID) {
+   // XXX b2g and desktop have different kinds of window ids
+-  let outerWindowID = aWindowID.split("-")[0];
++  logger.log("calling with aWindowID=", aWindowID);
++  let outerWindowID;
++  // XXX super atrocious hack for the moment
++  if (typeof aWindowID === 'number') {
++    // it's just a window id
++    outerWindowID = aWindowID;
++  } else {
++    // it's id-uuid
++    outerWindowID = parseInt(aWindowID.split("-")[0], 10);
++  }
+   let content = Services.wm.getOuterWindowWithId(outerWindowID);
  
- const kInteractivePersonaIframe = 'https://picl.personatest.org/sign_in#NATIVE';
- const kHiddenPersonaIframe = 'https://picl.personatest.org/communication_iframe';
-+//const kIdentityScreen = 'http://127.0.0.1:10002/sign_in#NATIVE';
-+//const kIdentityFrame = 'http://127.0.0.1:10002/communication_iframe';
-+const kIdentityShim = 'chrome://browser/content/browser-identity.js';
+   if (content) {
+     let browser = content.QueryInterface(Ci.nsIInterfaceRequestor)
+                          .getInterface(Ci.nsIWebNavigation)
+                          .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
+     let chromeWin = browser.ownerDocument.defaultView;
  
- const PANEL_MIN_HEIGHT = 440;
- const PANEL_MIN_WIDTH = 300;
+@@ -257,27 +266,30 @@ Pipe.prototype = {
+     Services.obs.notifyObservers(subject, 'identity-delegate-ui-close', null);
  
- XPCOMUtils.defineLazyModuleGetter(this, 'IdentityService',
-                                   'resource://gre/modules/identity/IdentityService.jsm');
- 
- XPCOMUtils.defineLazyGetter(this, "logger", function() {
-@@ -179,16 +182,17 @@ HostFrame.prototype = {
- 
-   cleanUp: function HostFrame_cleanUp() {
-     if (this._resizeWatcher) {
-       this._resizeWatcher.stop();
+     if (typeof this.options.onComplete === 'function') {
+       this.options.onComplete();
      }
    },
  
-   _createIframe: function HostFrame_createIframe(aOptions) {
-+    logger.log("options:", aOptions);
-     let hiddenDoc = Services.appShell.hiddenDOMWindow.document;
-     this._iframe = hiddenDoc.createElementNS('http://www.w3.org/1999/xhtml', 'iframe');
+   _delegateLoaded: function pipe__delegateLoaded() {
++    logger.log("controller heard delegate loaded; sending", this.options.message);
+     this.mm.sendAsyncMessage(this.options.message, this.options.rpOptions);
+     // XXX maybe here ??
+     //this.resizer = new ResizeWatcher(); etc.
+   },
  
-     this._iframe.setAttribute('mozbrowser', true);
-     this._iframe.setAttribute('mozframetype', 'content');
-     this._iframe.setAttribute('type', 'content');
-     this._iframe.setAttribute('remote', true);
-     this._iframe.setAttribute('id', 'persona-host-frame');
-@@ -303,23 +307,35 @@ Pipe.prototype = {
+   _delegateComplete: function pipe__delegateComplete() {
++    logger.log("controller heard delegate complete");
+     this._close();
+   },
+ 
+   _serviceDoMethod: function pipe__doMethod(aMethodOptions) {
+     let message = aMethodOptions.json;
++    logger.log("controller heard service do method:", message);
+     if (typeof message === 'string') {
+       try {
+         message = JSON.parse(message);
+       } catch (err) {
+         logger.error('Bad json message: ' + message);
+         return;
+       }
+     }
+@@ -306,27 +318,40 @@ Pipe.prototype = {
  this.SignInToWebsiteUX = {
    init: function SignInToWebsiteUX_init(pipeConstructor) {
      this.PipeConstructor = pipeConstructor || Pipe;
@@ -547,30 +465,16 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
  
    observe: function SignInToWebsiteUX_observe(aSubject, aTopic, aData) {
      logger.log('controller observed:', aTopic);
++    logger.log('message data:', aData);
      // XXX need to detect page unload of any of our flows
      // XXX we get strings from xul, and objects from elsewhere
      let rpOptions = {};
      if (aSubject) {
-@@ -330,17 +346,17 @@ this.SignInToWebsiteUX = {
-       }
-     }
-     if (!rpOptions.id) {
-       logger.error('Got a message with no RP id');
-       return;
-     }
- 
-     let rpId = rpOptions.id;
--    let UI = getUIForWindowID(rpId);
-+    //let UI = getUIForWindowID(rpId);
- 
-     let options = {
-       id: rpOptions.id,
-       rpOptions: rpOptions
-     };
- 
-     switch (aTopic) {
-       case 'identity-controller-watch':
-@@ -350,16 +366,36 @@ this.SignInToWebsiteUX = {
+       if (aSubject.wrappedJSObject) {
+         rpOptions = aSubject.wrappedJSObject;
+       } else {
+         rpOptions = {id: aSubject.QueryInterface(Ci.nsISupportsString).data};
+@@ -353,16 +378,36 @@ this.SignInToWebsiteUX = {
        case 'identity-controller-request':
          this.doRequest(options);
          break;
@@ -602,12 +506,12 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
        default:
          logger.error('SignInToWebsiteUX', 'Unknown observer notification:', aTopic);
          break;
-     }
-   },
- 
+      }
+    },
+  
    serviceDoMethod: function SignInToWebsiteUX_doMethod(aMessage, aId) {
      logger.log('serviceDoMethod received:', aMessage);
-@@ -379,16 +415,36 @@ this.SignInToWebsiteUX = {
+@@ -382,16 +427,36 @@ this.SignInToWebsiteUX = {
        case 'logout':
          IdentityService.doLogout(aId);
          break;
@@ -641,10 +545,10 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
          break;
      }
    },
- 
+  
    cleanUp: function SignInToWebsiteUX_cleanUp(aId) {
      let context = this.contexts[aId];
-@@ -442,10 +498,47 @@ this.SignInToWebsiteUX = {
+@@ -445,10 +510,47 @@ this.SignInToWebsiteUX = {
    },
  
    doLogout: function SignInToWebsiteUX_doLogout(aOptions) {
@@ -693,3 +597,35 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +    this.delegate(aOptions);
 +  },
  };
+diff --git a/dom/identity/tests/head_identity.js b/dom/identity/tests/head_identity.js
+--- a/dom/identity/tests/head_identity.js
++++ b/dom/identity/tests/head_identity.js
+@@ -38,16 +38,28 @@ function RequestListener() {
+   Services.obs.addObserver(this, "http-on-modify-request", false);
+   logger.log("Listening for http-on-modify-request");
+ }
+ 
+ RequestListener.prototype = {
+   observe: function observe(aSubject, aTopic, aData) {
+     if (aTopic === "http-on-modify-request") {
+       logger.log("SpecialPowers.wrap(", aSubject, ").QueryInterface(Ci.nsIHttpChannel);");
++      // XXX [jedp] this blows up in the b2g test when pushing to try
++      // Error is:
++      //
++      // 15:51:04 INFO - 25778 ERROR TEST-UNEXPECTED-FAIL 
++      // | /tests/dom/identity/tests/test_rp.html 
++      // | uncaught exception - NS_ERROR_NOT_IMPLEMENTED: 
++      //   Component returned failure code: 0x80004001 (NS_ERROR_NOT_IMPLEMENTED) 
++      //   [nsIObserverService.addObserver] at chrome://specialpowers/content/specialpowersAPI.js:83
++      //
++      // XXX need to figure out if this is expected to behave differently on
++      // b2g, in which case the test needs to be rewritten or excluded from b2g
++      // builds.
+       let channel = SpecialPowers.wrap(aSubject).QueryInterface(Ci.nsIHttpChannel);
+       let ioservice = Cc["@mozilla.org/network/io-service;1"]
+                         .getService(Ci.nsIIOService);
+       let src = channel.URI.spec;
+       let target = null;
+       if (src.match(/include.js/)) target = MOCK_INCLUDEJS;
+       if (src.match(/communication_iframe/)) target = MOCK_IFRAME;
+       if (src.match(/sign_in/)) target = MOCK_DIALOG;
