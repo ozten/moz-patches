@@ -4,7 +4,77 @@
 diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 --- a/dom/media/PeerConnection.js
 +++ b/dom/media/PeerConnection.js
-@@ -637,16 +637,26 @@ RTCPeerConnection.prototype = {
+@@ -235,16 +235,18 @@ function RTCPeerConnection() {
+   this._observer = null;
+   this._closed = false;
+ 
+   this._onCreateOfferSuccess = null;
+   this._onCreateOfferFailure = null;
+   this._onCreateAnswerSuccess = null;
+   this._onCreateAnswerFailure = null;
+ 
++  this._onidentityresult = null;
++
+   this._pendingType = null;
+   this._localType = null;
+   this._remoteType = null;
+ 
+   /**
+    * Everytime we get a request from content, we put it in the queue. If
+    * there are no pending operations though, we will execute it immediately.
+    * In PeerConnectionObserver, whenever we are notified that an operation
+@@ -286,16 +288,17 @@ RTCPeerConnection.prototype = {
+     this.makeGetterSetterEH("onicecandidate");
+     this.makeGetterSetterEH("onnegotiationneeded");
+     this.makeGetterSetterEH("onsignalingstatechange");
+     this.makeGetterSetterEH("onremovestream");
+     this.makeGetterSetterEH("ondatachannel");
+     this.makeGetterSetterEH("onconnection");
+     this.makeGetterSetterEH("onclosedconnection");
+     this.makeGetterSetterEH("oniceconnectionstatechange");
++    this.makeGetterSetterEH("onidentityresult");
+ 
+     this._pc = Cc["@mozilla.org/peerconnection;1"].
+              createInstance(Ci.IPeerConnection);
+     this._observer = new PeerConnectionObserver(this);
+     this._winID = this._win.QueryInterface(Ci.nsIInterfaceRequestor)
+                            .getInterface(Ci.nsIDOMWindowUtils).currentInnerWindowID;
+ 
+     // Add a reference to the PeerConnection to global list (before init).
+@@ -529,27 +532,32 @@ RTCPeerConnection.prototype = {
+     Object.defineProperty(this, name,
+                           {
+                             get:function()  { return this.getEH(name); },
+                             set:function(h) { return this.setEH(name, h); }
+                           });
+   },
+ 
+   get onicechange()       { return this._onicechange; },
++  get onidentityresult()       { return this._onidentityresult; },
+   get ongatheringchange() { return this._ongatheringchange; },
+ 
+   set onicechange(cb) {
+     this.deprecated("onicechange");
+     this._onicechange = cb;
+   },
+   set ongatheringchange(cb) {
+     this.deprecated("ongatheringchange");
+     this._ongatheringchange = cb;
+   },
+ 
++  set onidentityresult(cb) {
++    this._onidentityresult = cb;
++  },
++
+   deprecated: function(name) {
+     this.reportWarning(name + " is deprecated!", null, 0);
+   },
+ 
+   createOffer: function(onSuccess, onError, constraints) {
+     if (!constraints) {
+       constraints = {};
+     }
+@@ -637,16 +645,30 @@ RTCPeerConnection.prototype = {
      this._queueOrRun({
        func: this._getPC().setLocalDescription,
        args: [type, desc.sdp],
@@ -14,13 +84,17 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
    },
  
 +  setIdentityProvider: function(provider, protocol, username) {
-+    this.reportWarning('setIdentityProvider not yet implemented.', null, 0);
++    this.reportWarning('setIdentityProvider is not yet implemented.', null, 0);
 +
 +    // this._queueOrRun({
 +    //   func: this._getPC().setIdentityProvider,
 +    //   args: [provider, protocol, username],
 +    //   wait: true
 +    // });
++  },
++
++  getIdentityAssertion: function() {
++    this.reportWarning('getIdentityAssertion is not yet implemented.', null, 0);
 +  },
 +
    setRemoteDescription: function(desc, onSuccess, onError) {
@@ -43,7 +117,7 @@ diff --git a/dom/media/bridge/IPeerConnection.idl b/dom/media/bridge/IPeerConnec
    /* JSEP calls */
    [implicit_jscontext] void createOffer(in jsval constraints);
    [implicit_jscontext] void createAnswer(in jsval constraints);
-+  void setIdentityProvider(in string provider, [optional] in string protocol, [optional] in string username);
++  // void setIdentityProvider(in string provider, [optional] in string protocol, [optional] in string username);
    void setLocalDescription(in long action, in string sdp);
    void setRemoteDescription(in long action, in string sdp);
  
@@ -55,7 +129,7 @@ diff --git a/dom/media/bridge/IPeerConnection.idl b/dom/media/bridge/IPeerConnec
 diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.webidl
 --- a/dom/webidl/RTCPeerConnection.webidl
 +++ b/dom/webidl/RTCPeerConnection.webidl
-@@ -57,16 +57,19 @@ interface mozRTCPeerConnection : EventTa
+@@ -57,16 +57,20 @@ interface mozRTCPeerConnection : EventTa
                      RTCPeerConnectionErrorCallback? failureCallback, // for apprtc
                      optional object? constraints);
    void createAnswer (RTCSessionDescriptionCallback successCallback,
@@ -67,6 +141,7 @@ diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.
 +  void setIdentityProvider (DOMString provider,
 +                            optional DOMString protocol,
 +                            optional DOMString username);
++  void getIdentityAssertion ();
    void setRemoteDescription (mozRTCSessionDescription description,
                               optional VoidFunction successCallback,
                               optional RTCPeerConnectionErrorCallback failureCallback);
@@ -75,10 +150,29 @@ diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.
    readonly attribute RTCSignalingState signalingState;
    void updateIce (optional RTCConfiguration configuration,
                    optional object? constraints);
+@@ -82,16 +86,17 @@ interface mozRTCPeerConnection : EventTa
+   void removeStream (MediaStream stream);
+   void close ();
+   attribute EventHandler onnegotiationneeded;
+   attribute EventHandler onicecandidate;
+   attribute EventHandler onsignalingstatechange;
+   attribute EventHandler onaddstream;
+   attribute EventHandler onremovestream;
+   attribute EventHandler oniceconnectionstatechange;
++  attribute EventHandler onidentityresult;
+ };
+ 
+ // Mozilla extensions.
+ partial interface mozRTCPeerConnection {
+   // Deprecated callbacks (use causes warning)
+   attribute RTCPeerConnectionErrorCallback onicechange;
+   attribute RTCPeerConnectionErrorCallback ongatheringchange;
+ 
 diff --git a/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp b/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp
 --- a/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp
 +++ b/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp
-@@ -943,16 +943,24 @@ PeerConnectionImpl::ConvertConstraints(
+@@ -942,16 +942,24 @@ PeerConnectionImpl::ConvertConstraints(
+         NS_ConvertUTF16toUTF8 stringVal(JS_GetStringCharsZ(aCx, optionNameString));
          aObj->setBooleanConstraint(stringVal.get(), JSVAL_TO_BOOLEAN(option), false);
        }
      }
@@ -86,15 +180,15 @@ diff --git a/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp b/
    return NS_OK;
  }
  
++// NS_IMETHODIMP
++// PeerConnectionImpl::SetIdentityProvider(const char* provider, const char* protocol, const char* username)
++// {
++//   PC_AUTO_ENTER_API_CALL(true);
++
++//   return NS_OK;
++// }
++
  NS_IMETHODIMP
-+PeerConnectionImpl::SetIdentityProvider(const char* provider, const char* protocol, const char* username)
-+{
-+  PC_AUTO_ENTER_API_CALL(true);
-+
-+  return NS_OK;
-+}
-+
-+NS_IMETHODIMP
  PeerConnectionImpl::CreateOffer(const JS::Value& aConstraints, JSContext* aCx)
  {
    PC_AUTO_ENTER_API_CALL(true);
@@ -102,4 +196,3 @@ diff --git a/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp b/
    MediaConstraints cs;
    nsresult rv = ConvertConstraints(aConstraints, &cs, aCx);
    if (rv != NS_OK) {
-     return rv;
