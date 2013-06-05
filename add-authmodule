@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 57d30169ddd474792585b967f79d3e8a3202178c
+# Parent f25e17e3992d096e0c377346b133cc4e81746092
 
 diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 --- a/dom/media/PeerConnection.js
@@ -18,12 +18,12 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
    this._pendingType = null;
    this._localType = null;
    this._remoteType = null;
+   this._peerIdentity = {};
  
    /**
     * Everytime we get a request from content, we put it in the queue. If
     * there are no pending operations though, we will execute it immediately.
-    * In PeerConnectionObserver, whenever we are notified that an operation
-@@ -286,16 +288,17 @@ RTCPeerConnection.prototype = {
+@@ -287,16 +289,17 @@ RTCPeerConnection.prototype = {
      this.makeGetterSetterEH("onicecandidate");
      this.makeGetterSetterEH("onnegotiationneeded");
      this.makeGetterSetterEH("onsignalingstatechange");
@@ -41,7 +41,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
                             .getInterface(Ci.nsIDOMWindowUtils).currentInnerWindowID;
  
      // Add a reference to the PeerConnection to global list (before init).
-@@ -529,27 +532,32 @@ RTCPeerConnection.prototype = {
+@@ -530,27 +533,32 @@ RTCPeerConnection.prototype = {
      Object.defineProperty(this, name,
                            {
                              get:function()  { return this.getEH(name); },
@@ -74,7 +74,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      if (!constraints) {
        constraints = {};
      }
-@@ -637,16 +645,29 @@ RTCPeerConnection.prototype = {
+@@ -638,16 +646,29 @@ RTCPeerConnection.prototype = {
      this._queueOrRun({
        func: this._getPC().setLocalDescription,
        args: [type, desc.sdp],
@@ -165,8 +165,8 @@ diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.
    void close ();
    attribute EventHandler onnegotiationneeded;
    attribute EventHandler onicecandidate;
-@@ -101,9 +112,10 @@ partial interface mozRTCPeerConnection {
-   readonly attribute DOMString readyState;
+@@ -103,9 +114,10 @@ partial interface mozRTCPeerConnection {
+   readonly attribute RTCIdentityAssertion peerIdentity;
  
    // Data channel.
    RTCDataChannel createDataChannel (DOMString label,
