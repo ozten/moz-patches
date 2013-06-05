@@ -74,7 +74,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      if (!constraints) {
        constraints = {};
      }
-@@ -637,16 +645,30 @@ RTCPeerConnection.prototype = {
+@@ -637,16 +645,29 @@ RTCPeerConnection.prototype = {
      this._queueOrRun({
        func: this._getPC().setLocalDescription,
        args: [type, desc.sdp],
@@ -85,16 +85,15 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
  
 +  setIdentityProvider: function(provider, protocol, username) {
 +    this.reportWarning('setIdentityProvider is not yet implemented.', null, 0);
-+
-+    // this._queueOrRun({
-+    //   func: this._getPC().setIdentityProvider,
-+    //   args: [provider, protocol, username],
-+    //   wait: true
-+    // });
 +  },
 +
 +  getIdentityAssertion: function() {
-+    this.reportWarning('getIdentityAssertion is not yet implemented.', null, 0);
++    if(this.signalingState == "closed") {
++      this.reportError('getIdentityAssertion failed. signalingState is closed.', null, 0);
++    }
++    else {
++      this.reportWarning('getIdentityAssertion is not yet implemented.', null, 0);
++    }
 +  },
 +
    setRemoteDescription: function(desc, onSuccess, onError) {
@@ -105,31 +104,32 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this._onSetRemoteDescriptionFailure = onError;
  
      let type;
-diff --git a/dom/media/bridge/IPeerConnection.idl b/dom/media/bridge/IPeerConnection.idl
---- a/dom/media/bridge/IPeerConnection.idl
-+++ b/dom/media/bridge/IPeerConnection.idl
-@@ -112,16 +112,17 @@ interface IPeerConnection : nsISupports
-   /* Must be called first. Observer events will be dispatched on the thread provided */
-   [implicit_jscontext] void initialize(in IPeerConnectionObserver observer, in nsIDOMWindow window,
-                   [optional] in jsval iceServers,
-                   [optional] in nsIThread thread);
- 
-   /* JSEP calls */
-   [implicit_jscontext] void createOffer(in jsval constraints);
-   [implicit_jscontext] void createAnswer(in jsval constraints);
-+  // void setIdentityProvider(in string provider, [optional] in string protocol, [optional] in string username);
-   void setLocalDescription(in long action, in string sdp);
-   void setRemoteDescription(in long action, in string sdp);
- 
-   /* Adds the stream created by GetUserMedia */
-   void addStream(in nsIDOMMediaStream stream);
-   void removeStream(in nsIDOMMediaStream stream);
-   void closeStreams();
- 
 diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.webidl
 --- a/dom/webidl/RTCPeerConnection.webidl
 +++ b/dom/webidl/RTCPeerConnection.webidl
-@@ -57,16 +57,20 @@ interface mozRTCPeerConnection : EventTa
+@@ -40,16 +40,21 @@ dictionary RTCDataChannelInit {
+   boolean outOfOrderAllowed;
+   unsigned short maxRetransmitTime;
+   unsigned short maxRetransmitNum;
+   DOMString protocol;
+   boolean preset;
+   unsigned short stream;
+ };
+ 
++dictionary RTCIdentityAssertion {
++  DOMString idp;
++  DOMString name;
++};
++
+ interface RTCDataChannel;
+ 
+ [Pref="media.peerconnection.enabled",
+  JSImplementation="@mozilla.org/dom/peerconnection;1",
+  Constructor (optional RTCConfiguration configuration,
+               optional object? constraints)]
+ // moz-prefixed until sufficiently standardized.
+ interface mozRTCPeerConnection : EventTarget  {
+@@ -57,29 +62,35 @@ interface mozRTCPeerConnection : EventTa
                      RTCPeerConnectionErrorCallback? failureCallback, // for apprtc
                      optional object? constraints);
    void createAnswer (RTCSessionDescriptionCallback successCallback,
@@ -148,26 +148,34 @@ diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.
    readonly attribute mozRTCSessionDescription? localDescription;
    readonly attribute mozRTCSessionDescription? remoteDescription;
    readonly attribute RTCSignalingState signalingState;
++
    void updateIce (optional RTCConfiguration configuration,
                    optional object? constraints);
-@@ -82,16 +86,17 @@ interface mozRTCPeerConnection : EventTa
+   void addIceCandidate (mozRTCIceCandidate candidate,
+                         optional VoidFunction successCallback,
+                         optional RTCPeerConnectionErrorCallback failureCallback);
+   readonly attribute RTCIceGatheringState iceGatheringState;
+   readonly attribute RTCIceConnectionState iceConnectionState;
++
+   sequence<MediaStream> getLocalStreams ();
+   sequence<MediaStream> getRemoteStreams ();
+   MediaStream? getStreamById (DOMString streamId);
+   void addStream (MediaStream stream, optional object? constraints);
    void removeStream (MediaStream stream);
    void close ();
    attribute EventHandler onnegotiationneeded;
    attribute EventHandler onicecandidate;
-   attribute EventHandler onsignalingstatechange;
-   attribute EventHandler onaddstream;
-   attribute EventHandler onremovestream;
-   attribute EventHandler oniceconnectionstatechange;
+@@ -101,9 +112,10 @@ partial interface mozRTCPeerConnection {
+   readonly attribute DOMString readyState;
+ 
+   // Data channel.
+   RTCDataChannel createDataChannel (DOMString label,
+                                     optional RTCDataChannelInit dataChannelDict);
+   attribute EventHandler ondatachannel;
+   attribute EventHandler onconnection;
+   attribute EventHandler onclosedconnection;
 +  attribute EventHandler onidentityresult;
  };
- 
- // Mozilla extensions.
- partial interface mozRTCPeerConnection {
-   // Deprecated callbacks (use causes warning)
-   attribute RTCPeerConnectionErrorCallback onicechange;
-   attribute RTCPeerConnectionErrorCallback ongatheringchange;
- 
 diff --git a/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp b/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp
 --- a/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp
 +++ b/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp
