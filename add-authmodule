@@ -4,7 +4,7 @@
 diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 --- a/dom/media/PeerConnection.js
 +++ b/dom/media/PeerConnection.js
-@@ -239,16 +239,19 @@ function RTCPeerConnection() {
+@@ -239,16 +239,18 @@ function RTCPeerConnection() {
    this._onCreateOfferFailure = null;
    this._onCreateAnswerSuccess = null;
    this._onCreateAnswerFailure = null;
@@ -13,7 +13,6 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
    this._localType = null;
    this._remoteType = null;
  
-+  this._onidentityresult = null;
 +  this._peerIdentity = {};
 +
    /**
@@ -24,7 +23,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
     * if neccesary. The _pending flag indicates whether an operation is currently
     * in progress.
     */
-@@ -286,16 +289,17 @@ RTCPeerConnection.prototype = {
+@@ -286,16 +288,17 @@ RTCPeerConnection.prototype = {
      this.makeGetterSetterEH("onicecandidate");
      this.makeGetterSetterEH("onnegotiationneeded");
      this.makeGetterSetterEH("onsignalingstatechange");
@@ -42,40 +41,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
                             .getInterface(Ci.nsIDOMWindowUtils).currentInnerWindowID;
  
      // Add a reference to the PeerConnection to global list (before init).
-@@ -529,27 +533,32 @@ RTCPeerConnection.prototype = {
-     Object.defineProperty(this, name,
-                           {
-                             get:function()  { return this.getEH(name); },
-                             set:function(h) { return this.setEH(name, h); }
-                           });
-   },
- 
-   get onicechange()       { return this._onicechange; },
-+  get onidentityresult()       { return this._onidentityresult; },
-   get ongatheringchange() { return this._ongatheringchange; },
- 
-   set onicechange(cb) {
-     this.deprecated("onicechange");
-     this._onicechange = cb;
-   },
-   set ongatheringchange(cb) {
-     this.deprecated("ongatheringchange");
-     this._ongatheringchange = cb;
-   },
- 
-+  set onidentityresult(cb) {
-+    this._onidentityresult = cb;
-+  },
-+
-   deprecated: function(name) {
-     this.reportWarning(name + " is deprecated!", null, 0);
-   },
- 
-   createOffer: function(onSuccess, onError, constraints) {
-     if (!constraints) {
-       constraints = {};
-     }
-@@ -637,16 +646,29 @@ RTCPeerConnection.prototype = {
+@@ -637,16 +640,38 @@ RTCPeerConnection.prototype = {
      this._queueOrRun({
        func: this._getPC().setLocalDescription,
        args: [type, desc.sdp],
@@ -85,15 +51,24 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
    },
  
 +  setIdentityProvider: function(provider, protocol, username) {
-+    this.reportWarning('setIdentityProvider is not yet implemented.', null, 0);
++    if(this.signalingState == "closed") {
++      this.reportError('setIdentityProvider failed. signalingState is closed.', null, 0);
++    }
++    else {
++      this.reportWarning('setIdentityProvider is not yet implemented.', null, 0);
++    }
 +  },
 +
-+  getIdentityAssertion: function() {
++  getIdentityAssertion: function(funky) {
 +    if(this.signalingState == "closed") {
 +      this.reportError('getIdentityAssertion failed. signalingState is closed.', null, 0);
 +    }
 +    else {
 +      this.reportWarning('getIdentityAssertion is not yet implemented.', null, 0);
++      //get an identity and call the callback
++      this._peerIdentity = { idp: 'testidp', name: 'testname'};
++      //TODO: check if this function exists
++      this._observer.notifyIdentityResult(this._peerIdentity);
 +    }
 +  },
 +
@@ -105,7 +80,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this._onSetRemoteDescriptionFailure = onError;
  
      let type;
-@@ -740,16 +762,20 @@ RTCPeerConnection.prototype = {
+@@ -740,16 +765,20 @@ RTCPeerConnection.prototype = {
      this.deprecated("localStreams");
      return this.getLocalStreams();
    },
@@ -126,6 +101,26 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      }
      return new this._win.mozRTCSessionDescription({ type: this._localType,
                                                      sdp: sdp });
+@@ -1047,15 +1076,19 @@ PeerConnectionObserver.prototype = {
+   },
+ 
+   notifyConnection: function() {
+     this.dispatchEvent(new this._dompc._win.Event("connection"));
+   },
+ 
+   notifyClosedConnection: function() {
+     this.dispatchEvent(new this._dompc._win.Event("closedconnection"));
++  },
++
++  notifyIdentityResult: function(result) {
++    this.dispatchEvent(new this._dompc._win.Event('identityresult', { assertion: result }));
+   }
+ };
+ 
+ this.NSGetFactory = XPCOMUtils.generateNSGetFactory(
+   [GlobalPCList, RTCIceCandidate, RTCSessionDescription, RTCPeerConnection,
+    RTCPeerConnectionIceEvent, MediaStreamEvent, RTCDataChannelEvent]
+ );
 diff --git a/dom/media/PeerConnection.manifest b/dom/media/PeerConnection.manifest
 --- a/dom/media/PeerConnection.manifest
 +++ b/dom/media/PeerConnection.manifest
@@ -167,7 +162,25 @@ new file mode 100644
 diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.webidl
 --- a/dom/webidl/RTCPeerConnection.webidl
 +++ b/dom/webidl/RTCPeerConnection.webidl
-@@ -32,28 +32,22 @@ enum RTCIceConnectionState {
+@@ -4,16 +4,17 @@
+  * You can obtain one at http://mozilla.org/MPL/2.0/.
+  *
+  * The origin of this IDL file is
+  * http://dev.w3.org/2011/webrtc/editor/webrtc.html#idl-def-RTCPeerConnection
+  */
+ 
+ callback RTCSessionDescriptionCallback = void (mozRTCSessionDescription sdp);
+ callback RTCPeerConnectionErrorCallback = void (DOMString errorInformation);
++callback RTCIdentityResultCallback = void (RTCIdentityAssertion result);
+ callback VoidFunction = void ();
+ 
+ enum RTCSignalingState {
+     "stable",
+     "have-local-offer",
+     "have-remote-offer",
+     "have-local-pranswer",
+     "have-remote-pranswer",
+@@ -32,28 +33,22 @@ enum RTCIceConnectionState {
      "connected",
      "completed",
      "failed",
@@ -202,7 +215,7 @@ diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.
   JSImplementation="@mozilla.org/dom/peerconnection;1",
   Constructor (optional RTCConfiguration configuration,
                optional object? constraints)]
-@@ -63,29 +57,35 @@ interface mozRTCPeerConnection : EventTa
+@@ -63,41 +58,49 @@ interface mozRTCPeerConnection : EventTa
                      RTCPeerConnectionErrorCallback? failureCallback, // for apprtc
                      optional object? constraints);
    void createAnswer (RTCSessionDescriptionCallback successCallback,
@@ -238,23 +251,30 @@ diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.
    void close ();
    attribute EventHandler onnegotiationneeded;
    attribute EventHandler onicecandidate;
-@@ -101,15 +101,18 @@ partial interface mozRTCPeerConnection {
+   attribute EventHandler onsignalingstatechange;
+   attribute EventHandler onaddstream;
+   attribute EventHandler onremovestream;
+   attribute EventHandler oniceconnectionstatechange;
++
++  readonly attribute RTCIdentityAssertion peerIdentity;
+ };
+ 
+ // Mozilla extensions.
+ partial interface mozRTCPeerConnection {
+   // Deprecated callbacks (use causes warning)
    attribute RTCPeerConnectionErrorCallback onicechange;
    attribute RTCPeerConnectionErrorCallback ongatheringchange;
  
-   // Deprecated attributes (use causes warning)
-   readonly attribute object localStreams;
-   readonly attribute object remoteStreams;
+@@ -107,9 +110,11 @@ partial interface mozRTCPeerConnection {
    readonly attribute DOMString readyState;
  
-+  readonly attribute RTCIdentityAssertion peerIdentity;
-+
    // Data channel.
    RTCDataChannel createDataChannel (DOMString label,
                                      optional RTCDataChannelInit dataChannelDict);
    attribute EventHandler ondatachannel;
    attribute EventHandler onconnection;
    attribute EventHandler onclosedconnection;
++
 +  attribute EventHandler onidentityresult;
  };
 diff --git a/dom/webidl/WebIDL.mk b/dom/webidl/WebIDL.mk
