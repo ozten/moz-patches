@@ -1,29 +1,30 @@
 # HG changeset patch
-# Parent f25e17e3992d096e0c377346b133cc4e81746092
+# Parent 204de5b7e0a6dd2d79c2b0378d1104ecac01b1f3
 
 diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 --- a/dom/media/PeerConnection.js
 +++ b/dom/media/PeerConnection.js
-@@ -235,16 +235,18 @@ function RTCPeerConnection() {
-   this._observer = null;
-   this._closed = false;
- 
-   this._onCreateOfferSuccess = null;
+@@ -239,16 +239,19 @@ function RTCPeerConnection() {
    this._onCreateOfferFailure = null;
    this._onCreateAnswerSuccess = null;
    this._onCreateAnswerFailure = null;
  
-+  this._onidentityresult = null;
-+
    this._pendingType = null;
    this._localType = null;
    this._remoteType = null;
-   this._peerIdentity = {};
  
++  this._onidentityresult = null;
++  this._peerIdentity = {};
++
    /**
     * Everytime we get a request from content, we put it in the queue. If
     * there are no pending operations though, we will execute it immediately.
-@@ -287,16 +289,17 @@ RTCPeerConnection.prototype = {
+    * In PeerConnectionObserver, whenever we are notified that an operation
+    * has finished, we will check the queue for the next operation and execute
+    * if neccesary. The _pending flag indicates whether an operation is currently
+    * in progress.
+    */
+@@ -286,16 +289,17 @@ RTCPeerConnection.prototype = {
      this.makeGetterSetterEH("onicecandidate");
      this.makeGetterSetterEH("onnegotiationneeded");
      this.makeGetterSetterEH("onsignalingstatechange");
@@ -41,7 +42,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
                             .getInterface(Ci.nsIDOMWindowUtils).currentInnerWindowID;
  
      // Add a reference to the PeerConnection to global list (before init).
-@@ -530,27 +533,32 @@ RTCPeerConnection.prototype = {
+@@ -529,27 +533,32 @@ RTCPeerConnection.prototype = {
      Object.defineProperty(this, name,
                            {
                              get:function()  { return this.getEH(name); },
@@ -74,7 +75,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      if (!constraints) {
        constraints = {};
      }
-@@ -638,16 +646,29 @@ RTCPeerConnection.prototype = {
+@@ -637,16 +646,29 @@ RTCPeerConnection.prototype = {
      this._queueOrRun({
        func: this._getPC().setLocalDescription,
        args: [type, desc.sdp],
@@ -104,32 +105,104 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this._onSetRemoteDescriptionFailure = onError;
  
      let type;
+@@ -740,16 +762,20 @@ RTCPeerConnection.prototype = {
+     this.deprecated("localStreams");
+     return this.getLocalStreams();
+   },
+   get remoteStreams() {
+     this.deprecated("remoteStreams");
+     return this.getRemoteStreams();
+   },
+ 
++  get peerIdentity() {
++    return this._peerIdentity;
++  },
++
+   get localDescription() {
+     this._checkClosed();
+     let sdp = this._getPC().localDescription;
+     if (sdp.length == 0) {
+       return null;
+     }
+     return new this._win.mozRTCSessionDescription({ type: this._localType,
+                                                     sdp: sdp });
+diff --git a/dom/media/PeerConnection.manifest b/dom/media/PeerConnection.manifest
+--- a/dom/media/PeerConnection.manifest
++++ b/dom/media/PeerConnection.manifest
+@@ -1,15 +1,17 @@
+ component {9878b414-afaa-4176-a887-1e02b3b047c2} PeerConnection.js
+ component {02b9970c-433d-4cc2-923d-f7028ac66073} PeerConnection.js
+ component {1775081b-b62d-4954-8ffe-a067bbf508a7} PeerConnection.js
+ component {7293e901-2be3-4c02-b4bd-cbef6fc24f78} PeerConnection.js
+ component {b9cd25a7-9859-4f9e-8f84-ef5181ff36c0} PeerConnection.js
+ component {a722a8a9-2290-4e99-a5ed-07b504292d08} PeerConnection.js
+ component {d5ed7fbf-01a8-4b18-af6c-861cf2aac920} PeerConnection.js
++component {498df9b5-87dd-40e5-b717-9cab40b1f99b} PeerConnection.js
+ 
+ contract @mozilla.org/dom/peerconnection;1 {9878b414-afaa-4176-a887-1e02b3b047c2}
+ contract @mozilla.org/dom/rtcicecandidate;1 {02b9970c-433d-4cc2-923d-f7028ac66073}
+ contract @mozilla.org/dom/rtcsessiondescription;1 {1775081b-b62d-4954-8ffe-a067bbf508a7}
++contract @mozilla.org/dom/rtcidentityassertion;1 {498df9b5-87dd-40e5-b717-9cab40b1f99b}
+ contract @mozilla.org/dom/peerconnectionmanager;1 {7293e901-2be3-4c02-b4bd-cbef6fc24f78}
+ contract @mozilla.org/dom/rtcpeerconnectioniceevent;1 {b9cd25a7-9859-4f9e-8f84-ef5181ff36c0}
+ contract @mozilla.org/dom/mediastreamevent;1 {a722a8a9-2290-4e99-a5ed-07b504292d08}
+ contract @mozilla.org/dom/datachannelevent;1 {d5ed7fbf-01a8-4b18-af6c-861cf2aac920}
+diff --git a/dom/webidl/RTCIdentityAssertion.webidl b/dom/webidl/RTCIdentityAssertion.webidl
+new file mode 100644
+--- /dev/null
++++ b/dom/webidl/RTCIdentityAssertion.webidl
+@@ -0,0 +1,12 @@
++dictionary RTCIdentityAssertionInit {
++  DOMString? idp = null;
++  DOMString? name = null;
++};
++
++[Pref="media.peerconnection.enabled",
++ JSImplementation="@mozilla.org/dom/rtcidentityassertion;1",
++ Constructor(optional RTCIdentityAssertionInit assertionInitDict)]
++interface RTCIdentityAssertion {
++  attribute DOMString? idp;
++  attribute DOMString? name;
++};
 diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.webidl
 --- a/dom/webidl/RTCPeerConnection.webidl
 +++ b/dom/webidl/RTCPeerConnection.webidl
-@@ -40,16 +40,21 @@ dictionary RTCDataChannelInit {
-   boolean outOfOrderAllowed;
-   unsigned short maxRetransmitTime;
-   unsigned short maxRetransmitNum;
-   DOMString protocol;
-   boolean preset;
-   unsigned short stream;
+@@ -32,28 +32,22 @@ enum RTCIceConnectionState {
+     "connected",
+     "completed",
+     "failed",
+     "disconnected",
+     "closed"
  };
  
-+dictionary RTCIdentityAssertion {
-+  DOMString idp;
-+  DOMString name;
-+};
-+
+ dictionary RTCDataChannelInit {
+-  boolean         ordered = true;
+-  unsigned short? maxRetransmitTime = null;
+-  unsigned short? maxRetransmits = null;
+-  DOMString       protocol = "";
+-  boolean         negotiated = false; // spec currently says 'true'; we disagree
+-  unsigned short? id = null;
+-
+-  // these are deprecated due to renaming in the spec, but still supported for Fx22
+-  boolean outOfOrderAllowed; // now ordered, and the default changes to keep behavior the same
+-  unsigned short maxRetransmitNum; // now maxRetransmits
+-  boolean preset; // now negotiated
+-  unsigned short stream; // now id
++  boolean outOfOrderAllowed;
++  unsigned short maxRetransmitTime;
++  unsigned short maxRetransmitNum;
++  DOMString protocol;
++  boolean preset;
++  unsigned short stream;
+ };
+ 
  interface RTCDataChannel;
  
  [Pref="media.peerconnection.enabled",
   JSImplementation="@mozilla.org/dom/peerconnection;1",
   Constructor (optional RTCConfiguration configuration,
                optional object? constraints)]
- // moz-prefixed until sufficiently standardized.
- interface mozRTCPeerConnection : EventTarget  {
-@@ -57,29 +62,35 @@ interface mozRTCPeerConnection : EventTa
+@@ -63,29 +57,35 @@ interface mozRTCPeerConnection : EventTa
                      RTCPeerConnectionErrorCallback? failureCallback, // for apprtc
                      optional object? constraints);
    void createAnswer (RTCSessionDescriptionCallback successCallback,
@@ -165,9 +238,17 @@ diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.
    void close ();
    attribute EventHandler onnegotiationneeded;
    attribute EventHandler onicecandidate;
-@@ -103,9 +114,10 @@ partial interface mozRTCPeerConnection {
-   readonly attribute RTCIdentityAssertion peerIdentity;
+@@ -101,15 +101,18 @@ partial interface mozRTCPeerConnection {
+   attribute RTCPeerConnectionErrorCallback onicechange;
+   attribute RTCPeerConnectionErrorCallback ongatheringchange;
  
+   // Deprecated attributes (use causes warning)
+   readonly attribute object localStreams;
+   readonly attribute object remoteStreams;
+   readonly attribute DOMString readyState;
+ 
++  readonly attribute RTCIdentityAssertion peerIdentity;
++
    // Data channel.
    RTCDataChannel createDataChannel (DOMString label,
                                      optional RTCDataChannelInit dataChannelDict);
@@ -176,10 +257,31 @@ diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.
    attribute EventHandler onclosedconnection;
 +  attribute EventHandler onidentityresult;
  };
+diff --git a/dom/webidl/WebIDL.mk b/dom/webidl/WebIDL.mk
+--- a/dom/webidl/WebIDL.mk
++++ b/dom/webidl/WebIDL.mk
+@@ -205,16 +205,17 @@ webidl_files = \
+   Rect.webidl \
+   RGBColor.webidl \
+   RTCConfiguration.webidl \
+   RTCDataChannelEvent.webidl \
+   RTCIceCandidate.webidl \
+   RTCPeerConnection.webidl \
+   RTCPeerConnectionIceEvent.webidl \
+   RTCSessionDescription.webidl \
++  RTCIdentityAssertion.webidl \
+   Screen.webidl \
+   ScriptProcessorNode.webidl \
+   ScrollAreaEvent.webidl \
+   SimpleGestureEvent.webidl \
+   StyleSheet.webidl \
+   SVGAElement.webidl \
+   SVGAltGlyphElement.webidl \
+   SVGAngle.webidl \
 diff --git a/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp b/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp
 --- a/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp
 +++ b/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp
-@@ -942,16 +942,24 @@ PeerConnectionImpl::ConvertConstraints(
+@@ -943,16 +943,24 @@ PeerConnectionImpl::ConvertConstraints(
          NS_ConvertUTF16toUTF8 stringVal(JS_GetStringCharsZ(aCx, optionNameString));
          aObj->setBooleanConstraint(stringVal.get(), JSVAL_TO_BOOLEAN(option), false);
        }
