@@ -8,11 +8,11 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
    this._onCreateOfferFailure = null;
    this._onCreateAnswerSuccess = null;
    this._onCreateAnswerFailure = null;
- 
+
    this._pendingType = null;
    this._localType = null;
    this._remoteType = null;
- 
+
 +  this._peerIdentity = {};
 +
    /**
@@ -23,7 +23,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
     * if neccesary. The _pending flag indicates whether an operation is currently
     * in progress.
     */
-@@ -286,16 +288,17 @@ RTCPeerConnection.prototype = {
+@@ -286,20 +288,22 @@ RTCPeerConnection.prototype = {
      this.makeGetterSetterEH("onicecandidate");
      this.makeGetterSetterEH("onnegotiationneeded");
      this.makeGetterSetterEH("onsignalingstatechange");
@@ -33,15 +33,20 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this.makeGetterSetterEH("onclosedconnection");
      this.makeGetterSetterEH("oniceconnectionstatechange");
 +    this.makeGetterSetterEH("onidentityresult");
- 
+
      this._pc = Cc["@mozilla.org/peerconnection;1"].
               createInstance(Ci.IPeerConnection);
      this._observer = new PeerConnectionObserver(this);
++    this._idp = new PeerConnectionIDP(this);
      this._winID = this._win.QueryInterface(Ci.nsIInterfaceRequestor)
                             .getInterface(Ci.nsIDOMWindowUtils).currentInnerWindowID;
- 
+
      // Add a reference to the PeerConnection to global list (before init).
-@@ -637,16 +640,38 @@ RTCPeerConnection.prototype = {
+     _globalPCList.addPC(this);
+
+     // Nothing starts until ICE gathering completes.
+     this._queueOrRun({
+@@ -637,16 +641,39 @@ RTCPeerConnection.prototype = {
      this._queueOrRun({
        func: this._getPC().setLocalDescription,
        args: [type, desc.sdp],
@@ -49,13 +54,14 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
        type: desc.type
      });
    },
- 
+
 +  setIdentityProvider: function(provider, protocol, username) {
 +    if(this.signalingState == "closed") {
 +      this.reportError('setIdentityProvider failed. signalingState is closed.', null, 0);
 +    }
 +    else {
 +      this.reportWarning('setIdentityProvider is not yet implemented.', null, 0);
++      this._idp.init(); //initialize the idp
 +    }
 +  },
 +
@@ -78,9 +84,9 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      // one with the callbacks for the second one. See Bug 831759.
      this._onSetRemoteDescriptionSuccess = onSuccess;
      this._onSetRemoteDescriptionFailure = onError;
- 
+
      let type;
-@@ -740,16 +765,20 @@ RTCPeerConnection.prototype = {
+@@ -740,16 +767,20 @@ RTCPeerConnection.prototype = {
      this.deprecated("localStreams");
      return this.getLocalStreams();
    },
@@ -88,7 +94,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this.deprecated("remoteStreams");
      return this.getRemoteStreams();
    },
- 
+
 +  get peerIdentity() {
 +    return this._peerIdentity;
 +  },
@@ -101,22 +107,33 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      }
      return new this._win.mozRTCSessionDescription({ type: this._localType,
                                                      sdp: sdp });
-@@ -1047,15 +1076,19 @@ PeerConnectionObserver.prototype = {
+@@ -1047,15 +1078,30 @@ PeerConnectionObserver.prototype = {
    },
- 
+
    notifyConnection: function() {
      this.dispatchEvent(new this._dompc._win.Event("connection"));
    },
- 
+
    notifyClosedConnection: function() {
      this.dispatchEvent(new this._dompc._win.Event("closedconnection"));
 +  },
 +
-+  notifyIdentityResult: function(result) {
-+    this.dispatchEvent(new this._dompc._win.Event('identityresult', { assertion: result }));
++  notifyIdentityResult: function() {
++    this.dispatchEvent(new this._dompc._win.Event('identityresult'));
    }
  };
- 
+
++
++function PeerConnectionIDP(pc) {
++  this._dompc = pc;
++};
++PeerConnectionIDP.prototype = {
++  init: function() {
++    this._dompc.reportWarning('PeerConnectionIDP has been initialized.', null, 0);
++  }
++};
++
++
  this.NSGetFactory = XPCOMUtils.generateNSGetFactory(
    [GlobalPCList, RTCIceCandidate, RTCSessionDescription, RTCPeerConnection,
     RTCPeerConnectionIceEvent, MediaStreamEvent, RTCDataChannelEvent]
@@ -133,7 +150,7 @@ diff --git a/dom/media/PeerConnection.manifest b/dom/media/PeerConnection.manife
  component {a722a8a9-2290-4e99-a5ed-07b504292d08} PeerConnection.js
  component {d5ed7fbf-01a8-4b18-af6c-861cf2aac920} PeerConnection.js
 +component {498df9b5-87dd-40e5-b717-9cab40b1f99b} PeerConnection.js
- 
+
  contract @mozilla.org/dom/peerconnection;1 {9878b414-afaa-4176-a887-1e02b3b047c2}
  contract @mozilla.org/dom/rtcicecandidate;1 {02b9970c-433d-4cc2-923d-f7028ac66073}
  contract @mozilla.org/dom/rtcsessiondescription;1 {1775081b-b62d-4954-8ffe-a067bbf508a7}
@@ -168,53 +185,18 @@ diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.
   * The origin of this IDL file is
   * http://dev.w3.org/2011/webrtc/editor/webrtc.html#idl-def-RTCPeerConnection
   */
- 
+
  callback RTCSessionDescriptionCallback = void (mozRTCSessionDescription sdp);
  callback RTCPeerConnectionErrorCallback = void (DOMString errorInformation);
 +callback RTCIdentityResultCallback = void (RTCIdentityAssertion result);
  callback VoidFunction = void ();
- 
+
  enum RTCSignalingState {
      "stable",
      "have-local-offer",
      "have-remote-offer",
      "have-local-pranswer",
      "have-remote-pranswer",
-@@ -32,28 +33,22 @@ enum RTCIceConnectionState {
-     "connected",
-     "completed",
-     "failed",
-     "disconnected",
-     "closed"
- };
- 
- dictionary RTCDataChannelInit {
--  boolean         ordered = true;
--  unsigned short? maxRetransmitTime = null;
--  unsigned short? maxRetransmits = null;
--  DOMString       protocol = "";
--  boolean         negotiated = false; // spec currently says 'true'; we disagree
--  unsigned short? id = null;
--
--  // these are deprecated due to renaming in the spec, but still supported for Fx22
--  boolean outOfOrderAllowed; // now ordered, and the default changes to keep behavior the same
--  unsigned short maxRetransmitNum; // now maxRetransmits
--  boolean preset; // now negotiated
--  unsigned short stream; // now id
-+  boolean outOfOrderAllowed;
-+  unsigned short maxRetransmitTime;
-+  unsigned short maxRetransmitNum;
-+  DOMString protocol;
-+  boolean preset;
-+  unsigned short stream;
- };
- 
- interface RTCDataChannel;
- 
- [Pref="media.peerconnection.enabled",
-  JSImplementation="@mozilla.org/dom/peerconnection;1",
-  Constructor (optional RTCConfiguration configuration,
-               optional object? constraints)]
 @@ -63,41 +58,49 @@ interface mozRTCPeerConnection : EventTa
                      RTCPeerConnectionErrorCallback? failureCallback, // for apprtc
                      optional object? constraints);
@@ -258,16 +240,16 @@ diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.
 +
 +  readonly attribute RTCIdentityAssertion peerIdentity;
  };
- 
+
  // Mozilla extensions.
  partial interface mozRTCPeerConnection {
    // Deprecated callbacks (use causes warning)
    attribute RTCPeerConnectionErrorCallback onicechange;
    attribute RTCPeerConnectionErrorCallback ongatheringchange;
- 
+
 @@ -107,9 +110,11 @@ partial interface mozRTCPeerConnection {
    readonly attribute DOMString readyState;
- 
+
    // Data channel.
    RTCDataChannel createDataChannel (DOMString label,
                                      optional RTCDataChannelInit dataChannelDict);
@@ -298,31 +280,3 @@ diff --git a/dom/webidl/WebIDL.mk b/dom/webidl/WebIDL.mk
    SVGAElement.webidl \
    SVGAltGlyphElement.webidl \
    SVGAngle.webidl \
-diff --git a/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp b/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp
---- a/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp
-+++ b/media/webrtc/signaling/src/peerconnection/PeerConnectionImpl.cpp
-@@ -943,16 +943,24 @@ PeerConnectionImpl::ConvertConstraints(
-         NS_ConvertUTF16toUTF8 stringVal(JS_GetStringCharsZ(aCx, optionNameString));
-         aObj->setBooleanConstraint(stringVal.get(), JSVAL_TO_BOOLEAN(option), false);
-       }
-     }
-   }
-   return NS_OK;
- }
- 
-+// NS_IMETHODIMP
-+// PeerConnectionImpl::SetIdentityProvider(const char* provider, const char* protocol, const char* username)
-+// {
-+//   PC_AUTO_ENTER_API_CALL(true);
-+
-+//   return NS_OK;
-+// }
-+
- NS_IMETHODIMP
- PeerConnectionImpl::CreateOffer(const JS::Value& aConstraints, JSContext* aCx)
- {
-   PC_AUTO_ENTER_API_CALL(true);
- 
-   MediaConstraints cs;
-   nsresult rv = ConvertConstraints(aConstraints, &cs, aCx);
-   if (rv != NS_OK) {
