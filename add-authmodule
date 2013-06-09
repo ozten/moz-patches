@@ -1,0 +1,282 @@
+# HG changeset patch
+# Parent 204de5b7e0a6dd2d79c2b0378d1104ecac01b1f3
+
+diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
+--- a/dom/media/PeerConnection.js
++++ b/dom/media/PeerConnection.js
+@@ -239,16 +239,18 @@ function RTCPeerConnection() {
+   this._onCreateOfferFailure = null;
+   this._onCreateAnswerSuccess = null;
+   this._onCreateAnswerFailure = null;
+
+   this._pendingType = null;
+   this._localType = null;
+   this._remoteType = null;
+
++  this._peerIdentity = {};
++
+   /**
+    * Everytime we get a request from content, we put it in the queue. If
+    * there are no pending operations though, we will execute it immediately.
+    * In PeerConnectionObserver, whenever we are notified that an operation
+    * has finished, we will check the queue for the next operation and execute
+    * if neccesary. The _pending flag indicates whether an operation is currently
+    * in progress.
+    */
+@@ -286,20 +288,22 @@ RTCPeerConnection.prototype = {
+     this.makeGetterSetterEH("onicecandidate");
+     this.makeGetterSetterEH("onnegotiationneeded");
+     this.makeGetterSetterEH("onsignalingstatechange");
+     this.makeGetterSetterEH("onremovestream");
+     this.makeGetterSetterEH("ondatachannel");
+     this.makeGetterSetterEH("onconnection");
+     this.makeGetterSetterEH("onclosedconnection");
+     this.makeGetterSetterEH("oniceconnectionstatechange");
++    this.makeGetterSetterEH("onidentityresult");
+
+     this._pc = Cc["@mozilla.org/peerconnection;1"].
+              createInstance(Ci.IPeerConnection);
+     this._observer = new PeerConnectionObserver(this);
++    this._idp = new PeerConnectionIDP(this);
+     this._winID = this._win.QueryInterface(Ci.nsIInterfaceRequestor)
+                            .getInterface(Ci.nsIDOMWindowUtils).currentInnerWindowID;
+
+     // Add a reference to the PeerConnection to global list (before init).
+     _globalPCList.addPC(this);
+
+     // Nothing starts until ICE gathering completes.
+     this._queueOrRun({
+@@ -637,16 +641,39 @@ RTCPeerConnection.prototype = {
+     this._queueOrRun({
+       func: this._getPC().setLocalDescription,
+       args: [type, desc.sdp],
+       wait: true,
+       type: desc.type
+     });
+   },
+
++  setIdentityProvider: function(provider, protocol, username) {
++    if(this.signalingState == "closed") {
++      this.reportError('setIdentityProvider failed. signalingState is closed.', null, 0);
++    }
++    else {
++      this.reportWarning('setIdentityProvider is not yet implemented.', null, 0);
++      this._idp.init(); //initialize the idp
++    }
++  },
++
++  getIdentityAssertion: function(funky) {
++    if(this.signalingState == "closed") {
++      this.reportError('getIdentityAssertion failed. signalingState is closed.', null, 0);
++    }
++    else {
++      this.reportWarning('getIdentityAssertion is not yet implemented.', null, 0);
++      //get an identity and call the callback
++      this._peerIdentity = { idp: 'testidp', name: 'testname'};
++      //TODO: check if this function exists
++      this._observer.notifyIdentityResult(this._peerIdentity);
++    }
++  },
++
+   setRemoteDescription: function(desc, onSuccess, onError) {
+     // TODO -- if we have two setRemoteDescriptions in the
+     // queue, this code overwrites the callbacks for the first
+     // one with the callbacks for the second one. See Bug 831759.
+     this._onSetRemoteDescriptionSuccess = onSuccess;
+     this._onSetRemoteDescriptionFailure = onError;
+
+     let type;
+@@ -740,16 +767,20 @@ RTCPeerConnection.prototype = {
+     this.deprecated("localStreams");
+     return this.getLocalStreams();
+   },
+   get remoteStreams() {
+     this.deprecated("remoteStreams");
+     return this.getRemoteStreams();
+   },
+
++  get peerIdentity() {
++    return this._peerIdentity;
++  },
++
+   get localDescription() {
+     this._checkClosed();
+     let sdp = this._getPC().localDescription;
+     if (sdp.length == 0) {
+       return null;
+     }
+     return new this._win.mozRTCSessionDescription({ type: this._localType,
+                                                     sdp: sdp });
+@@ -1047,15 +1078,30 @@ PeerConnectionObserver.prototype = {
+   },
+
+   notifyConnection: function() {
+     this.dispatchEvent(new this._dompc._win.Event("connection"));
+   },
+
+   notifyClosedConnection: function() {
+     this.dispatchEvent(new this._dompc._win.Event("closedconnection"));
++  },
++
++  notifyIdentityResult: function() {
++    this.dispatchEvent(new this._dompc._win.Event('identityresult'));
+   }
+ };
+
++
++function PeerConnectionIDP(pc) {
++  this._dompc = pc;
++};
++PeerConnectionIDP.prototype = {
++  init: function() {
++    this._dompc.reportWarning('PeerConnectionIDP has been initialized.', null, 0);
++  }
++};
++
++
+ this.NSGetFactory = XPCOMUtils.generateNSGetFactory(
+   [GlobalPCList, RTCIceCandidate, RTCSessionDescription, RTCPeerConnection,
+    RTCPeerConnectionIceEvent, MediaStreamEvent, RTCDataChannelEvent]
+ );
+diff --git a/dom/media/PeerConnection.manifest b/dom/media/PeerConnection.manifest
+--- a/dom/media/PeerConnection.manifest
++++ b/dom/media/PeerConnection.manifest
+@@ -1,15 +1,17 @@
+ component {9878b414-afaa-4176-a887-1e02b3b047c2} PeerConnection.js
+ component {02b9970c-433d-4cc2-923d-f7028ac66073} PeerConnection.js
+ component {1775081b-b62d-4954-8ffe-a067bbf508a7} PeerConnection.js
+ component {7293e901-2be3-4c02-b4bd-cbef6fc24f78} PeerConnection.js
+ component {b9cd25a7-9859-4f9e-8f84-ef5181ff36c0} PeerConnection.js
+ component {a722a8a9-2290-4e99-a5ed-07b504292d08} PeerConnection.js
+ component {d5ed7fbf-01a8-4b18-af6c-861cf2aac920} PeerConnection.js
++component {498df9b5-87dd-40e5-b717-9cab40b1f99b} PeerConnection.js
+
+ contract @mozilla.org/dom/peerconnection;1 {9878b414-afaa-4176-a887-1e02b3b047c2}
+ contract @mozilla.org/dom/rtcicecandidate;1 {02b9970c-433d-4cc2-923d-f7028ac66073}
+ contract @mozilla.org/dom/rtcsessiondescription;1 {1775081b-b62d-4954-8ffe-a067bbf508a7}
++contract @mozilla.org/dom/rtcidentityassertion;1 {498df9b5-87dd-40e5-b717-9cab40b1f99b}
+ contract @mozilla.org/dom/peerconnectionmanager;1 {7293e901-2be3-4c02-b4bd-cbef6fc24f78}
+ contract @mozilla.org/dom/rtcpeerconnectioniceevent;1 {b9cd25a7-9859-4f9e-8f84-ef5181ff36c0}
+ contract @mozilla.org/dom/mediastreamevent;1 {a722a8a9-2290-4e99-a5ed-07b504292d08}
+ contract @mozilla.org/dom/datachannelevent;1 {d5ed7fbf-01a8-4b18-af6c-861cf2aac920}
+diff --git a/dom/webidl/RTCIdentityAssertion.webidl b/dom/webidl/RTCIdentityAssertion.webidl
+new file mode 100644
+--- /dev/null
++++ b/dom/webidl/RTCIdentityAssertion.webidl
+@@ -0,0 +1,12 @@
++dictionary RTCIdentityAssertionInit {
++  DOMString? idp = null;
++  DOMString? name = null;
++};
++
++[Pref="media.peerconnection.enabled",
++ JSImplementation="@mozilla.org/dom/rtcidentityassertion;1",
++ Constructor(optional RTCIdentityAssertionInit assertionInitDict)]
++interface RTCIdentityAssertion {
++  attribute DOMString? idp;
++  attribute DOMString? name;
++};
+diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.webidl
+--- a/dom/webidl/RTCPeerConnection.webidl
++++ b/dom/webidl/RTCPeerConnection.webidl
+@@ -4,16 +4,17 @@
+  * You can obtain one at http://mozilla.org/MPL/2.0/.
+  *
+  * The origin of this IDL file is
+  * http://dev.w3.org/2011/webrtc/editor/webrtc.html#idl-def-RTCPeerConnection
+  */
+
+ callback RTCSessionDescriptionCallback = void (mozRTCSessionDescription sdp);
+ callback RTCPeerConnectionErrorCallback = void (DOMString errorInformation);
++callback RTCIdentityResultCallback = void (RTCIdentityAssertion result);
+ callback VoidFunction = void ();
+
+ enum RTCSignalingState {
+     "stable",
+     "have-local-offer",
+     "have-remote-offer",
+     "have-local-pranswer",
+     "have-remote-pranswer",
+@@ -63,41 +58,49 @@ interface mozRTCPeerConnection : EventTa
+                     RTCPeerConnectionErrorCallback? failureCallback, // for apprtc
+                     optional object? constraints);
+   void createAnswer (RTCSessionDescriptionCallback successCallback,
+                      RTCPeerConnectionErrorCallback? failureCallback, // for apprtc
+                      optional object? constraints);
+   void setLocalDescription (mozRTCSessionDescription description,
+                             optional VoidFunction successCallback,
+                             optional RTCPeerConnectionErrorCallback failureCallback);
++  void setIdentityProvider (DOMString provider,
++                            optional DOMString protocol,
++                            optional DOMString username);
++  void getIdentityAssertion ();
+   void setRemoteDescription (mozRTCSessionDescription description,
+                              optional VoidFunction successCallback,
+                              optional RTCPeerConnectionErrorCallback failureCallback);
+   readonly attribute mozRTCSessionDescription? localDescription;
+   readonly attribute mozRTCSessionDescription? remoteDescription;
+   readonly attribute RTCSignalingState signalingState;
++
+   void updateIce (optional RTCConfiguration configuration,
+                   optional object? constraints);
+   void addIceCandidate (mozRTCIceCandidate candidate,
+                         optional VoidFunction successCallback,
+                         optional RTCPeerConnectionErrorCallback failureCallback);
+   readonly attribute RTCIceGatheringState iceGatheringState;
+   readonly attribute RTCIceConnectionState iceConnectionState;
++
+   sequence<MediaStream> getLocalStreams ();
+   sequence<MediaStream> getRemoteStreams ();
+   MediaStream? getStreamById (DOMString streamId);
+   void addStream (MediaStream stream, optional object? constraints);
+   void removeStream (MediaStream stream);
+   void close ();
+   attribute EventHandler onnegotiationneeded;
+   attribute EventHandler onicecandidate;
+   attribute EventHandler onsignalingstatechange;
+   attribute EventHandler onaddstream;
+   attribute EventHandler onremovestream;
+   attribute EventHandler oniceconnectionstatechange;
++
++  readonly attribute RTCIdentityAssertion peerIdentity;
+ };
+
+ // Mozilla extensions.
+ partial interface mozRTCPeerConnection {
+   // Deprecated callbacks (use causes warning)
+   attribute RTCPeerConnectionErrorCallback onicechange;
+   attribute RTCPeerConnectionErrorCallback ongatheringchange;
+
+@@ -107,9 +110,11 @@ partial interface mozRTCPeerConnection {
+   readonly attribute DOMString readyState;
+
+   // Data channel.
+   RTCDataChannel createDataChannel (DOMString label,
+                                     optional RTCDataChannelInit dataChannelDict);
+   attribute EventHandler ondatachannel;
+   attribute EventHandler onconnection;
+   attribute EventHandler onclosedconnection;
++
++  attribute EventHandler onidentityresult;
+ };
+diff --git a/dom/webidl/WebIDL.mk b/dom/webidl/WebIDL.mk
+--- a/dom/webidl/WebIDL.mk
++++ b/dom/webidl/WebIDL.mk
+@@ -205,16 +205,17 @@ webidl_files = \
+   Rect.webidl \
+   RGBColor.webidl \
+   RTCConfiguration.webidl \
+   RTCDataChannelEvent.webidl \
+   RTCIceCandidate.webidl \
+   RTCPeerConnection.webidl \
+   RTCPeerConnectionIceEvent.webidl \
+   RTCSessionDescription.webidl \
++  RTCIdentityAssertion.webidl \
+   Screen.webidl \
+   ScriptProcessorNode.webidl \
+   ScrollAreaEvent.webidl \
+   SimpleGestureEvent.webidl \
+   StyleSheet.webidl \
+   SVGAElement.webidl \
+   SVGAltGlyphElement.webidl \
+   SVGAngle.webidl \
