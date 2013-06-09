@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 11cae0044cd0af33f5385dbfb1f65d96d0353750
+# Parent 2196fc4d26fa814597e7d53b084d43d89f23f6a1
 try: -b do -p all -u all -t none
 
 diff --git a/browser/base/content/browser-id-signIn.html b/browser/base/content/browser-id-signIn.html
@@ -371,6 +371,27 @@ diff --git a/browser/base/content/identity-framescript.js b/browser/base/content
    content.addEventListener('load', function(e) {
      logger.log('content loaded');
      this.shim = new IdentityShim();
+diff --git a/browser/base/jar.mn b/browser/base/jar.mn
+--- a/browser/base/jar.mn
++++ b/browser/base/jar.mn
+@@ -56,16 +56,17 @@ browser.jar:
+         content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
+         content/browser/aboutSocialError.xhtml        (content/aboutSocialError.xhtml)
+ *       content/browser/browser.css                   (content/browser.css)
+ *       content/browser/browser.js                    (content/browser.js)
+ *       content/browser/browser.xul                   (content/browser.xul)
+ *       content/browser/browser-tabPreviews.xml       (content/browser-tabPreviews.xml)
+         content/browser/content.js                    (content/content.js)
+         content/browser/identity-framescript.js       (content/identity-framescript.js)
++        content/browser/browser-id-signIn.html        (content/browser-id-signIn.html)
+         content/browser/newtab/newTab.xul             (content/newtab/newTab.xul)
+ *       content/browser/newtab/newTab.js              (content/newtab/newTab.js)
+         content/browser/newtab/newTab.css             (content/newtab/newTab.css)
+ *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
+         content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
+         content/browser/pageinfo/pageInfo.css         (content/pageinfo/pageInfo.css)
+         content/browser/pageinfo/pageInfo.xml         (content/pageinfo/pageInfo.xml)
+         content/browser/pageinfo/feeds.js             (content/pageinfo/feeds.js)
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
