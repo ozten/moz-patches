@@ -113,7 +113,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      }
      return new this._win.mozRTCSessionDescription({ type: this._localType,
                                                      sdp: sdp });
-@@ -1047,15 +1084,64 @@ PeerConnectionObserver.prototype = {
+@@ -1047,15 +1084,63 @@ PeerConnectionObserver.prototype = {
    },
  
    notifyConnection: function() {
@@ -130,22 +130,21 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
  };
  
 +function PeerConnectionIDP(pc) {
-+  this._dompc = pc;
++  this._dompc = pc; // peer connection object
 +  this.fallback_provider = 'login.persona.org'; // browser specific fallback idp (we will use Persona)
-+  this.provider = null;
-+  this.protocol = null;
-+  this.username = null;
-+  this.set = false;
-+  this.identity_assertion = null; // consider renaming this var
++  this.provider = null; // user specified idp domain (gmail.com/login.persona.org/yahoo.com)
++  this.protocol = null; // protocol to use ("default")
++  this.username = null; // "assertion" used to verify the identity
++  this.set = false; // true if the IDP has been initialized previously
 +};
 +PeerConnectionIDP.prototype = {
 +  init: function(provider, protocol, username) {
 +    // set the required values
 +    this.set = true;
 +    this.setIDP(provider, protocol, username);
-+    this._dompc.reportWarning('IDP has been (re)-initialized.', null, 0);
++    this._dompc.reportWarning('IDP has been (re-)initialized.', null, 0);
 +  },
-+  requestIdentityAssertion: function() {
++  requestIdentityAssertion: function(/* callback */) {
 +    // fake implementation
 +    // In the future we will open an iframe and allow the user to login to their IDP.
 +    //
@@ -160,7 +159,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +                      // described in [RTCWEB-SECURITY-ARCH].
 +                      name: this.username || "example@example.com" // example: the assertion from Persona
 +                    };
-+    // callback(identity); // return identity assertion in the callback
++    // callback(identity); // return identity assertion in the callback (for some reason this wont work)
 +    return identity;
 +  },
 +  setIDP: function(provider, protocol, username) {
