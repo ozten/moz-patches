@@ -1,0 +1,382 @@
+# HG changeset patch
+# Parent 86413e921d5d5bdbefd6475619ebb0eab6185184
+
+diff --git a/browser/base/jar.mn b/browser/base/jar.mn
+--- a/browser/base/jar.mn
++++ b/browser/base/jar.mn
+@@ -66,16 +66,17 @@ browser.jar:
+ *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
+         content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
+         content/browser/pageinfo/pageInfo.css         (content/pageinfo/pageInfo.css)
+         content/browser/pageinfo/pageInfo.xml         (content/pageinfo/pageInfo.xml)
+         content/browser/pageinfo/feeds.js             (content/pageinfo/feeds.js)
+         content/browser/pageinfo/feeds.xml            (content/pageinfo/feeds.xml)
+         content/browser/pageinfo/permissions.js       (content/pageinfo/permissions.js)
+         content/browser/pageinfo/security.js          (content/pageinfo/security.js)
++        content/browser/rtc-persona-framescript.js    (content/rtc-persona-framescript.js)
+ #ifdef MOZ_SERVICES_SYNC
+         content/browser/sync/aboutSyncTabs.xul        (content/sync/aboutSyncTabs.xul)
+         content/browser/sync/aboutSyncTabs.js         (content/sync/aboutSyncTabs.js)
+         content/browser/sync/aboutSyncTabs.css        (content/sync/aboutSyncTabs.css)
+         content/browser/sync/aboutSyncTabs-bindings.xml  (content/sync/aboutSyncTabs-bindings.xml)
+ *       content/browser/sync/setup.xul                (content/sync/setup.xul)
+         content/browser/sync/addDevice.js             (content/sync/addDevice.js)
+         content/browser/sync/addDevice.xul            (content/sync/addDevice.xul)
+diff --git a/toolkit/identity/Makefile.in b/toolkit/identity/Makefile.in
+--- a/toolkit/identity/Makefile.in
++++ b/toolkit/identity/Makefile.in
+@@ -22,14 +22,15 @@ EXTRA_JS_MODULES = \
+ 	IdentityUtils.jsm \
+ 	Identity.jsm \
+ 	IdentityProvider.jsm \
+ 	IdentityStore.jsm \
+ 	jwcrypto.jsm \
+ 	LogUtils.jsm \
+ 	MinimalIdentity.jsm \
+ 	RelyingParty.jsm \
++	RTCIdentity.jsm \
+ 	Sandbox.jsm \
+ 	$(NULL)
+ 
+ JS_MODULES_PATH = $(FINAL_TARGET)/modules/identity
+ 
+ include $(topsrcdir)/config/rules.mk
+diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
+new file mode 100644
+--- /dev/null
++++ b/toolkit/identity/RTCIdentity.jsm
+@@ -0,0 +1,188 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++/*
++ * An Authentication Module for RTC that uses Persona
++ *
++ * 
++ */
++
++"use strict";
++
++this.EXPORTED_SYMBOLS = ["IDPChannel"];
++
++const {classes: Cc, interfaces: Ci, utils: Cu} = Components;
++
++Cu.import("resource://gre/modules/Services.jsm");
++Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++
++// XXX while developing this, we use an ephemeral instance of persona that
++// provides new functionality we need, namely fingerprint-wrapping in the
++// assertion.
++let kPersonaUri = "https://webrtc.personatest.org";
++try {
++  kPersonaUri = Services.prefs.getCharPref("toolkit.identity.uri");
++} catch (noSuchPref) {
++  // stick with the default value
++}
++
++function log(msg) {
++  dump("* RTCAuthModule: " + msg + "\n");
++}
++
++/*
++ * An invisible iframe for hosting the persona logic.
++ * 
++ * There is no visible UX here, as we assume the user has already 
++ * logged in elsewhere (on a different screen in the web site hosting
++ * the RTC functions).  So all we have to do is get an assertion from
++ * Persona.
++ */
++
++this.HostFrame = function HostFrame() {
++  this._iframe = null;
++};
++
++HostFrame.prototype = {
++  getIframe: function hostFrame_getIframe(aOptions, aCallback) {
++    if (this._gotIframe) {
++      return aCallback(
++        new Error("Can only get iframe once with HostFrame helper"));
++    }
++
++    let hiddenDoc = Services.appShell.hiddenDOMWindow.document;
++
++    this._iframe = hiddenDoc.createElementNS(
++        "http://www.w3.org/1999/xhtml", "iframe"); 
++
++    this._iframe.setAttribute("mozframetype", "content");
++    this._iframe.setAttribute("id", "persona-host-frame");
++    this._iframe.setAttribute("src", kPersonaUri+'/communication_iframe');
++
++    aOptions.iframe = this._iframe;
++
++    hiddenDoc.documentElement.appendChild(this._iframe);
++
++    // Inject a framescript into the iframe that can receive messages
++    // from its parent process telling it which persona internal_api
++    // methods to call.
++    let mm = this._iframe.QueryInterface(Ci.nsIFrameLoaderOwner)
++      .frameLoader.messageManager;
++
++    mm.loadFrameScript("chrome://browser/content/rtc-persona-framescript.js", true);
++
++    // no error
++    aCallback(null);
++  }
++};
++
++this.Pipe = function Pipe(aOptions, aController) {
++  this.options = aOptions;
++  this.controller = aController;
++  this.mm = null;
++  this._closed = false;
++  return this;
++};
++
++Pipe.prototype = {
++  close: function pipe__close() {
++    this._closed = true;
++    if (this.mm) {
++      this.mm.removeMessageListener("rtcid-response", this._receiveMessage);
++      this.mm.removeMessageListener("rtcid-complete", this._delegateComplete);
++      this.mm.removeMessageListener("rtcid-loaded", this._delegateLoaded);
++    }
++
++    if (typeof this.options.onComplete === "function") {
++      this.options.onComplete();
++    }
++  },
++
++  _delegateLoaded: function pipe__delegateLoaded() {
++    log("delegate loaded");
++    this.mm.sendAsyncMessage(this.options);
++  },
++
++  _delegateComplete: function pipe__delegateComplete() {
++    log("delegate complete");
++    this.close();
++  },
++
++  _receiveMessage: function pipe__receiveMessage(message) {
++    log("receive message: " + message);
++    this.controller.receiveResponse(message);
++  },
++
++  communicate: function pipe_communicate() {
++    log("communicate");
++    if (this._closed) {
++      logger.error("Cannot communicate; pipe is closed");
++      return;
++    }
++
++    let frameLoader = this.options.iframe.QueryInterface(
++        Ci.nsIFrameLoaderOwner).frameLoader;
++
++    log("got frame loader");
++
++    if (frameLoader) {
++      this.mm = frameLoader.messageManager;
++      this.mm.addMessageListener("rtcid-response", this._receiveMessage.bind(this));
++      this.mm.addMessageListener("rtcid-loaded", this._delegateLoaded.bind(this));
++      this.mm.addMessageListener("rtcid-complete", this._delegateComplete.bind(this));
++    } else {
++      logger.error("Frame loader unavailable; frame attached properly?");
++    }
++  }
++};
++
++/*
++ * optional PipeConstructor makes testing easier
++ */
++function IDPChannel(messageCallback, PipeConstructor) {
++  this.receiveResponse = messageCallback;
++  this.pipeConstructor = PipeConstructor || Pipe;
++  this.init();
++}
++
++IDPChannel.prototype = {
++  init: function idpChannel_init() {
++  },
++
++  uninit: function idpChannel_uninit() {
++  },
++
++  send: function idpChannel_send(fingerprint, message) {
++    // Peer Connection with the given fingerprint sends a message
++    // to the idp proxy.
++    let hostFrame = new HostFrame();
++    let options = {
++      audience: "rtcweb://peerconnection",
++      origin: "https://example.com",
++      fingerprint: fingerprint,
++      message: message
++    };
++    log("send this: " + JSON.stringify(options, null, 2));
++    hostFrame.getIframe(options, function() {
++      // iframe has been added to options
++
++      log("got iframe");
++      // callback for the pipe when flow is complete
++      options.onComplete = function pipe_onComplete(response) {
++        logger.log("pipe clean up now");
++        this.pipe.close();
++      }.bind(this);
++
++      // store context and communicate with pipe
++      //this.contexts[options.fingerprint] = options;
++      //this.contexts[options.fingerprint].hostFrame = hostFrame;
++
++      let pipe = new this.pipeConstructor(options, this);
++      log("got new pipe");
++      pipe.communicate();
++    }.bind(this));
++  }
++};
++
++this.IDPChannel = IDPChannel;
+diff --git a/toolkit/identity/tests/unit/test_load_modules.js b/toolkit/identity/tests/unit/test_load_modules.js
+--- a/toolkit/identity/tests/unit/test_load_modules.js
++++ b/toolkit/identity/tests/unit/test_load_modules.js
+@@ -3,16 +3,17 @@
+  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ const modules = [
+   "Identity.jsm",
+   "IdentityProvider.jsm",
+   "IdentityStore.jsm",
+   "jwcrypto.jsm",
+   "RelyingParty.jsm",
++  "RTCAuthModule.jsm",
+   "Sandbox.jsm",
+ ];
+ 
+ function run_test() {
+   for each (let m in modules) {
+     let resource = "resource://gre/modules/identity/" + m;
+     Components.utils.import(resource, {});
+     do_print("loaded " + resource);
+diff --git a/toolkit/identity/tests/unit/test_rtcauthmodule.js b/toolkit/identity/tests/unit/test_rtcauthmodule.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/identity/tests/unit/test_rtcauthmodule.js
+@@ -0,0 +1,99 @@
++
++Cu.import("resource://gre/modules/Services.jsm");
++Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++
++XPCOMUtils.defineLazyModuleGetter(this, "PersonaAuthModule",
++  "resource://gre/modules/identity/RTCAuthModule.jsm",
++  "PersonaAuthModule");
++
++// Example fingerprint taken from draft specification:
++// http://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.4.1
++const FINGERPRINT = {
++  algorithm: "SHA-1",
++  digest: "4A:AD:B9:B1:3F:82:18:3B:54:02:12:DF:3E:5D:49:6B:19:E5:7C:AB"
++};
++
++function test_import() {
++  do_check_neq(PersonaAuthModule, null);
++  run_next_test();
++}
++
++function test_getIdentityAssertion() {
++  do_test_pending();
++
++  // Mock the PeerConnection.  Its onidentityresult callback will be 
++  // invoked by the IdP proxy.
++  let pc = mockPeerConnection(FINGERPRINT, function(action, params) {
++    do_test_finished();
++    do_check_eq(action, "onidentityresult");
++    do_check_eq(params.assertion.fingerprint.algorithm, FINGERPRINT.algorithm);
++    do_check_eq(params.assertion.fingerprint.digest, FINGERPRINT.digest);
++    run_next_test();
++  });
++
++  let am = new PersonaAuthModule();
++
++  am.onidentityresult = function(aResult) {
++      let assertion = aSubject.wrappedJSObject;
++      do_check_eq(assertion.audience, "rtcweb://peerconnection/");
++      do_check_eq(assertion.fingerprint.digest, FINGERPRINT.digest);
++      pc.onidentityresult({assertion: assertion});
++    }
++  );
++
++  am.getIdentityAssertion(pc.fingerprint, pc.onidentityresult); 
++}
++
++function test_channelReady() {
++  function onmessage = function(message) {
++    do_check_eq(message.type, "READY");
++    run_next_test();
++  };
++
++  new PersonaAuthModule({onmessage: onmessage});
++}
++
++function test_sign() {
++  // Source: http://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.5.2.2
++  let message = {
++    "type":"SIGN",
++    "id":1,
++    "origin":"https://calling-service.example.com/",
++    "message":"abcdefghijklmnopqrstuvwyz"
++  };
++}
++
++function test_verify() {
++}
++
++/*
++ * utilities
++ */
++
++function mockPeerConnection(aFingerprint, aFunction) {
++  let mock = {};
++  mock.fingerprint = aFingerprint;
++  mock.signalingState = "open";
++  mock['do'] = aFunction;
++  mock.onidentityresult = partial(aFunction, 'onidentityresult');
++
++  return mock;
++}
++
++/*
++ * add tests to suite and run them
++ */
++
++let TESTS = [ 
++  test_import,
++  test_getIdentityAssertion,
++  test_channelReady
++];
++
++TESTS.forEach(add_test);
++
++function run_test() {
++  run_next_test();
++}
++
++
+diff --git a/toolkit/identity/tests/unit/xpcshell.ini b/toolkit/identity/tests/unit/xpcshell.ini
+--- a/toolkit/identity/tests/unit/xpcshell.ini
++++ b/toolkit/identity/tests/unit/xpcshell.ini
+@@ -1,16 +1,17 @@
+ [DEFAULT]
+ head = head_identity.js
+ tail = tail_identity.js
+ 
+ # Test load modules first so syntax failures are caught early.
+ [test_load_modules.js]
+ [test_minimalidentity.js]
+ 
++[test_rtcauthmodule.js]
+ [test_identity_utils.js]
+ [test_log_utils.js]
+ [test_authentication.js]
+ [test_crypto_service.js]
+ [test_identity.js]
+ [test_jwcrypto.js]
+ [test_observer_topics.js]
+ [test_provisioning.js]
