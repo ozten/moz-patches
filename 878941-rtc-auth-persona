@@ -45,7 +45,7 @@ diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/RTCIdentity.jsm
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,189 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -149,7 +149,8 @@ new file mode 100644
 +
 +  _delegateLoaded: function pipe__delegateLoaded() {
 +    log("delegate loaded");
-+    this.mm.sendAsyncMessage(this.options);
++    log("send message: " + JSON.stringify(this.options));
++    this.mm.sendAsyncMessage('rtcid-message', this.options);
 +  },
 +
 +  _delegateComplete: function pipe__delegateComplete() {
