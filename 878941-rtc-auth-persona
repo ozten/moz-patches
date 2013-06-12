@@ -1,5 +1,8 @@
 # HG changeset patch
 # Parent 86413e921d5d5bdbefd6475619ebb0eab6185184
+# User Jed Parsons <jparsons@mozilla.com>
+# Date Wed Jun 12 16:25:56 2013 -0700
+Bug 878941 - IdP Proxy and communication channel for RTC peer connection (wip)
 
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
 --- a/browser/base/jar.mn
@@ -68,7 +71,8 @@ new file mode 100644
 +// XXX while developing this, we use an ephemeral instance of persona that
 +// provides new functionality we need, namely fingerprint-wrapping in the
 +// assertion.
-+let kPersonaUri = "https://webrtc.personatest.org";
++//let kPersonaUri = "https://webrtc.personatest.org";
++let kPersonaUri = "http://127.0.0.1:10002";
 +try {
 +  kPersonaUri = Services.prefs.getCharPref("toolkit.identity.uri");
 +} catch (noSuchPref) {
@@ -78,6 +82,8 @@ new file mode 100644
 +function log(msg) {
 +  dump("* RTCAuthModule: " + msg + "\n");
 +}
++
++log("**** using persona uri: " + kPersonaUri);
 +
 +/*
 + * An invisible iframe for hosting the persona logic.
@@ -107,6 +113,7 @@ new file mode 100644
 +    this._iframe.setAttribute("mozframetype", "content");
 +    this._iframe.setAttribute("id", "persona-host-frame");
 +    this._iframe.setAttribute("src", kPersonaUri+'/communication_iframe');
++    log("iframe src: " + kPersonaUri+'/communication_iframe');
 +
 +    aOptions.iframe = this._iframe;
 +
@@ -141,10 +148,6 @@ new file mode 100644
 +      this.mm.removeMessageListener("rtcid-complete", this._delegateComplete);
 +      this.mm.removeMessageListener("rtcid-loaded", this._delegateLoaded);
 +    }
-+
-+    if (typeof this.options.onComplete === "function") {
-+      this.options.onComplete();
-+    }
 +  },
 +
 +  _delegateLoaded: function pipe__delegateLoaded() {
@@ -159,8 +162,7 @@ new file mode 100644
 +  },
 +
 +  _receiveMessage: function pipe__receiveMessage(message) {
-+    log("receive message: " + message);
-+    this.controller.receiveResponse(message);
++    this.controller.receiveResponse(message.json);
 +  },
 +
 +  communicate: function pipe_communicate() {
@@ -192,6 +194,7 @@ new file mode 100644
 +function IDPChannel(messageCallback, PipeConstructor) {
 +  this.receiveResponse = messageCallback;
 +  this.pipeConstructor = PipeConstructor || Pipe;
++  this.pipe = null;
 +  this.init();
 +}
 +
@@ -219,7 +222,7 @@ new file mode 100644
 +      log("got iframe");
 +      // callback for the pipe when flow is complete
 +      options.onComplete = function pipe_onComplete(response) {
-+        logger.log("pipe clean up now");
++        log("pipe clean up now");
 +        this.pipe.close();
 +      }.bind(this);
 +
@@ -227,9 +230,9 @@ new file mode 100644
 +      //this.contexts[options.fingerprint] = options;
 +      //this.contexts[options.fingerprint].hostFrame = hostFrame;
 +
-+      let pipe = new this.pipeConstructor(options, this);
++      this.pipe = new this.pipeConstructor(options, this);
 +      log("got new pipe");
-+      pipe.communicate();
++      this.pipe.communicate();
 +    }.bind(this));
 +  }
 +};
