@@ -4,10 +4,16 @@
 diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 --- a/dom/media/PeerConnection.js
 +++ b/dom/media/PeerConnection.js
-@@ -239,16 +239,18 @@ function RTCPeerConnection() {
+@@ -234,21 +234,24 @@ function RTCPeerConnection() {
+   this._pc = null;
+   this._observer = null;
+   this._closed = false;
+ 
+   this._onCreateOfferSuccess = null;
    this._onCreateOfferFailure = null;
    this._onCreateAnswerSuccess = null;
    this._onCreateAnswerFailure = null;
++  this._onIdentityAssertionSuccess = null;
  
    this._pendingType = null;
    this._localType = null;
@@ -23,7 +29,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
     * if neccesary. The _pending flag indicates whether an operation is currently
     * in progress.
     */
-@@ -286,20 +288,22 @@ RTCPeerConnection.prototype = {
+@@ -286,20 +289,22 @@ RTCPeerConnection.prototype = {
      this.makeGetterSetterEH("onicecandidate");
      this.makeGetterSetterEH("onnegotiationneeded");
      this.makeGetterSetterEH("onsignalingstatechange");
@@ -46,7 +52,32 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
  
      // Nothing starts until ICE gathering completes.
      this._queueOrRun({
-@@ -637,16 +641,45 @@ RTCPeerConnection.prototype = {
+@@ -555,16 +560,24 @@ RTCPeerConnection.prototype = {
+     }
+     if (!onError) {
+       this.deprecated("calling createOffer without failureCallback");
+     }
+     this._mustValidateConstraints(constraints, "createOffer passed invalid constraints");
+     this._onCreateOfferSuccess = onSuccess;
+     this._onCreateOfferFailure = onError;
+ 
++    this._onIdentityAssertionSuccess = function() {
++      //has onSuccess run?
++      this.reportWarning("calling onIdentityAssertionSuccess :)", null, 0);
++    }.bind(this);
++
++
++    this._observer.onIdentityAssertionSuccess(); // run this guy when we have an assertion from the user
++
+     this._queueOrRun({
+       func: this._getPC().createOffer,
+       args: [constraints],
+       wait: true
+     });
+   },
+ 
+   _createAnswer: function(onSuccess, onError, constraints, provisional) {
+@@ -637,16 +650,46 @@ RTCPeerConnection.prototype = {
      this._queueOrRun({
        func: this._getPC().setLocalDescription,
        args: [type, desc.sdp],
@@ -65,13 +96,14 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    }
 +  },
 +
-+  getIdentityAssertion: function(funky) {
++  getIdentityAssertion: function() {
 +    if(this.signalingState == "closed") {
 +      this.reportError('getIdentityAssertion failed. signalingState is closed.', null, 0);
 +    }
 +    else {
 +      this.reportWarning('getIdentityAssertion is not yet implemented.', null, 0);
 +      if(!this._idp.set) {
++        /// get key fingerprint
 +        this.reportWarning('setIdentityProvider has not been called.', null, 0);
 +        this._idp.init('login.persona.org', 'default', null); //default inititalization values
 +        var assertion = this._idp.requestIdentityAssertion();
@@ -92,7 +124,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this._onSetRemoteDescriptionFailure = onError;
  
      let type;
-@@ -740,16 +773,20 @@ RTCPeerConnection.prototype = {
+@@ -740,16 +783,20 @@ RTCPeerConnection.prototype = {
      this.deprecated("localStreams");
      return this.getLocalStreams();
    },
@@ -113,7 +145,40 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      }
      return new this._win.mozRTCSessionDescription({ type: this._localType,
                                                      sdp: sdp });
-@@ -1047,15 +1084,63 @@ PeerConnectionObserver.prototype = {
+@@ -912,23 +959,31 @@ PeerConnectionObserver.prototype = {
+         // A content script (user-provided) callback threw an error. We don't
+         // want this to take down peerconnection, but we still want the user
+         // to see it, so we catch it, report it, and move on.
+         this._dompc.reportError(e.message, e.fileName, e.lineNumber);
+       }
+     }
+   },
+ 
+-  onCreateOfferSuccess: function(sdp) {
++  onIdentityAssertionSuccess: function(sdp) {
+     this.callCB(this._dompc._onCreateOfferSuccess,
+                 new this._dompc._win.mozRTCSessionDescription({ type: "offer",
+                                                                 sdp: sdp }));
+     this._dompc._executeNext();
+   },
+ 
++  onCreateOfferSuccess: function(sdp) {
++    // getIdentityAssertion here and pass in the sdp
++    //
++    //
++
++    this.onIdentityAssertionSuccess(sdp);
++  },
++
+   onCreateOfferError: function(code, message) {
+     this.callCB(this._dompc._onCreateOfferFailure, new RTCError(code, message));
+     this._dompc._executeNext();
+   },
+ 
+   onCreateAnswerSuccess: function(sdp) {
+     this.callCB (this._dompc._onCreateAnswerSuccess,
+                  new this._dompc._win.mozRTCSessionDescription({ type: "answer",
+@@ -1047,15 +1102,65 @@ PeerConnectionObserver.prototype = {
    },
  
    notifyConnection: function() {
@@ -144,7 +209,9 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    this.setIDP(provider, protocol, username);
 +    this._dompc.reportWarning('IDP has been (re-)initialized.', null, 0);
 +  },
-+  requestIdentityAssertion: function(/* callback */) {
++  requestIdentityAssertion: function(sdp) {
++    // get the key fingerprint from the sdp and use it when getting an assertion
++
 +    // fake implementation
 +    // In the future we will open an iframe and allow the user to login to their IDP.
 +    //
