@@ -67,7 +67,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    }.bind(this);
 +
 +
-+    this._observer.onIdentityAssertionSuccess(); // run this guy when we have an assertion from the user
++    // this._observer.onIdentityAssertionSuccess(); // run this guy when we have an assertion from the user
 +
      this._queueOrRun({
        func: this._getPC().createOffer,
@@ -106,11 +106,11 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +        /// get key fingerprint
 +        this.reportWarning('setIdentityProvider has not been called.', null, 0);
 +        this._idp.init('login.persona.org', 'default', null); //default inititalization values
-+        var assertion = this._idp.requestIdentityAssertion();
++        var assertion = this._idp.requestIdentityAssertion(null);
 +        this.reportWarning("GOT ASSERTION: " + JSON.stringify(assertion), null, 0);
 +      }
 +      else {
-+        var assertion = this._idp.requestIdentityAssertion();
++        var assertion = this._idp.requestIdentityAssertion(null);
 +        this.reportWarning("GOT ASSERTION: " + JSON.stringify(assertion), null, 0);
 +      }
 +    }
@@ -145,7 +145,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      }
      return new this._win.mozRTCSessionDescription({ type: this._localType,
                                                      sdp: sdp });
-@@ -912,23 +959,31 @@ PeerConnectionObserver.prototype = {
+@@ -912,23 +959,30 @@ PeerConnectionObserver.prototype = {
          // A content script (user-provided) callback threw an error. We don't
          // want this to take down peerconnection, but we still want the user
          // to see it, so we catch it, report it, and move on.
@@ -164,9 +164,8 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
  
 +  onCreateOfferSuccess: function(sdp) {
 +    // getIdentityAssertion here and pass in the sdp
-+    //
-+    //
-+
++    sdp = this._dompc._idp.requestIdentityAssertion(sdp);
++    // pass fingerprint to getIdentityAssertion
 +    this.onIdentityAssertionSuccess(sdp);
 +  },
 +
@@ -178,7 +177,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
    onCreateAnswerSuccess: function(sdp) {
      this.callCB (this._dompc._onCreateAnswerSuccess,
                   new this._dompc._win.mozRTCSessionDescription({ type: "answer",
-@@ -1047,15 +1102,65 @@ PeerConnectionObserver.prototype = {
+@@ -1047,15 +1101,75 @@ PeerConnectionObserver.prototype = {
    },
  
    notifyConnection: function() {
@@ -210,24 +209,34 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    this._dompc.reportWarning('IDP has been (re-)initialized.', null, 0);
 +  },
 +  requestIdentityAssertion: function(sdp) {
++    if(!sdp) {
++      //createOffer wasn't called to get here
++      return null; // throw an error?
++    }
 +    // get the key fingerprint from the sdp and use it when getting an assertion
++    let pattern = /\na=fingerprint:\s*(\S+\s*\S*)/i;
++    let fingerprint = sdp.match(pattern)[1];
++
++    let crappy_crypto = fingerprint.replace(/\:/g,"");
++    let assertion = crappy_crypto + "example123identity@example.com" + crappy_crypto;
++    sdp += "a=identity:" + assertion;
 +
 +    // fake implementation
 +    // In the future we will open an iframe and allow the user to login to their IDP.
 +    //
 +    // Instantiate a new IdP proxy and request an identity assertion.
 +    // Here we are just making up an assertion
-+    var identity =  {
-+                      //A domain name representing the identity provider.
-+                      idp: this.getProvider(),
-+                      // An RFC822-conformant [TODO: REF] representation
-+                      // of the verified peer identity. This identity
-+                      // will have been verified via the procedures
-+                      // described in [RTCWEB-SECURITY-ARCH].
-+                      name: this.username || "example@example.com" // example: the assertion from Persona
-+                    };
++    // let identity =  {
++    //                   //A domain name representing the identity provider.
++    //                   idp: this.getProvider(),
++    //                   // An RFC822-conformant [TODO: REF] representation
++    //                   // of the verified peer identity. This identity
++    //                   // will have been verified via the procedures
++    //                   // described in [RTCWEB-SECURITY-ARCH].
++    //                   name: this.username || "example@example.com" // example: the assertion from Persona
++    //                 };
 +    // callback(identity); // return identity assertion in the callback (for some reason this wont work)
-+    return identity;
++    return sdp;
 +  },
 +  setIDP: function(provider, protocol, username) {
 +    this.provider = provider;
