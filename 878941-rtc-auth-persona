@@ -1,9 +1,129 @@
 # HG changeset patch
 # Parent 86413e921d5d5bdbefd6475619ebb0eab6185184
 # User Jed Parsons <jparsons@mozilla.com>
-# Date Wed Jun 12 16:25:56 2013 -0700
+# Date Wed Jun 12 16:35:42 2013 -0700
 Bug 878941 - IdP Proxy and communication channel for RTC peer connection (wip)
 
+diff --git a/browser/base/content/rtc-persona-framescript.js b/browser/base/content/rtc-persona-framescript.js
+new file mode 100644
+--- /dev/null
++++ b/browser/base/content/rtc-persona-framescript.js
+@@ -0,0 +1,115 @@
++/* -*- Mode: js2; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- /
++/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
++ * You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// This JS shim contains the callbacks to fire DOMRequest events for
++// navigator.mozId API within the caller's scope.
++
++'use strict';
++
++let { classes: Cc, interfaces: Ci, utils: Cu } = Components;
++Cu.import('resource://gre/modules/XPCOMUtils.jsm');
++
++function log(msg) {
++  dump(" ** rtc shim: " + msg + "\n");
++}
++
++function IdentityShim() {
++  this.isLoaded = false;
++}
++
++IdentityShim.prototype = {
++  init: function IdentityShim_init() {
++    addMessageListener('rtcid-message', this);
++    log("init; sending rtcid-loaded");
++    sendAsyncMessage('rtcid-loaded');
++    this.isLoaded = true;
++  },
++
++  uninit: function IdentityShim_uninit() {
++    if (this.isLoaded) {
++      removeMessageListener('rtcid-message', this);
++      log("uninit; sending rtcid-complete");
++      sendAsyncMessage('rtcid-complete', null);
++      this.isLoaded = false;
++    }
++  },
++
++  receiveMessage: function IdentityShim_receiveMessage(aMessage) {
++    let data = aMessage.json;
++    log("receiveMessage: " + JSON.stringify(data));
++    switch (data.message.type) {
++      case 'SIGN':
++        this.sign(data);
++        break;
++      case 'VERIFY':
++        this.verify(data);
++        break;
++      default:
++        log("ERROR: unknown messge type: " + data.type);
++        break;
++    }
++  },
++
++  sendResponse: function IdentityShim_sendResponse(message) {
++    log("send response:" + message);
++    sendAsyncMessage('rtcid-response', message);
++  },
++
++  _close: function IdentityShim__close() {
++    this.uninit();
++  },
++
++  sign: function IdentityShim_sign(data) {
++    let stringifiedOptions = JSON.stringify({extraData: data.message.message});
++    log("sign extra data: " + stringifiedOptions);
++    let callback = function shim_getCallback(assertion) {
++      dump("yay! internal.get called back with assertion: " + assertion);
++      this.sendResponse({
++        method: (assertion ? 'SUCCESS' : 'FAILURE'),
++        origin: data.origin,
++        id: data.id,
++        message: assertion}
++      );
++      this._close();
++    }.bind(this);
++
++    content.wrappedJSObject.BrowserID.internal.get(
++      data.origin,
++      callback,
++      stringifiedOptions,
++      log
++    );
++    log("called get with options: " + typeof stringifiedOptions + ': ' + stringifiedOptions);
++  },
++
++  verify: function IdentityShim_verify(options) {
++    this.sendResponse({error: "Not implemented"});
++  }
++};
++
++this.shim = null;
++
++// XXX wha?  why both events
++// dump out these events - should just be on 'load'
++addEventListener('DOMContentLoaded', function(e) {
++  log("got DOMContentLoaded");
++  content.addEventListener('load', function(e) {
++    log("got load event");
++    this.shim = new IdentityShim();
++    this.shim.init();
++  });
++});
++
++// Having an event listener for 'unload' prevents the page from
++// being cached.  So use 'pagehide' instead.
++// https://developer.mozilla.org/en-US/docs/Using_Firefox_1.5_caching
++content.addEventListener('pagehide', function(e) {
++  log("got pagehide event");
++  if (this.shim) {
++    this.shim.uninit();
++  }
++});
++
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
@@ -71,8 +191,8 @@ new file mode 100644
 +// XXX while developing this, we use an ephemeral instance of persona that
 +// provides new functionality we need, namely fingerprint-wrapping in the
 +// assertion.
-+//let kPersonaUri = "https://webrtc.personatest.org";
-+let kPersonaUri = "http://127.0.0.1:10002";
++let kPersonaUri = "https://webrtc.personatest.org";
++//let kPersonaUri = "http://127.0.0.1:10002";
 +try {
 +  kPersonaUri = Services.prefs.getCharPref("toolkit.identity.uri");
 +} catch (noSuchPref) {
