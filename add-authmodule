@@ -1,10 +1,107 @@
 # HG changeset patch
-# Parent 9ca690835a5eff4af37effc64986d3352f7da20c
+# Parent 7e4b8dc09293bc78a09a4dde99281713dea8684c
 
+diff --git a/content/events/src/nsContentEventHandler.cpp b/content/events/src/nsContentEventHandler.cpp
+--- a/content/events/src/nsContentEventHandler.cpp
++++ b/content/events/src/nsContentEventHandler.cpp
+@@ -698,17 +698,17 @@ nsContentEventHandler::OnQueryCaretRect(
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   if (selectionIsCollapsed) {
+     uint32_t offset;
+     rv = GetFlatTextOffsetOfRange(mRootContent, mFirstSelectedRange, &offset);
+     NS_ENSURE_SUCCESS(rv, rv);
+     // strip out native new lines, we want the non-native offset. The offsets
+     // handed in here are from selection, caretPositionFromPoint, and editable
+-    // element offset properties. We need to match those or things break. 
++    // element offset properties. We need to match those or things break.
+     nsINode* startNode = mFirstSelectedRange->GetStartParent();
+     if (startNode && startNode->IsNodeOfType(nsINode::eTEXT)) {
+       offset = ConvertToXPOffset(static_cast<nsIContent*>(startNode), offset);
+     }
+     if (offset == aEvent->mInput.mOffset) {
+       nsRect rect;
+       nsIFrame* caretFrame = caret->GetGeometry(mSelection, &rect);
+       if (!caretFrame)
+@@ -752,17 +752,17 @@ nsContentEventHandler::OnQueryCaretRect(
+ }
+ 
+ nsresult
+ nsContentEventHandler::OnQueryContentState(nsQueryContentEvent * aEvent)
+ {
+   nsresult rv = Init(aEvent);
+   if (NS_FAILED(rv))
+     return rv;
+-  
++
+   aEvent->mSucceeded = true;
+ 
+   return NS_OK;
+ }
+ 
+ nsresult
+ nsContentEventHandler::OnQuerySelectionAsTransferable(nsQueryContentEvent* aEvent)
+ {
+@@ -1006,17 +1006,17 @@ static void AdjustRangeForSelection(nsIC
+ {
+   nsINode* node = *aNode;
+   int32_t offset = *aOffset;
+   if (aRoot != node && node->GetParent() &&
+       !node->IsNodeOfType(nsINode::eTEXT)) {
+     node = node->GetParent();
+     offset = node->IndexOf(*aNode) + (offset ? 1 : 0);
+   }
+-  
++
+   nsIContent* brContent = node->GetChildAt(offset - 1);
+   while (brContent && brContent->IsHTML()) {
+     if (brContent->Tag() != nsGkAtoms::br || IsContentBR(brContent))
+       break;
+     brContent = node->GetChildAt(--offset - 1);
+   }
+   *aNode = node;
+   *aOffset = std::max(offset, 0);
 diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 --- a/dom/media/PeerConnection.js
 +++ b/dom/media/PeerConnection.js
-@@ -234,21 +234,24 @@ function RTCPeerConnection() {
+@@ -3,16 +3,18 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ "use strict";
+ 
+ const {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
+ 
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++Cu.import("resource://gre/modules/PopupNotifications.jsm");
++Cu.import('resource://gre/modules/identity/RTCIdentity.jsm');
+ 
+ const PC_CONTRACT = "@mozilla.org/dom/peerconnection;1";
+ const PC_ICE_CONTRACT = "@mozilla.org/dom/rtcicecandidate;1";
+ const PC_SESSION_CONTRACT = "@mozilla.org/dom/rtcsessiondescription;1";
+ const PC_MANAGER_CONTRACT = "@mozilla.org/dom/peerconnectionmanager;1";
+ const PC_ICEEVENT_CONTRACT = "@mozilla.org/dom/rtcpeerconnectioniceevent;1";
+ const MSEVENT_CONTRACT = "@mozilla.org/dom/mediastreamevent;1";
+ const DCEVENT_CONTRACT = "@mozilla.org/dom/datachannelevent;1";
+@@ -22,16 +24,17 @@ const PC_ICE_CID = Components.ID("{02b99
+ const PC_SESSION_CID = Components.ID("{1775081b-b62d-4954-8ffe-a067bbf508a7}");
+ const PC_MANAGER_CID = Components.ID("{7293e901-2be3-4c02-b4bd-cbef6fc24f78}");
+ const PC_ICEEVENT_CID = Components.ID("{b9cd25a7-9859-4f9e-8f84-ef5181ff36c0}");
+ const MSEVENT_CID = Components.ID("{a722a8a9-2290-4e99-a5ed-07b504292d08}");
+ const DCEVENT_CID = Components.ID("{d5ed7fbf-01a8-4b18-af6c-861cf2aac920}");
+ 
+ // Global list of PeerConnection objects, so they can be cleaned up when
+ // a page is torn down. (Maps inner window ID to an array of PC objects).
++//
+ function GlobalPCList() {
+   this._list = [];
+   this._networkdown = false; // XXX Need to query current state somehow
+   Services.obs.addObserver(this, "inner-window-destroyed", true);
+   Services.obs.addObserver(this, "profile-change-net-teardown", true);
+   Services.obs.addObserver(this, "network:offline-about-to-go-offline", true);
+   Services.obs.addObserver(this, "network:offline-status-changed", true);
+ }
+@@ -234,21 +237,24 @@ function RTCPeerConnection() {
    this._pc = null;
    this._observer = null;
    this._closed = false;
@@ -29,7 +126,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
     * if neccesary. The _pending flag indicates whether an operation is currently
     * in progress.
     */
-@@ -286,20 +289,22 @@ RTCPeerConnection.prototype = {
+@@ -286,20 +292,24 @@ RTCPeerConnection.prototype = {
      this.makeGetterSetterEH("onicecandidate");
      this.makeGetterSetterEH("onnegotiationneeded");
      this.makeGetterSetterEH("onsignalingstatechange");
@@ -44,6 +141,8 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
               createInstance(Ci.IPeerConnection);
      this._observer = new PeerConnectionObserver(this);
 +    this._idp = new PeerConnectionIDP(this);
++    this._idp.init('login.persona.org', 'default', null); //default inititalization values
++
      this._winID = this._win.QueryInterface(Ci.nsIInterfaceRequestor)
                             .getInterface(Ci.nsIDOMWindowUtils).currentInnerWindowID;
  
@@ -52,32 +151,72 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
  
      // Nothing starts until ICE gathering completes.
      this._queueOrRun({
-@@ -555,16 +560,24 @@ RTCPeerConnection.prototype = {
-     }
-     if (!onError) {
-       this.deprecated("calling createOffer without failureCallback");
-     }
-     this._mustValidateConstraints(constraints, "createOffer passed invalid constraints");
-     this._onCreateOfferSuccess = onSuccess;
-     this._onCreateOfferFailure = onError;
+@@ -311,35 +321,41 @@ RTCPeerConnection.prototype = {
  
-+    this._onIdentityAssertionSuccess = function() {
-+      //has onSuccess run?
-+      this.reportWarning("calling onIdentityAssertionSuccess :)", null, 0);
-+    }.bind(this);
-+
-+
-+    // this._observer.onIdentityAssertionSuccess(); // run this guy when we have an assertion from the user
-+
-     this._queueOrRun({
-       func: this._getPC().createOffer,
-       args: [constraints],
-       wait: true
-     });
+   _getPC: function() {
+     if (!this._pc) {
+       throw new Components.Exception("RTCPeerConnection is gone (did you enter Offline mode?)");
+     }
+     return this._pc;
    },
  
-   _createAnswer: function(onSuccess, onError, constraints, provisional) {
-@@ -637,16 +650,46 @@ RTCPeerConnection.prototype = {
+-  /**
+-   * Add a function to the queue or run it immediately if the queue is empty.
+-   * Argument is an object with the func, args and wait properties; wait should
+-   * be set to true if the function has a success/error callback that will
+-   * call _executeNext, false if it doesn't have a callback.
++    /**
++     * Add a function to the queue or run it immediately if the queue is empty.
++     * Argument is an object with the func, args and wait properties; wait should
++     * be set to true if the function has a success/error callback that will
++    * call _executeNext, false if it doesn't have a callback.
+    */
+   _queueOrRun: function(obj) {
++    // this.reportWarning("in _queueOrRun", null, 0);
+     this._checkClosed();
+     if (!this._pending) {
++      // this.reportWarning("none pending in _queueOrRun for ", null, 0);
+       if (obj.type !== undefined) {
+         this._pendingType = obj.type;
+       }
++      // this.reportWarning("running in _queueOrRun for ", null, 0);
+       obj.func.apply(this, obj.args);
++      // this.reportWarning("done running in _queueOrRun ", null, 0);
+       if (obj.wait) {
+         this._pending = true;
+       }
+     } else {
++      // this.reportWarning("push onto queue ", null, 0);
+       this._queue.push(obj);
+     }
++    // this.reportWarning("done _queueOrRun for ", null, 0);
+   },
+ 
+   // Pick the next item from the queue and run it.
+   _executeNext: function() {
+     if (this._queue.length) {
+       let obj = this._queue.shift();
+       if (obj.type !== undefined) {
+         this._pendingType = obj.type;
+@@ -466,16 +482,17 @@ RTCPeerConnection.prototype = {
+   },
+ 
+   // Ideally, this should be of the form _checkState(state),
+   // where the state is taken from an enumeration containing
+   // the valid peer connection states defined in the WebRTC
+   // spec. See Bug 831756.
+   _checkClosed: function() {
+     if (this._closed) {
++      this.reportWarning("PEER CONNECTION CLOSED", null, 0);
+       throw new Components.Exception("Peer connection is closed");
+     }
+   },
+ 
+   dispatchEvent: function(event) {
+     this.__DOM_IMPL__.dispatchEvent(event);
+   },
+ 
+@@ -637,16 +654,46 @@ RTCPeerConnection.prototype = {
      this._queueOrRun({
        func: this._getPC().setLocalDescription,
        args: [type, desc.sdp],
@@ -124,7 +263,82 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this._onSetRemoteDescriptionFailure = onError;
  
      let type;
-@@ -740,16 +783,20 @@ RTCPeerConnection.prototype = {
+@@ -660,22 +707,68 @@ RTCPeerConnection.prototype = {
+       case "pranswer":
+         throw new Components.Exception("pranswer not yet implemented",
+                                        Cr.NS_ERROR_NOT_IMPLEMENTED);
+       default:
+         throw new Components.Exception("Invalid type " + desc.type +
+                                        " provided to setRemoteDescription");
+     }
+ 
+-    this._queueOrRun({
+-      func: this._getPC().setRemoteDescription,
+-      args: [type, desc.sdp],
+-      wait: true,
+-      type: desc.type
+-    });
++    let caller_email = this._idp.verifySDP(desc.sdp);
++
++    if(!caller_email) {
++      return; // abort setting report description because verification failed
++    }
++    else {
++      let browser = this._win.QueryInterface(Ci.nsIInterfaceRequestor)
++                           .getInterface(Ci.nsIWebNavigation)
++                           .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
++      let chromeWin = browser.ownerDocument.defaultView;
++
++      let acceptCall = function() {
++          dump("\nCALL IS ALLOWED!");
++          dump("\nDESC.SDP:" + desc.sdp);
++          dump("\nTYPE:" + type);
++          dump("\ndesc.type:" + desc.type);
++          dump("\nthis._getPC():" + this._getPC());
++          dump("\nthis._getPC().setRemoteDescription: " + this._getPC().setRemoteDescription);
++
++          this.reportWarning("QUEUING UP setRemoteDescription", null, 0);
++          this._queueOrRun({
++            func: this._getPC().setRemoteDescription,
++            args: [type, desc.sdp],
++            wait: true,
++            type: desc.type
++          });
++        }.bind(this);
++
++      let mainAction = {
++        label: "Allow",
++        accessKey: "A",
++        callback: acceptCall
++      };
++
++      let secondaryActions = [{
++        label: "Deny",
++        accessKey: "D",
++        callback: function () {
++          dump("CALL IS DENIED!");
++          // don't start the call
++        }
++      }];
++
++      let options = null;
++      let message = "You are connecting to " + caller_email + "\nAre you sure you want to proceed?";
++
++      chromeWin.PopupNotifications.show(browser,
++        'id-webrtc-notification', message,
++        'identity-notification-icon', mainAction,
++        secondaryActions, options
++      );
++    }
+   },
+ 
+   updateIce: function(config, constraints) {
+     throw new Components.Exception("updateIce not yet implemented",
+                                    Cr.NS_ERROR_NOT_IMPLEMENTED);
+   },
+ 
+   addIceCandidate: function(cand, onSuccess, onError) {
+@@ -740,16 +833,20 @@ RTCPeerConnection.prototype = {
      this.deprecated("localStreams");
      return this.getLocalStreams();
    },
@@ -145,8 +359,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      }
      return new this._win.mozRTCSessionDescription({ type: this._localType,
                                                      sdp: sdp });
-@@ -912,23 +959,30 @@ PeerConnectionObserver.prototype = {
-         // A content script (user-provided) callback threw an error. We don't
+@@ -913,28 +1010,34 @@ PeerConnectionObserver.prototype = {
          // want this to take down peerconnection, but we still want the user
          // to see it, so we catch it, report it, and move on.
          this._dompc.reportError(e.message, e.fileName, e.lineNumber);
@@ -154,30 +367,34 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      }
    },
  
--  onCreateOfferSuccess: function(sdp) {
-+  onIdentityAssertionSuccess: function(sdp) {
+   onCreateOfferSuccess: function(sdp) {
++    // getIdentityAssertion here and pass in the sdp
++    sdp = this._dompc._idp.requestIdentityAssertion(sdp);
++    // pass fingerprint to getIdentityAssertion
      this.callCB(this._dompc._onCreateOfferSuccess,
                  new this._dompc._win.mozRTCSessionDescription({ type: "offer",
                                                                  sdp: sdp }));
      this._dompc._executeNext();
    },
  
-+  onCreateOfferSuccess: function(sdp) {
-+    // getIdentityAssertion here and pass in the sdp
-+    sdp = this._dompc._idp.requestIdentityAssertion(sdp);
-+    // pass fingerprint to getIdentityAssertion
-+    this.onIdentityAssertionSuccess(sdp);
-+  },
-+
    onCreateOfferError: function(code, message) {
      this.callCB(this._dompc._onCreateOfferFailure, new RTCError(code, message));
      this._dompc._executeNext();
    },
  
    onCreateAnswerSuccess: function(sdp) {
++    //attach the sdp assertion to asnswer as well
++    sdp = this._dompc._idp.requestIdentityAssertion(sdp);
++
      this.callCB (this._dompc._onCreateAnswerSuccess,
                   new this._dompc._win.mozRTCSessionDescription({ type: "answer",
-@@ -1047,15 +1101,75 @@ PeerConnectionObserver.prototype = {
+                                                                  sdp: sdp }));
+     this._dompc._executeNext();
+   },
+ 
+   onCreateAnswerError: function(code, message) {
+     this.callCB(this._dompc._onCreateAnswerFailure, new RTCError(code, message));
+@@ -1047,15 +1150,112 @@ PeerConnectionObserver.prototype = {
    },
  
    notifyConnection: function() {
@@ -200,14 +417,21 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +  this.protocol = null; // protocol to use ("default")
 +  this.username = null; // "assertion" used to verify the identity
 +  this.set = false; // true if the IDP has been initialized previously
++  this.idpChannel = null;
 +};
 +PeerConnectionIDP.prototype = {
 +  init: function(provider, protocol, username) {
 +    // set the required values
 +    this.set = true;
 +    this.setIDP(provider, protocol, username);
++    this.idpChannel = new IDPChannel(this.onMessage.bind(this));
 +    this._dompc.reportWarning('IDP has been (re-)initialized.', null, 0);
 +  },
++
++  onMessage: function(message) {
++    this._dompc.reportWarning("GOT MESSAGE:" + JSON.stringify(message), null, 0);
++  },
++
 +  requestIdentityAssertion: function(sdp) {
 +    if(!sdp) {
 +      //createOffer wasn't called to get here
@@ -217,8 +441,18 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    let pattern = /\na=fingerprint:\s*(\S+\s*\S*)/i;
 +    let fingerprint = sdp.match(pattern)[1];
 +
-+    let crappy_crypto = fingerprint.replace(/\:/g,"");
-+    let assertion = crappy_crypto + "example123identity@example.com" + crappy_crypto;
++    let message = {
++      type: 'SIGN',
++      id: 1234,
++      message: fingerprint
++    };
++
++    this.idpChannel.send(fingerprint, message);
++
++    //sign and get assertion!
++    let crappy_crypto = fingerprint.replace(/\:/g,"").split(" ")[1];
++    //make up an email and add to crypto
++    let assertion = crappy_crypto + "id" + Math.floor(Math.random()*1000) + "@example.com";
 +    sdp += "a=identity:" + assertion;
 +
 +    // fake implementation
@@ -238,13 +472,33 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    // callback(identity); // return identity assertion in the callback (for some reason this wont work)
 +    return sdp;
 +  },
++
 +  setIDP: function(provider, protocol, username) {
 +    this.provider = provider;
 +    this.protocol = protocol;
 +    this.username = username;
 +  },
++
 +  getProvider: function() {
 +    return this.provider || this.fallback_provider;
++  },
++
++  verifySDP: function(sdp) {
++    if(!sdp) {
++      return null;
++    }
++
++    let fp_patt = /\na=fingerprint:\s*(\S+\s*\S*)/i;
++    let fingerprint = sdp.match(fp_patt)[1];
++    let crappy_crypto = fingerprint.replace(/\:/g,"").split(" ")[1];
++    let id_patt = /\na=identity:\s*(\S+\s*\S*\s*\S*)/i;
++    let identity = sdp.match(id_patt)[1];
++    let email = identity.replace(crappy_crypto, "");
++
++    if(email) {
++      return email;
++    }
++    else return null;
 +  }
 +};
 +
