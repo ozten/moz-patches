@@ -8,7 +8,7 @@ diff --git a/browser/base/content/rtc-persona-framescript.js b/browser/base/cont
 new file mode 100644
 --- /dev/null
 +++ b/browser/base/content/rtc-persona-framescript.js
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,119 @@
 +/* -*- Mode: js2; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- /
 +/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 +/* This Source Code Form is subject to the terms of the Mozilla Public
@@ -55,9 +55,6 @@ new file mode 100644
 +      case 'SIGN':
 +        this.sign(data);
 +        break;
-+      case 'VERIFY':
-+        this.verify(data);
-+        break;
 +      default:
 +        log("ERROR: unknown messge type: " + data.type);
 +        break;
@@ -74,30 +71,37 @@ new file mode 100644
 +  },
 +
 +  sign: function IdentityShim_sign(data) {
-+    let stringifiedOptions = JSON.stringify({extraData: data.message.message});
++    log("sign received: " + JSON.stringify(data));
++    let message = data.message;
++    let stringifiedOptions = JSON.stringify({
++      silent: true,
++      origin: message.origin,
++      extraData: message.message
++    });
 +    log("sign extra data: " + stringifiedOptions);
 +    let callback = function shim_getCallback(assertion) {
-+      dump("yay! internal.get called back with assertion: " + assertion);
++      log("yay! internal.get called back with assertion: " + assertion);
 +      this.sendResponse({
-+        method: (assertion ? 'SUCCESS' : 'FAILURE'),
-+        origin: data.origin,
-+        id: data.id,
-+        message: assertion}
-+      );
++        type: (assertion ? 'SUCCESS' : 'FAILURE'),
++        id: message.id,
++        message: {
++          idp: {
++            domain: message.origin,
++            protocol: "browserid"
++          },
++          assertion: assertion
++        }
++      });
 +      this._close();
 +    }.bind(this);
 +
++    log("calling get");
 +    content.wrappedJSObject.BrowserID.internal.get(
-+      data.origin,
++      'rtcweb://peerconnection',
 +      callback,
-+      stringifiedOptions,
-+      log
++      stringifiedOptions
 +    );
 +    log("called get with options: " + typeof stringifiedOptions + ': ' + stringifiedOptions);
-+  },
-+
-+  verify: function IdentityShim_verify(options) {
-+    this.sendResponse({error: "Not implemented"});
 +  }
 +};
 +
@@ -168,7 +172,7 @@ diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/RTCIdentity.jsm
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,244 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -191,8 +195,8 @@ new file mode 100644
 +// XXX while developing this, we use an ephemeral instance of persona that
 +// provides new functionality we need, namely fingerprint-wrapping in the
 +// assertion.
-+let kPersonaUri = "https://webrtc.personatest.org";
-+//let kPersonaUri = "http://127.0.0.1:10002";
++//let kPersonaUri = "https://webrtc.personatest.org";
++let kPersonaUri = "http://127.0.0.1:10002";
 +try {
 +  kPersonaUri = Services.prefs.getCharPref("toolkit.identity.uri");
 +} catch (noSuchPref) {
@@ -242,10 +246,10 @@ new file mode 100644
 +    // Inject a framescript into the iframe that can receive messages
 +    // from its parent process telling it which persona internal_api
 +    // methods to call.
-+    let mm = this._iframe.QueryInterface(Ci.nsIFrameLoaderOwner)
-+      .frameLoader.messageManager;
-+
-+    mm.loadFrameScript("chrome://browser/content/rtc-persona-framescript.js", true);
++    this._iframe
++      .QueryInterface(Ci.nsIFrameLoaderOwner)
++      .frameLoader.messageManager
++      .loadFrameScript("chrome://browser/content/rtc-persona-framescript.js", true);
 +
 +    // no error
 +    aCallback(null);
@@ -315,27 +319,19 @@ new file mode 100644
 +  this.receiveResponse = messageCallback;
 +  this.pipeConstructor = PipeConstructor || Pipe;
 +  this.pipe = null;
-+  this.init();
 +}
 +
 +IDPChannel.prototype = {
-+  init: function idpChannel_init() {
-+  },
 +
-+  uninit: function idpChannel_uninit() {
-+  },
-+
-+  send: function idpChannel_send(fingerprint, message) {
-+    // Peer Connection with the given fingerprint sends a message
-+    // to the idp proxy.
++  /*
++   * use the persona communication_iframe to request an assertion 
++   */
++  _sign: function idpChannel__sign(message) {
 +    let hostFrame = new HostFrame();
 +    let options = {
-+      audience: "rtcweb://peerconnection",
-+      origin: "https://example.com",
-+      fingerprint: fingerprint,
 +      message: message
 +    };
-+    log("send this: " + JSON.stringify(options, null, 2));
++    log("sign: " + JSON.stringify(options, null, 2));
 +    hostFrame.getIframe(options, function() {
 +      // iframe has been added to options
 +
@@ -354,6 +350,69 @@ new file mode 100644
 +      log("got new pipe");
 +      this.pipe.communicate();
 +    }.bind(this));
++  },
++
++  /*
++   * communicate with the persona verifier to verify the assertion.
++   * XXX this should be done completely natively with no httprequest
++   * XXX for now, this is quick and easy
++   */
++  _verify: function idpChannel__verify(message) {
++    var body, res;
++    try {
++      body = JSON.stringify(message);
++      log("verify: " + body);
++    } catch (err) {
++      this.receiveResponse(new Error("Cannot verify message; bad json"));
++    }
++
++    let req = Cc['@mozilla.org/xmlextras/xmlhttprequest;1']
++                .createInstance(Ci.nsIXMLHttpRequest);
++
++    req.open('POST', kPersonaUri + '/verify', true);
++    req.responseType = 'json';
++    req.setRequestHeader('Content-Type', 'application/json');
++    req.mozBackgroundRequest = true;
++
++    req.onload = function idpChannel__verify_onload() {
++      log('server returned' + req.status);
++      log(req);
++      if (req.status === 200) {
++        try {
++          res = JSON.parse(req.responseText);
++        } catch(err) {
++          this.receiveResponse(new Error("Incomprehensible response from server"));
++        }
++        this.receiveResponse(res.status === "okay" ? true : new Error(res.reason));
++      } else {
++        log("blah.  status code is " + req.status);
++        this.receiveResponse(new Error("Server returned status code " + req.status));
++      }
++    }.bind(this);
++
++    req.onerror = function idpChannel__verify_onerror() {
++      log('request error:', req.status, req.statusText);
++      this._afterPostUpdates(false);
++    }.bind(this);
++
++    log("send: " + body);
++    req.send(body);
++  },
++
++  send: function idpChannel_send(message) {
++    log("send received: " + JSON.stringify(message));
++    log("Send received " + message.type);
++    switch (message.type) {
++      case "SIGN":
++        this._sign(message);
++        break;
++      case "VERIFY":
++        this._verify(message);
++        break;
++      default:
++        this.receiveResponse(new Error("Unknown message type: " + message.type));
++        break;
++    }
 +  }
 +};
 +
