@@ -17,7 +17,7 @@ diff --git a/browser/base/content/rtc-persona-framescript.js b/browser/base/cont
 +    let stringifiedOptions = JSON.stringify(options);
 +    log("called verify with options: " + typeof stringifiedOptions + ': ' + stringifiedOptions);
 +    // this.sendResponse({error: "Not implemented"});
-+    this.sendResponse({ message: "TESTVERIFY" });
++    this.sendResponse({ method: "SUCCESS", message: "TESTVERIFY" });
    }
  };
  
@@ -303,7 +303,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 -      wait: true,
 -      type: desc.type
 -    });
-+    let callback = function(email) {
++    let verifyCallback = function(email) {
 +      if(!email) {
 +        // TODO: Currently throws NO_ERROR with message "Identity could not be verified". Fix this.
 +        this._observer.onSetRemoteDescriptionError(0, "Identity could not be verified");
@@ -350,7 +350,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +      );
 +    }.bind(this);
 +
-+    this._idp.verifySDP(desc.sdp, callback);
++    this._idp.verifySDP(desc.sdp, verifyCallback);
    },
  
    updateIce: function(config, constraints) {
@@ -422,7 +422,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this._dompc._executeNext();
    },
  
-@@ -1047,15 +1148,151 @@ PeerConnectionObserver.prototype = {
+@@ -1047,15 +1148,166 @@ PeerConnectionObserver.prototype = {
    },
  
    notifyConnection: function() {
@@ -435,9 +435,9 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +
 +  notifyIdentityResult: function() {
 +    this.dispatchEvent(new this._dompc._win.Event('identityresult'));
-   }
- };
- 
++  }
++};
++
 +function PeerConnectionIDP(pc) {
 +  this._dompc = pc; // peer connection object
 +  this.fallback_provider = 'login.persona.org'; // browser specific fallback idp (we will use Persona)
@@ -446,8 +446,6 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +  this.username = null; // "assertion" used to verify the identity
 +  this.set = false; // true if the IDP has been initialized previously
 +  this.idpChannel = null;
-+  this.assertionCallback = null;
-+  this.sdp = null;
 +  this.messages = {};
 +  this.messageCount = 0;
 +};
@@ -463,51 +461,60 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +  onMessage: function(message) {
 +    // got assertion message, add it to sdp and call callback
 +    // format of message currently: {"method":"SUCCESS","origin":"https://example.com","message":"TESTSIGN"}
-+    this._dompc.reportWarning(message.message, null, 0);
 +
-+    if(message.message == "TESTSIGN") {
-+      message = {
-+        type: 'SIGN',
-+        id: 1234,
-+        assertion: 'DEADBEEF',
-+      };
-+    }
-+    else if(message.message == "TESTVERIFY") {
-+      message = {
-+        type: 'VERIFY',
-+        id: 4321,
-+        email: 'test@example.com'
-+      }
-+    }
-+    else {
-+      this._dompc.reportWarning("TESTING MODE IS ON AND YOU AREN'T GETTING TEST MESSAGES FROM BROWSERID", null, 0);
-+      return;
-+    }
++
++    // RETURNED FROM SIGN MESSAGE
++    // {
++    //   "type":"SUCCESS",
++    //   "id":1,
++    //   "message": {
++    //     "idp":{
++    //       "domain": "example.org"
++    //       "protocol": "bogus"
++    //     },
++    //     "assertion":\"{\"identity\":\"bob@example.org\",
++    //                    \"contents\":\"abcdefghijklmnopqrstuvwyz\",
++    //                    \"request_origin\":\"rtcweb://peerconnection\",
++    //                    \"signature\":\"010203040506\"}"
++    //   }
++    // }
++
++    // RETURNED FROM VERIFY MESSAGE
++    // {
++    //   "type":"SUCCESS",
++    //   "id":2,
++    //   "message": {
++    //     "identity" : {
++    //       "name" : "bob@example.org",
++    //       "displayname" : "Bob"
++    //     },
++    //     "request_origin":"rtcweb://peerconnection",
++    //     "contents":"abcdefghijklmnopqrstuvwyz"
++    //   }
++    // }
 +
 +    this._dompc.reportWarning("GOT MESSAGE:" + JSON.stringify(message), null, 0);
 +
-+    if(this.messages[message.id].type == 'SIGN') {
-+      this.sdp += "a=identity:" + message.assertion;
-+      this.messages[message.id].callback(this.sdp);
++    let message = JSON.parse(message);
++    if(!message) return;
++    let msg = message.message || {};
++    let identity = message.message.identity || {};
++    let stored = this.messages[message.id] || { callback: function(){} }; // lookup stored message
++    if(message.type == 'SUCCESS') {
++      if(stored.type == 'SIGN') {
++        stored.sdp += msg.assertion;
++        return stored.callback(stored.sdp); // callback with sdp + assertion
++      }
++      else if(stored.type == 'VERIFY') {
++        return stored.callback(identity.name); // callback with email
++      }
 +    }
-+    else if(this.messages[message.id].type == 'VERIFY') {
-+      // got an email
-+      this.messages[message.id].callback(message.email);
-+    }
-+
++    return stored.callback(null);
 +  },
 +
 +  requestIdentityAssertion: function(sdp, callback) {
-+    if(!callback) {
-+      dump("No Assertion Callback!");
-+      return;
-+    }
-+
-+    if(!sdp) {
-+      //createOffer wasn't called to get here
-+      callback(null); // throw an error?
-+      return;
-+    }
++    if(!callback) return; // no callback
++    if(!sdp) return callback(null); // throw an error?
 +
 +    this.sdp = sdp;
 +
@@ -519,11 +526,11 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +
 +    let data = {
 +      type: 'SIGN',
-+      id: this.messageCount, // TODO: keep track of this ID for future cross-checking
++      id: this.messageCount,
 +      message: fingerprint
 +    };
 +
-+    this.messages[this.messageCount] = { type: 'SIGN', message: fingerprint, callback: callback };
++    this.messages[this.messageCount] = { sdp: sdp, type: 'SIGN', message: fingerprint, callback: callback };
 +    this.messageCount++;
 +
 +    //send fingerprint to idp channel to create assertion
@@ -542,23 +549,32 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +  },
 +
 +  verifySDP: function(sdp, callback) {
-+    if(!sdp) {
-+      callback(null);
-+      return;
-+    }
++    if(!sdp) return callback(null);
 +
-+    let fp_patt = /\na=fingerprint:\s*(\S+\s*\S*)/i;
-+    let fingerprint = sdp.match(fp_patt)[1];
-+    let id_patt = /\na=identity:\s*(\S+\s*\S*)/i;
-+    let assertion = sdp.match(id_patt)[1];
++    let assertion = null;
++    let fingerprint = null;
 +
-+    let message = { 'identity': assertion, 'fingerprint': fingerprint };
++    let fp_patt = /\na=fingerprint:\s*(\S+\s*\S*)/i; // TODO: test the shit outta this
++    let fingerprint_matches = sdp.match(fp_patt);
++    if(!fingerprint_matches) return callback(null); // no matches? (shouldn't happen)
++    else fingerprint = fingerprint_matches[1];
 +
-+    this.messageCount = 4321; // TODO: remove this when finished testing
++    let id_patt = /\na=identity:\s*(\S+\s*\S*)/i; // TODO: test the shit outta this too
++    let assertion_matches = sdp.match(id_patt);
++    let assertion = null;
++    if(!assertion_matches) return callback(null); //no matches (old browser?)
++    else assertion = assertion_matches[1]; // a match!
++
++    let message = {
++      'identity': assertion,
++      'fingerprint': fingerprint
++    };
++
++    /* TESTING ONLY */ this.messageCount = 4321; // TODO: remove this when finished testing /* TESTING ONLY */
 +
 +    let data = {
 +      type: 'VERIFY',
-+      id: this.messageCount, // TODO: keep track of this ID for future cross-checking
++      id: this.messageCount,
 +      message: message
 +    };
 +
@@ -566,10 +582,9 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    this.messageCount++;
 +
 +    this.idpChannel.send(fingerprint, data);
-+  }
-+};
-+
-+
+   }
+ };
+ 
  this.NSGetFactory = XPCOMUtils.generateNSGetFactory(
    [GlobalPCList, RTCIceCandidate, RTCSessionDescription, RTCPeerConnection,
     RTCPeerConnectionIceEvent, MediaStreamEvent, RTCDataChannelEvent]
@@ -792,3 +807,22 @@ diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
  
      aOptions.iframe = this._iframe;
  
+@@ -155,17 +155,17 @@ IDPChannel.prototype = {
+   },
+ 
+   send: function idpChannel_send(fingerprint, message) {
+     // Peer Connection with the given fingerprint sends a message
+     // to the idp proxy.
+     let hostFrame = new HostFrame();
+     let options = {
+       audience: "rtcweb://peerconnection",
+-      origin: "https://example.com",
++      origin: "http://localhost:3000",
+       fingerprint: fingerprint,
+       message: message
+     };
+     log("send this: " + JSON.stringify(options, null, 2));
+     hostFrame.getIframe(options, function() {
+       // iframe has been added to options
+ 
+       log("got iframe");
