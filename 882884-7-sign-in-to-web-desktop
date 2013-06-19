@@ -1,0 +1,25 @@
+# HG changeset patch
+# Parent 63c6685e2e9c5cb067e7350f3a0a5f59f3621ba4
+
+diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
+--- a/browser/modules/SignInToWebsite.jsm
++++ b/browser/modules/SignInToWebsite.jsm
+@@ -34,17 +34,17 @@ try {
+ } catch(noSuchPref) {
+   // stick with the default value
+ }
+ 
+ const kInteractivePersonaIframe = kPersonaUri + "/sign_in#NATIVE";
+ const kHiddenPersonaIframe = kPersonaUri + "/communication_iframe";
+ 
+ const PANEL_MIN_HEIGHT = 440;
+-const PANEL_MIN_WIDTH = 300;
++const PANEL_MIN_WIDTH = 380 - 34; // border is 17;
+ 
+ /**
+  * Ripped off from the resize watcher in base/content/browser-social.js
+  */
+ 
+ function sizePanelToContent(iframe) {
+   // FIXME: bug 764787: Maybe we can use nsIDOMWindowUtils.getRootBounds() here?
+   let doc = iframe.contentDocument;

@@ -1,10 +1,132 @@
 # HG changeset patch
-# Parent 9ca690835a5eff4af37effc64986d3352f7da20c
+# Parent 7e4b8dc09293bc78a09a4dde99281713dea8684c
 
+diff --git a/browser/base/content/rtc-persona-framescript.js b/browser/base/content/rtc-persona-framescript.js
+--- a/browser/base/content/rtc-persona-framescript.js
++++ b/browser/base/content/rtc-persona-framescript.js
+@@ -81,17 +81,20 @@ IdentityShim.prototype = {
+       callback,
+       stringifiedOptions,
+       log
+     );
+     log("called get with options: " + typeof stringifiedOptions + ': ' + stringifiedOptions);
+   },
+ 
+   verify: function IdentityShim_verify(options) {
+-    this.sendResponse({error: "Not implemented"});
++    let stringifiedOptions = JSON.stringify(options);
++    log("called verify with options: " + typeof stringifiedOptions + ': ' + stringifiedOptions);
++    // this.sendResponse({error: "Not implemented"});
++    this.sendResponse({ method: "SUCCESS", message: "TESTVERIFY" });
+   }
+ };
+ 
+ this.shim = null;
+ 
+ // XXX wha?  why both events
+ // dump out these events - should just be on 'load'
+ addEventListener('DOMContentLoaded', function(e) {
+diff --git a/content/events/src/nsContentEventHandler.cpp b/content/events/src/nsContentEventHandler.cpp
+--- a/content/events/src/nsContentEventHandler.cpp
++++ b/content/events/src/nsContentEventHandler.cpp
+@@ -698,17 +698,17 @@ nsContentEventHandler::OnQueryCaretRect(
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   if (selectionIsCollapsed) {
+     uint32_t offset;
+     rv = GetFlatTextOffsetOfRange(mRootContent, mFirstSelectedRange, &offset);
+     NS_ENSURE_SUCCESS(rv, rv);
+     // strip out native new lines, we want the non-native offset. The offsets
+     // handed in here are from selection, caretPositionFromPoint, and editable
+-    // element offset properties. We need to match those or things break. 
++    // element offset properties. We need to match those or things break.
+     nsINode* startNode = mFirstSelectedRange->GetStartParent();
+     if (startNode && startNode->IsNodeOfType(nsINode::eTEXT)) {
+       offset = ConvertToXPOffset(static_cast<nsIContent*>(startNode), offset);
+     }
+     if (offset == aEvent->mInput.mOffset) {
+       nsRect rect;
+       nsIFrame* caretFrame = caret->GetGeometry(mSelection, &rect);
+       if (!caretFrame)
+@@ -752,17 +752,17 @@ nsContentEventHandler::OnQueryCaretRect(
+ }
+ 
+ nsresult
+ nsContentEventHandler::OnQueryContentState(nsQueryContentEvent * aEvent)
+ {
+   nsresult rv = Init(aEvent);
+   if (NS_FAILED(rv))
+     return rv;
+-  
++
+   aEvent->mSucceeded = true;
+ 
+   return NS_OK;
+ }
+ 
+ nsresult
+ nsContentEventHandler::OnQuerySelectionAsTransferable(nsQueryContentEvent* aEvent)
+ {
+@@ -1006,17 +1006,17 @@ static void AdjustRangeForSelection(nsIC
+ {
+   nsINode* node = *aNode;
+   int32_t offset = *aOffset;
+   if (aRoot != node && node->GetParent() &&
+       !node->IsNodeOfType(nsINode::eTEXT)) {
+     node = node->GetParent();
+     offset = node->IndexOf(*aNode) + (offset ? 1 : 0);
+   }
+-  
++
+   nsIContent* brContent = node->GetChildAt(offset - 1);
+   while (brContent && brContent->IsHTML()) {
+     if (brContent->Tag() != nsGkAtoms::br || IsContentBR(brContent))
+       break;
+     brContent = node->GetChildAt(--offset - 1);
+   }
+   *aNode = node;
+   *aOffset = std::max(offset, 0);
 diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 --- a/dom/media/PeerConnection.js
 +++ b/dom/media/PeerConnection.js
-@@ -234,21 +234,24 @@ function RTCPeerConnection() {
+@@ -3,16 +3,18 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ "use strict";
+ 
+ const {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
+ 
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++Cu.import("resource://gre/modules/PopupNotifications.jsm");
++Cu.import('resource://gre/modules/identity/RTCIdentity.jsm');
+ 
+ const PC_CONTRACT = "@mozilla.org/dom/peerconnection;1";
+ const PC_ICE_CONTRACT = "@mozilla.org/dom/rtcicecandidate;1";
+ const PC_SESSION_CONTRACT = "@mozilla.org/dom/rtcsessiondescription;1";
+ const PC_MANAGER_CONTRACT = "@mozilla.org/dom/peerconnectionmanager;1";
+ const PC_ICEEVENT_CONTRACT = "@mozilla.org/dom/rtcpeerconnectioniceevent;1";
+ const MSEVENT_CONTRACT = "@mozilla.org/dom/mediastreamevent;1";
+ const DCEVENT_CONTRACT = "@mozilla.org/dom/datachannelevent;1";
+@@ -22,16 +24,17 @@ const PC_ICE_CID = Components.ID("{02b99
+ const PC_SESSION_CID = Components.ID("{1775081b-b62d-4954-8ffe-a067bbf508a7}");
+ const PC_MANAGER_CID = Components.ID("{7293e901-2be3-4c02-b4bd-cbef6fc24f78}");
+ const PC_ICEEVENT_CID = Components.ID("{b9cd25a7-9859-4f9e-8f84-ef5181ff36c0}");
+ const MSEVENT_CID = Components.ID("{a722a8a9-2290-4e99-a5ed-07b504292d08}");
+ const DCEVENT_CID = Components.ID("{d5ed7fbf-01a8-4b18-af6c-861cf2aac920}");
+ 
+ // Global list of PeerConnection objects, so they can be cleaned up when
+ // a page is torn down. (Maps inner window ID to an array of PC objects).
++//
+ function GlobalPCList() {
+   this._list = [];
+   this._networkdown = false; // XXX Need to query current state somehow
+   Services.obs.addObserver(this, "inner-window-destroyed", true);
+   Services.obs.addObserver(this, "profile-change-net-teardown", true);
+   Services.obs.addObserver(this, "network:offline-about-to-go-offline", true);
+   Services.obs.addObserver(this, "network:offline-status-changed", true);
+ }
+@@ -234,21 +237,24 @@ function RTCPeerConnection() {
    this._pc = null;
    this._observer = null;
    this._closed = false;
@@ -29,7 +151,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
     * if neccesary. The _pending flag indicates whether an operation is currently
     * in progress.
     */
-@@ -286,20 +289,22 @@ RTCPeerConnection.prototype = {
+@@ -286,20 +292,24 @@ RTCPeerConnection.prototype = {
      this.makeGetterSetterEH("onicecandidate");
      this.makeGetterSetterEH("onnegotiationneeded");
      this.makeGetterSetterEH("onsignalingstatechange");
@@ -44,6 +166,8 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
               createInstance(Ci.IPeerConnection);
      this._observer = new PeerConnectionObserver(this);
 +    this._idp = new PeerConnectionIDP(this);
++    this._idp.init('login.persona.org', 'default', null); //default inititalization values
++
      this._winID = this._win.QueryInterface(Ci.nsIInterfaceRequestor)
                             .getInterface(Ci.nsIDOMWindowUtils).currentInnerWindowID;
  
@@ -52,32 +176,72 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
  
      // Nothing starts until ICE gathering completes.
      this._queueOrRun({
-@@ -555,16 +560,24 @@ RTCPeerConnection.prototype = {
-     }
-     if (!onError) {
-       this.deprecated("calling createOffer without failureCallback");
-     }
-     this._mustValidateConstraints(constraints, "createOffer passed invalid constraints");
-     this._onCreateOfferSuccess = onSuccess;
-     this._onCreateOfferFailure = onError;
+@@ -311,35 +321,41 @@ RTCPeerConnection.prototype = {
  
-+    this._onIdentityAssertionSuccess = function() {
-+      //has onSuccess run?
-+      this.reportWarning("calling onIdentityAssertionSuccess :)", null, 0);
-+    }.bind(this);
-+
-+
-+    // this._observer.onIdentityAssertionSuccess(); // run this guy when we have an assertion from the user
-+
-     this._queueOrRun({
-       func: this._getPC().createOffer,
-       args: [constraints],
-       wait: true
-     });
+   _getPC: function() {
+     if (!this._pc) {
+       throw new Components.Exception("RTCPeerConnection is gone (did you enter Offline mode?)");
+     }
+     return this._pc;
    },
  
-   _createAnswer: function(onSuccess, onError, constraints, provisional) {
-@@ -637,16 +650,46 @@ RTCPeerConnection.prototype = {
+-  /**
+-   * Add a function to the queue or run it immediately if the queue is empty.
+-   * Argument is an object with the func, args and wait properties; wait should
+-   * be set to true if the function has a success/error callback that will
+-   * call _executeNext, false if it doesn't have a callback.
++    /**
++     * Add a function to the queue or run it immediately if the queue is empty.
++     * Argument is an object with the func, args and wait properties; wait should
++     * be set to true if the function has a success/error callback that will
++    * call _executeNext, false if it doesn't have a callback.
+    */
+   _queueOrRun: function(obj) {
++    // this.reportWarning("in _queueOrRun", null, 0);
+     this._checkClosed();
+     if (!this._pending) {
++      // this.reportWarning("none pending in _queueOrRun for ", null, 0);
+       if (obj.type !== undefined) {
+         this._pendingType = obj.type;
+       }
++      // this.reportWarning("running in _queueOrRun for ", null, 0);
+       obj.func.apply(this, obj.args);
++      // this.reportWarning("done running in _queueOrRun ", null, 0);
+       if (obj.wait) {
+         this._pending = true;
+       }
+     } else {
++      // this.reportWarning("push onto queue ", null, 0);
+       this._queue.push(obj);
+     }
++    // this.reportWarning("done _queueOrRun for ", null, 0);
+   },
+ 
+   // Pick the next item from the queue and run it.
+   _executeNext: function() {
+     if (this._queue.length) {
+       let obj = this._queue.shift();
+       if (obj.type !== undefined) {
+         this._pendingType = obj.type;
+@@ -466,16 +482,17 @@ RTCPeerConnection.prototype = {
+   },
+ 
+   // Ideally, this should be of the form _checkState(state),
+   // where the state is taken from an enumeration containing
+   // the valid peer connection states defined in the WebRTC
+   // spec. See Bug 831756.
+   _checkClosed: function() {
+     if (this._closed) {
++      this.reportWarning("PEER CONNECTION CLOSED", null, 0);
+       throw new Components.Exception("Peer connection is closed");
+     }
+   },
+ 
+   dispatchEvent: function(event) {
+     this.__DOM_IMPL__.dispatchEvent(event);
+   },
+ 
+@@ -637,16 +654,46 @@ RTCPeerConnection.prototype = {
      this._queueOrRun({
        func: this._getPC().setLocalDescription,
        args: [type, desc.sdp],
@@ -124,7 +288,78 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this._onSetRemoteDescriptionFailure = onError;
  
      let type;
-@@ -740,16 +783,20 @@ RTCPeerConnection.prototype = {
+@@ -660,22 +707,64 @@ RTCPeerConnection.prototype = {
+       case "pranswer":
+         throw new Components.Exception("pranswer not yet implemented",
+                                        Cr.NS_ERROR_NOT_IMPLEMENTED);
+       default:
+         throw new Components.Exception("Invalid type " + desc.type +
+                                        " provided to setRemoteDescription");
+     }
+ 
+-    this._queueOrRun({
+-      func: this._getPC().setRemoteDescription,
+-      args: [type, desc.sdp],
+-      wait: true,
+-      type: desc.type
+-    });
++    let verifyCallback = function(email) {
++      if(!email) {
++        // TODO: Currently throws NO_ERROR with message "Identity could not be verified". Fix this.
++        this._observer.onSetRemoteDescriptionError(0, "Identity could not be verified");
++        return; // abort setting report description because verification failed
++      }
++
++      let browser = this._win.QueryInterface(Ci.nsIInterfaceRequestor)
++                         .getInterface(Ci.nsIWebNavigation)
++                         .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
++      let chromeWin = browser.ownerDocument.defaultView;
++
++      let acceptCall = function() {
++        this._queueOrRun({
++          func: this._getPC().setRemoteDescription,
++          args: [type, desc.sdp],
++          wait: true,
++          type: desc.type
++        });
++      }.bind(this);
++
++      let mainAction = {
++        label: "Allow",
++        accessKey: "A",
++        callback: acceptCall
++      };
++
++      let secondaryActions = [{
++        label: "Deny",
++        accessKey: "D",
++        callback: function () {
++          // User denied the call
++          // TODO: Currently throws NO_ERROR with message "Denied call". Fix this.
++          this._observer.onSetRemoteDescriptionError(0, "Denied call");
++        }
++      }];
++
++      let options = null;
++      let message = "You are connecting to " + email + "\nAre you sure you want to proceed?";
++
++      chromeWin.PopupNotifications.show(browser,
++        'id-webrtc-notification', message,
++        'identity-notification-icon', mainAction,
++        secondaryActions, options
++      );
++    }.bind(this);
++
++    this._idp.verifySDP(desc.sdp, verifyCallback);
+   },
+ 
+   updateIce: function(config, constraints) {
+     throw new Components.Exception("updateIce not yet implemented",
+                                    Cr.NS_ERROR_NOT_IMPLEMENTED);
+   },
+ 
+   addIceCandidate: function(cand, onSuccess, onError) {
+@@ -740,16 +829,20 @@ RTCPeerConnection.prototype = {
      this.deprecated("localStreams");
      return this.getLocalStreams();
    },
@@ -145,8 +380,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      }
      return new this._win.mozRTCSessionDescription({ type: this._localType,
                                                      sdp: sdp });
-@@ -912,23 +959,30 @@ PeerConnectionObserver.prototype = {
-         // A content script (user-provided) callback threw an error. We don't
+@@ -913,31 +1006,39 @@ PeerConnectionObserver.prototype = {
          // want this to take down peerconnection, but we still want the user
          // to see it, so we catch it, report it, and move on.
          this._dompc.reportError(e.message, e.fileName, e.lineNumber);
@@ -154,30 +388,41 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      }
    },
  
--  onCreateOfferSuccess: function(sdp) {
-+  onIdentityAssertionSuccess: function(sdp) {
-     this.callCB(this._dompc._onCreateOfferSuccess,
+   onCreateOfferSuccess: function(sdp) {
+-    this.callCB(this._dompc._onCreateOfferSuccess,
++    // getIdentityAssertion here and pass in the sdp
++    let onAssertionCB = function(sdp) {
++      this.callCB(this._dompc._onCreateOfferSuccess,
                  new this._dompc._win.mozRTCSessionDescription({ type: "offer",
                                                                  sdp: sdp }));
++    }.bind(this);
++    this._dompc._idp.requestIdentityAssertion(sdp, onAssertionCB);
      this._dompc._executeNext();
    },
  
-+  onCreateOfferSuccess: function(sdp) {
-+    // getIdentityAssertion here and pass in the sdp
-+    sdp = this._dompc._idp.requestIdentityAssertion(sdp);
-+    // pass fingerprint to getIdentityAssertion
-+    this.onIdentityAssertionSuccess(sdp);
-+  },
-+
    onCreateOfferError: function(code, message) {
      this.callCB(this._dompc._onCreateOfferFailure, new RTCError(code, message));
      this._dompc._executeNext();
    },
  
    onCreateAnswerSuccess: function(sdp) {
-     this.callCB (this._dompc._onCreateAnswerSuccess,
+-    this.callCB (this._dompc._onCreateAnswerSuccess,
++    //attach the sdp assertion to asnswer as well
++    let onAssertionCB = function(sdp) {
++      this.callCB (this._dompc._onCreateAnswerSuccess,
                   new this._dompc._win.mozRTCSessionDescription({ type: "answer",
-@@ -1047,15 +1101,75 @@ PeerConnectionObserver.prototype = {
+                                                                  sdp: sdp }));
++    }.bind(this);
++    this._dompc._idp.requestIdentityAssertion(sdp, onAssertionCB);
+     this._dompc._executeNext();
+   },
+ 
+   onCreateAnswerError: function(code, message) {
+     this.callCB(this._dompc._onCreateAnswerFailure, new RTCError(code, message));
+     this._dompc._executeNext();
+   },
+ 
+@@ -1047,15 +1148,166 @@ PeerConnectionObserver.prototype = {
    },
  
    notifyConnection: function() {
@@ -190,9 +435,9 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +
 +  notifyIdentityResult: function() {
 +    this.dispatchEvent(new this._dompc._win.Event('identityresult'));
-   }
- };
- 
++  }
++};
++
 +function PeerConnectionIDP(pc) {
 +  this._dompc = pc; // peer connection object
 +  this.fallback_provider = 'login.persona.org'; // browser specific fallback idp (we will use Persona)
@@ -200,55 +445,146 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +  this.protocol = null; // protocol to use ("default")
 +  this.username = null; // "assertion" used to verify the identity
 +  this.set = false; // true if the IDP has been initialized previously
++  this.idpChannel = null;
++  this.messages = {};
++  this.messageCount = 0;
 +};
 +PeerConnectionIDP.prototype = {
 +  init: function(provider, protocol, username) {
 +    // set the required values
 +    this.set = true;
 +    this.setIDP(provider, protocol, username);
++    this.idpChannel = new IDPChannel(this.onMessage.bind(this));
 +    this._dompc.reportWarning('IDP has been (re-)initialized.', null, 0);
 +  },
-+  requestIdentityAssertion: function(sdp) {
-+    if(!sdp) {
-+      //createOffer wasn't called to get here
-+      return null; // throw an error?
++
++  onMessage: function(message) {
++    // got assertion message, add it to sdp and call callback
++    // format of message currently: {"method":"SUCCESS","origin":"https://example.com","message":"TESTSIGN"}
++
++
++    // RETURNED FROM SIGN MESSAGE
++    // {
++    //   "type":"SUCCESS",
++    //   "id":1,
++    //   "message": {
++    //     "idp":{
++    //       "domain": "example.org"
++    //       "protocol": "bogus"
++    //     },
++    //     "assertion":\"{\"identity\":\"bob@example.org\",
++    //                    \"contents\":\"abcdefghijklmnopqrstuvwyz\",
++    //                    \"request_origin\":\"rtcweb://peerconnection\",
++    //                    \"signature\":\"010203040506\"}"
++    //   }
++    // }
++
++    // RETURNED FROM VERIFY MESSAGE
++    // {
++    //   "type":"SUCCESS",
++    //   "id":2,
++    //   "message": {
++    //     "identity" : {
++    //       "name" : "bob@example.org",
++    //       "displayname" : "Bob"
++    //     },
++    //     "request_origin":"rtcweb://peerconnection",
++    //     "contents":"abcdefghijklmnopqrstuvwyz"
++    //   }
++    // }
++
++    this._dompc.reportWarning("GOT MESSAGE:" + JSON.stringify(message), null, 0);
++
++    let message = JSON.parse(message);
++    if(!message) return;
++    let msg = message.message || {};
++    let identity = message.message.identity || {};
++    let stored = this.messages[message.id] || { callback: function(){} }; // lookup stored message
++    if(message.type == 'SUCCESS') {
++      if(stored.type == 'SIGN') {
++        stored.sdp += msg.assertion;
++        return stored.callback(stored.sdp); // callback with sdp + assertion
++      }
++      else if(stored.type == 'VERIFY') {
++        return stored.callback(identity.name); // callback with email
++      }
 +    }
++    return stored.callback(null);
++  },
++
++  requestIdentityAssertion: function(sdp, callback) {
++    if(!callback) return; // no callback
++    if(!sdp) return callback(null); // throw an error?
++
++    this.sdp = sdp;
++
 +    // get the key fingerprint from the sdp and use it when getting an assertion
 +    let pattern = /\na=fingerprint:\s*(\S+\s*\S*)/i;
 +    let fingerprint = sdp.match(pattern)[1];
 +
-+    let crappy_crypto = fingerprint.replace(/\:/g,"");
-+    let assertion = crappy_crypto + "example123identity@example.com" + crappy_crypto;
-+    sdp += "a=identity:" + assertion;
++    this.messageCount = 1234; // TODO: remove this after testing
 +
-+    // fake implementation
-+    // In the future we will open an iframe and allow the user to login to their IDP.
-+    //
-+    // Instantiate a new IdP proxy and request an identity assertion.
-+    // Here we are just making up an assertion
-+    // let identity =  {
-+    //                   //A domain name representing the identity provider.
-+    //                   idp: this.getProvider(),
-+    //                   // An RFC822-conformant [TODO: REF] representation
-+    //                   // of the verified peer identity. This identity
-+    //                   // will have been verified via the procedures
-+    //                   // described in [RTCWEB-SECURITY-ARCH].
-+    //                   name: this.username || "example@example.com" // example: the assertion from Persona
-+    //                 };
-+    // callback(identity); // return identity assertion in the callback (for some reason this wont work)
-+    return sdp;
++    let data = {
++      type: 'SIGN',
++      id: this.messageCount,
++      message: fingerprint
++    };
++
++    this.messages[this.messageCount] = { sdp: sdp, type: 'SIGN', message: fingerprint, callback: callback };
++    this.messageCount++;
++
++    //send fingerprint to idp channel to create assertion
++    //TODO: Why are we sending the fingerprint twice (once in data as well)
++    this.idpChannel.send(fingerprint, data);
 +  },
++
 +  setIDP: function(provider, protocol, username) {
 +    this.provider = provider;
 +    this.protocol = protocol;
 +    this.username = username;
 +  },
++
 +  getProvider: function() {
 +    return this.provider || this.fallback_provider;
-+  }
-+};
++  },
 +
++  verifySDP: function(sdp, callback) {
++    if(!sdp) return callback(null);
 +
++    let assertion = null;
++    let fingerprint = null;
++
++    let fp_patt = /\na=fingerprint:\s*(\S+\s*\S*)/i; // TODO: test the shit outta this
++    let fingerprint_matches = sdp.match(fp_patt);
++    if(!fingerprint_matches) return callback(null); // no matches? (shouldn't happen)
++    else fingerprint = fingerprint_matches[1];
++
++    let id_patt = /\na=identity:\s*(\S+\s*\S*)/i; // TODO: test the shit outta this too
++    let assertion_matches = sdp.match(id_patt);
++    let assertion = null;
++    if(!assertion_matches) return callback(null); //no matches (old browser?)
++    else assertion = assertion_matches[1]; // a match!
++
++    let message = {
++      'identity': assertion,
++      'fingerprint': fingerprint
++    };
++
++    /* TESTING ONLY */ this.messageCount = 4321; // TODO: remove this when finished testing /* TESTING ONLY */
++
++    let data = {
++      type: 'VERIFY',
++      id: this.messageCount,
++      message: message
++    };
++
++    this.messages[this.messageCount] = { type: 'VERIFY', message: message, callback: callback };
++    this.messageCount++;
++
++    this.idpChannel.send(fingerprint, data);
+   }
+ };
+ 
  this.NSGetFactory = XPCOMUtils.generateNSGetFactory(
    [GlobalPCList, RTCIceCandidate, RTCSessionDescription, RTCPeerConnection,
     RTCPeerConnectionIceEvent, MediaStreamEvent, RTCDataChannelEvent]
@@ -395,3 +731,98 @@ diff --git a/dom/webidl/WebIDL.mk b/dom/webidl/WebIDL.mk
    SVGAElement.webidl \
    SVGAltGlyphElement.webidl \
    SVGAngle.webidl \
+diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
+--- a/toolkit/identity/RTCIdentity.jsm
++++ b/toolkit/identity/RTCIdentity.jsm
+@@ -1,48 +1,48 @@
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ /*
+  * An Authentication Module for RTC that uses Persona
+  *
+- * 
++ *
+  */
+ 
+ "use strict";
+ 
+ this.EXPORTED_SYMBOLS = ["IDPChannel"];
+ 
+ const {classes: Cc, interfaces: Ci, utils: Cu} = Components;
+ 
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ 
+ // XXX while developing this, we use an ephemeral instance of persona that
+ // provides new functionality we need, namely fingerprint-wrapping in the
+ // assertion.
+-let kPersonaUri = "https://webrtc.personatest.org";
+-//let kPersonaUri = "http://127.0.0.1:10002";
++// let kPersonaUri = "https://webrtc.personatest.org";
++let kPersonaUri = "http://127.0.0.1:10002";
+ try {
+   kPersonaUri = Services.prefs.getCharPref("toolkit.identity.uri");
+ } catch (noSuchPref) {
+   // stick with the default value
+ }
+ 
+ function log(msg) {
+   dump("* RTCAuthModule: " + msg + "\n");
+ }
+ 
+ log("**** using persona uri: " + kPersonaUri);
+ 
+ /*
+  * An invisible iframe for hosting the persona logic.
+- * 
+- * There is no visible UX here, as we assume the user has already 
++ *
++ * There is no visible UX here, as we assume the user has already
+  * logged in elsewhere (on a different screen in the web site hosting
+  * the RTC functions).  So all we have to do is get an assertion from
+  * Persona.
+  */
+ 
+ this.HostFrame = function HostFrame() {
+   this._iframe = null;
+ };
+@@ -52,17 +52,17 @@ HostFrame.prototype = {
+     if (this._gotIframe) {
+       return aCallback(
+         new Error("Can only get iframe once with HostFrame helper"));
+     }
+ 
+     let hiddenDoc = Services.appShell.hiddenDOMWindow.document;
+ 
+     this._iframe = hiddenDoc.createElementNS(
+-        "http://www.w3.org/1999/xhtml", "iframe"); 
++        "http://www.w3.org/1999/xhtml", "iframe");
+ 
+     this._iframe.setAttribute("mozframetype", "content");
+     this._iframe.setAttribute("id", "persona-host-frame");
+     this._iframe.setAttribute("src", kPersonaUri+'/communication_iframe');
+     log("iframe src: " + kPersonaUri+'/communication_iframe');
+ 
+     aOptions.iframe = this._iframe;
+ 
+@@ -155,17 +155,17 @@ IDPChannel.prototype = {
+   },
+ 
+   send: function idpChannel_send(fingerprint, message) {
+     // Peer Connection with the given fingerprint sends a message
+     // to the idp proxy.
+     let hostFrame = new HostFrame();
+     let options = {
+       audience: "rtcweb://peerconnection",
+-      origin: "https://example.com",
++      origin: "http://localhost:3000",
+       fingerprint: fingerprint,
+       message: message
+     };
+     log("send this: " + JSON.stringify(options, null, 2));
+     hostFrame.getIframe(options, function() {
+       // iframe has been added to options
+ 
+       log("got iframe");
