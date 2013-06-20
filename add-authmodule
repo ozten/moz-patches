@@ -1,31 +1,6 @@
 # HG changeset patch
-# Parent 7e4b8dc09293bc78a09a4dde99281713dea8684c
+# Parent 49075eed95bb61e93c5ed98ecc3a46f51cab2376
 
-diff --git a/browser/base/content/rtc-persona-framescript.js b/browser/base/content/rtc-persona-framescript.js
---- a/browser/base/content/rtc-persona-framescript.js
-+++ b/browser/base/content/rtc-persona-framescript.js
-@@ -81,17 +81,20 @@ IdentityShim.prototype = {
-       callback,
-       stringifiedOptions,
-       log
-     );
-     log("called get with options: " + typeof stringifiedOptions + ': ' + stringifiedOptions);
-   },
- 
-   verify: function IdentityShim_verify(options) {
--    this.sendResponse({error: "Not implemented"});
-+    let stringifiedOptions = JSON.stringify(options);
-+    log("called verify with options: " + typeof stringifiedOptions + ': ' + stringifiedOptions);
-+    // this.sendResponse({error: "Not implemented"});
-+    this.sendResponse({ method: "SUCCESS", message: "TESTVERIFY" });
-   }
- };
- 
- this.shim = null;
- 
- // XXX wha?  why both events
- // dump out these events - should just be on 'load'
- addEventListener('DOMContentLoaded', function(e) {
 diff --git a/content/events/src/nsContentEventHandler.cpp b/content/events/src/nsContentEventHandler.cpp
 --- a/content/events/src/nsContentEventHandler.cpp
 +++ b/content/events/src/nsContentEventHandler.cpp
@@ -422,7 +397,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this._dompc._executeNext();
    },
  
-@@ -1047,15 +1148,166 @@ PeerConnectionObserver.prototype = {
+@@ -1047,15 +1148,177 @@ PeerConnectionObserver.prototype = {
    },
  
    notifyConnection: function() {
@@ -527,15 +502,22 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    let data = {
 +      type: 'SIGN',
 +      id: this.messageCount,
++      origin: "http://localhost:3000", // FIX THIS
 +      message: fingerprint
 +    };
 +
-+    this.messages[this.messageCount] = { sdp: sdp, type: 'SIGN', message: fingerprint, callback: callback };
++    this.messages[this.messageCount] = {
++      sdp: sdp,
++      type: 'SIGN',
++      message: fingerprint,
++      callback: callback
++    };
++
 +    this.messageCount++;
 +
 +    //send fingerprint to idp channel to create assertion
 +    //TODO: Why are we sending the fingerprint twice (once in data as well)
-+    this.idpChannel.send(fingerprint, data);
++    this.idpChannel.send(data);
 +  },
 +
 +  setIDP: function(provider, protocol, username) {
@@ -578,10 +560,14 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +      message: message
 +    };
 +
-+    this.messages[this.messageCount] = { type: 'VERIFY', message: message, callback: callback };
-+    this.messageCount++;
++    this.messages[this.messageCount] = {
++      type: 'VERIFY',
++      message: message,
++      callback: callback
++    };
 +
-+    this.idpChannel.send(fingerprint, data);
++    this.messageCount++;
++    this.idpChannel.send(data);
    }
  };
  
@@ -734,60 +720,6 @@ diff --git a/dom/webidl/WebIDL.mk b/dom/webidl/WebIDL.mk
 diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
 --- a/toolkit/identity/RTCIdentity.jsm
 +++ b/toolkit/identity/RTCIdentity.jsm
-@@ -1,48 +1,48 @@
- /* This Source Code Form is subject to the terms of the Mozilla Public
-  * License, v. 2.0. If a copy of the MPL was not distributed with this
-  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
- 
- /*
-  * An Authentication Module for RTC that uses Persona
-  *
-- * 
-+ *
-  */
- 
- "use strict";
- 
- this.EXPORTED_SYMBOLS = ["IDPChannel"];
- 
- const {classes: Cc, interfaces: Ci, utils: Cu} = Components;
- 
- Cu.import("resource://gre/modules/Services.jsm");
- Cu.import("resource://gre/modules/XPCOMUtils.jsm");
- 
- // XXX while developing this, we use an ephemeral instance of persona that
- // provides new functionality we need, namely fingerprint-wrapping in the
- // assertion.
--let kPersonaUri = "https://webrtc.personatest.org";
--//let kPersonaUri = "http://127.0.0.1:10002";
-+// let kPersonaUri = "https://webrtc.personatest.org";
-+let kPersonaUri = "http://127.0.0.1:10002";
- try {
-   kPersonaUri = Services.prefs.getCharPref("toolkit.identity.uri");
- } catch (noSuchPref) {
-   // stick with the default value
- }
- 
- function log(msg) {
-   dump("* RTCAuthModule: " + msg + "\n");
- }
- 
- log("**** using persona uri: " + kPersonaUri);
- 
- /*
-  * An invisible iframe for hosting the persona logic.
-- * 
-- * There is no visible UX here, as we assume the user has already 
-+ *
-+ * There is no visible UX here, as we assume the user has already
-  * logged in elsewhere (on a different screen in the web site hosting
-  * the RTC functions).  So all we have to do is get an assertion from
-  * Persona.
-  */
- 
- this.HostFrame = function HostFrame() {
-   this._iframe = null;
- };
 @@ -52,17 +52,17 @@ HostFrame.prototype = {
      if (this._gotIframe) {
        return aCallback(
@@ -807,22 +739,3 @@ diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
  
      aOptions.iframe = this._iframe;
  
-@@ -155,17 +155,17 @@ IDPChannel.prototype = {
-   },
- 
-   send: function idpChannel_send(fingerprint, message) {
-     // Peer Connection with the given fingerprint sends a message
-     // to the idp proxy.
-     let hostFrame = new HostFrame();
-     let options = {
-       audience: "rtcweb://peerconnection",
--      origin: "https://example.com",
-+      origin: "http://localhost:3000",
-       fingerprint: fingerprint,
-       message: message
-     };
-     log("send this: " + JSON.stringify(options, null, 2));
-     hostFrame.getIframe(options, function() {
-       // iframe has been added to options
- 
-       log("got iframe");
