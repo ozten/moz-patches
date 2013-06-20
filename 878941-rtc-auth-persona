@@ -172,7 +172,7 @@ diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/RTCIdentity.jsm
-@@ -0,0 +1,244 @@
+@@ -0,0 +1,342 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -199,6 +199,13 @@ new file mode 100644
 +let kPersonaUri = "http://127.0.0.1:10002";
 +try {
 +  kPersonaUri = Services.prefs.getCharPref("toolkit.identity.uri");
++} catch (noSuchPref) {
++  // stick with the default value
++}
++
++let kVerifierUri = "https://verifier.login.persona.org/verify";
++try {
++  kVerifierUri = Services.prefs.getCharPref("toolkit.identity.verifier_uri");
 +} catch (noSuchPref) {
 +  // stick with the default value
 +}
@@ -325,6 +332,35 @@ new file mode 100644
 +
 +  /*
 +   * use the persona communication_iframe to request an assertion 
++   *
++   * https://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.5.2.2
++   * Example transaction: 
++   *
++   *
++   *  PeerConnection -> IdP proxy:
++   *    {
++   *      "type":"SIGN",
++   *       "id":1,
++   *       "origin":"https://calling-service.example.com/",
++   *       "message":"abcdefghijklmnopqrstuvwyz"
++   *    }
++   *
++   *  IdPProxy -> PeerConnection:
++   *    {
++   *      "type":"SUCCESS",
++   *      "id":1,
++   *      "message": {
++   *        "idp":{
++   *          "domain": "example.org"
++   *          "protocol": "bogus"
++   *        },
++   *        "assertion":\"{\"identity\":\"bob@example.org\",
++   *                       \"contents\":\"abcdefghijklmnopqrstuvwyz\",
++   *                       \"request_origin\":\"rtcweb://peerconnection\",
++   *                       \"signature\":\"010203040506\"}"
++   *      }
++   *    }
++   * 
 +   */
 +  _sign: function idpChannel__sign(message) {
 +    let hostFrame = new HostFrame();
@@ -342,10 +378,6 @@ new file mode 100644
 +        this.pipe.close();
 +      }.bind(this);
 +
-+      // store context and communicate with pipe
-+      //this.contexts[options.fingerprint] = options;
-+      //this.contexts[options.fingerprint].hostFrame = hostFrame;
-+
 +      this.pipe = new this.pipeConstructor(options, this);
 +      log("got new pipe");
 +      this.pipe.communicate();
@@ -356,11 +388,46 @@ new file mode 100644
 +   * communicate with the persona verifier to verify the assertion.
 +   * XXX this should be done completely natively with no httprequest
 +   * XXX for now, this is quick and easy
++   *
++   * https://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.5.2.3
++   * An example transaction: 
++   *
++   *    PeerConnection -> IdP Proxy:
++   *      {
++   *        "type":"VERIFY",
++   *        "id":2,
++   *        "origin":"https://calling-service.example.com/",
++   *        "message":\"{\"identity\":\"bob@example.org\",
++   *                     \"contents\":\"abcdefghijklmnopqrstuvwyz\",
++   *                     \"request_origin\":\"rtcweb://peerconnection\",
++   *                     \"signature\":\"010203040506\"}"
++   *      }
++   *
++   *    IdP Proxy -> PeerConnection:
++   *      {
++   *       "type":"SUCCESS",
++   *       "id":2,
++   *       "message": {
++   *         "identity" : {
++   *           "name" : "bob@example.org",
++   *           "displayname" : "Bob"
++   *         },
++   *         "request_origin":"rtcweb://peerconnection",
++   *         "contents":"abcdefghijklmnopqrstuvwyz"
++   *       }
++   *      }
++   *
++   * 
 +   */
 +  _verify: function idpChannel__verify(message) {
++    // message.message should be the base64-encoded assertion as a string
++    let assertion = message.message;
 +    var body, res;
 +    try {
-+      body = JSON.stringify(message);
++      body = JSON.stringify({
++        assertion: assertion,
++        audience: "rtcweb://peerconnection"
++      });
 +      log("verify: " + body);
 +    } catch (err) {
 +      this.receiveResponse(new Error("Cannot verify message; bad json"));
@@ -369,30 +436,61 @@ new file mode 100644
 +    let req = Cc['@mozilla.org/xmlextras/xmlhttprequest;1']
 +                .createInstance(Ci.nsIXMLHttpRequest);
 +
-+    req.open('POST', kPersonaUri + '/verify', true);
++    req.open('POST', kVerifierUri, true);
 +    req.responseType = 'json';
 +    req.setRequestHeader('Content-Type', 'application/json');
 +    req.mozBackgroundRequest = true;
 +
 +    req.onload = function idpChannel__verify_onload() {
++      let response = req.response;
 +      log('server returned' + req.status);
-+      log(req);
++      // The 'error' message is not in the spec.
++      // Leaving it in for now, so we can debug more easily
 +      if (req.status === 200) {
-+        try {
-+          res = JSON.parse(req.responseText);
-+        } catch(err) {
-+          this.receiveResponse(new Error("Incomprehensible response from server"));
++        if (response.status === "okay") {
++          this.receiveResponse({
++            type: "SUCCESS",
++            id: message.id,
++            message: {
++              identity: {
++                name: response.email,
++                displayname: ""     // not something persona knows
++              }
++            },
++            request_origin: "rtcweb://peerconnection",
++            contents: assertion
++          });
++        } else {
++          this.receiveResponse({
++            type: "FAILURE",
++            id: message.id,
++            message: { 
++              error: response.reason
++            }
++          });
 +        }
-+        this.receiveResponse(res.status === "okay" ? true : new Error(res.reason));
 +      } else {
++        // not a 200
 +        log("blah.  status code is " + req.status);
-+        this.receiveResponse(new Error("Server returned status code " + req.status));
++        this.receiveResponse({
++          type: "FAILURE",
++          id: message.id,
++          message: {
++            error: "Server responded with code " + req.status
++          }
++        });
 +      }
 +    }.bind(this);
 +
 +    req.onerror = function idpChannel__verify_onerror() {
 +      log('request error:', req.status, req.statusText);
-+      this._afterPostUpdates(false);
++      this.receiveResponse({
++        type: "FAILURE",
++        id: message.id,
++        message: {
++          error: "Request error"
++        }
++      });
 +    }.bind(this);
 +
 +    log("send: " + body);
