@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 49075eed95bb61e93c5ed98ecc3a46f51cab2376
+# Parent 51dd81c70b1d5c5f1167198fe600839921af03d4
 
 diff --git a/content/events/src/nsContentEventHandler.cpp b/content/events/src/nsContentEventHandler.cpp
 --- a/content/events/src/nsContentEventHandler.cpp
@@ -397,7 +397,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this._dompc._executeNext();
    },
  
-@@ -1047,15 +1148,177 @@ PeerConnectionObserver.prototype = {
+@@ -1047,15 +1148,179 @@ PeerConnectionObserver.prototype = {
    },
  
    notifyConnection: function() {
@@ -470,14 +470,14 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +
 +    this._dompc.reportWarning("GOT MESSAGE:" + JSON.stringify(message), null, 0);
 +
-+    let message = JSON.parse(message);
++    // let message = JSON.parse(message);
 +    if(!message) return;
 +    let msg = message.message || {};
 +    let identity = message.message.identity || {};
 +    let stored = this.messages[message.id] || { callback: function(){} }; // lookup stored message
 +    if(message.type == 'SUCCESS') {
 +      if(stored.type == 'SIGN') {
-+        stored.sdp += msg.assertion;
++        stored.sdp += "a=identity: " + msg.assertion;
 +        return stored.callback(stored.sdp); // callback with sdp + assertion
 +      }
 +      else if(stored.type == 'VERIFY') {
@@ -547,6 +547,8 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    if(!assertion_matches) return callback(null); //no matches (old browser?)
 +    else assertion = assertion_matches[1]; // a match!
 +
++    dump("ASSERTION: " + assertion);
++
 +    let message = {
 +      'identity': assertion,
 +      'fingerprint': fingerprint
@@ -557,7 +559,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    let data = {
 +      type: 'VERIFY',
 +      id: this.messageCount,
-+      message: message
++      message: assertion
 +    };
 +
 +    this.messages[this.messageCount] = {
@@ -720,7 +722,7 @@ diff --git a/dom/webidl/WebIDL.mk b/dom/webidl/WebIDL.mk
 diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
 --- a/toolkit/identity/RTCIdentity.jsm
 +++ b/toolkit/identity/RTCIdentity.jsm
-@@ -52,17 +52,17 @@ HostFrame.prototype = {
+@@ -59,17 +59,17 @@ HostFrame.prototype = {
      if (this._gotIframe) {
        return aCallback(
          new Error("Can only get iframe once with HostFrame helper"));
