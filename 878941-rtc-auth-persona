@@ -172,7 +172,7 @@ diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/RTCIdentity.jsm
-@@ -0,0 +1,342 @@
+@@ -0,0 +1,336 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -185,7 +185,7 @@ new file mode 100644
 +
 +"use strict";
 +
-+this.EXPORTED_SYMBOLS = ["IDPChannel"];
++this.EXPORTED_SYMBOLS = ["IDPChannel", "HostFrame", "Pipe"];
 +
 +const {classes: Cc, interfaces: Ci, utils: Cu} = Components;
 +
@@ -211,7 +211,7 @@ new file mode 100644
 +}
 +
 +function log(msg) {
-+  dump("* RTCAuthModule: " + msg + "\n");
++  dump("* RTCIdentity: " + msg + "\n");
 +}
 +
 +log("**** using persona uri: " + kPersonaUri);
@@ -224,7 +224,6 @@ new file mode 100644
 + * the RTC functions).  So all we have to do is get an assertion from
 + * Persona.
 + */
-+
 +this.HostFrame = function HostFrame() {
 +  this._iframe = null;
 +};
@@ -243,8 +242,8 @@ new file mode 100644
 +
 +    this._iframe.setAttribute("mozframetype", "content");
 +    this._iframe.setAttribute("id", "persona-host-frame");
-+    this._iframe.setAttribute("src", kPersonaUri+'/communication_iframe');
-+    log("iframe src: " + kPersonaUri+'/communication_iframe');
++    this._iframe.setAttribute("src", 
++        aOptions.src || kPersonaUri+'/communication_iframe');
 +
 +    aOptions.iframe = this._iframe;
 +
@@ -282,13 +281,10 @@ new file mode 100644
 +  },
 +
 +  _delegateLoaded: function pipe__delegateLoaded() {
-+    log("delegate loaded");
-+    log("send message: " + JSON.stringify(this.options));
 +    this.mm.sendAsyncMessage('rtcid-message', this.options);
 +  },
 +
 +  _delegateComplete: function pipe__delegateComplete() {
-+    log("delegate complete");
 +    this.close();
 +  },
 +
@@ -297,7 +293,6 @@ new file mode 100644
 +  },
 +
 +  communicate: function pipe_communicate() {
-+    log("communicate");
 +    if (this._closed) {
 +      logger.error("Cannot communicate; pipe is closed");
 +      return;
@@ -305,8 +300,6 @@ new file mode 100644
 +
 +    let frameLoader = this.options.iframe.QueryInterface(
 +        Ci.nsIFrameLoaderOwner).frameLoader;
-+
-+    log("got frame loader");
 +
 +    if (frameLoader) {
 +      this.mm = frameLoader.messageManager;
@@ -320,16 +313,21 @@ new file mode 100644
 +};
 +
 +/*
-+ * optional PipeConstructor makes testing easier
++ * aOptions can be used in testing to mock various components
 + */
-+function IDPChannel(messageCallback, PipeConstructor) {
++function IDPChannel(messageCallback, aOptions) {
++  aOptions = aOptions || {};
 +  this.receiveResponse = messageCallback;
-+  this.pipeConstructor = PipeConstructor || Pipe;
++  this.pipeConstructor = aOptions.PipeConstructor || Pipe;
++  this.hostFrameConstructor = aOptions.HostFrameConstructor || HostFrame;
++  this.verifierUri = aOptions.verifierUri || kVerifierUri;
 +  this.pipe = null;
++
++  // https://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.5.2
++  this.receiveResponse({type: "READY"});
 +}
 +
 +IDPChannel.prototype = {
-+
 +  /*
 +   * use the persona communication_iframe to request an assertion 
 +   *
@@ -363,7 +361,7 @@ new file mode 100644
 +   * 
 +   */
 +  _sign: function idpChannel__sign(message) {
-+    let hostFrame = new HostFrame();
++    let hostFrame = new this.hostFrameConstructor();
 +    let options = {
 +      message: message
 +    };
@@ -371,15 +369,12 @@ new file mode 100644
 +    hostFrame.getIframe(options, function() {
 +      // iframe has been added to options
 +
-+      log("got iframe");
 +      // callback for the pipe when flow is complete
 +      options.onComplete = function pipe_onComplete(response) {
-+        log("pipe clean up now");
 +        this.pipe.close();
 +      }.bind(this);
 +
 +      this.pipe = new this.pipeConstructor(options, this);
-+      log("got new pipe");
 +      this.pipe.communicate();
 +    }.bind(this));
 +  },
@@ -436,48 +431,49 @@ new file mode 100644
 +    let req = Cc['@mozilla.org/xmlextras/xmlhttprequest;1']
 +                .createInstance(Ci.nsIXMLHttpRequest);
 +
-+    req.open('POST', kVerifierUri, true);
++    req.open('POST', this.verifierUri, true);
 +    req.responseType = 'json';
 +    req.setRequestHeader('Content-Type', 'application/json');
 +    req.mozBackgroundRequest = true;
 +
 +    req.onload = function idpChannel__verify_onload() {
 +      let response = req.response;
-+      log('server returned' + req.status);
 +      // The 'error' message is not in the spec.
 +      // Leaving it in for now, so we can debug more easily
 +      if (req.status === 200) {
-+        if (response.status === "okay") {
-+          this.receiveResponse({
-+            type: "SUCCESS",
-+            id: message.id,
-+            message: {
-+              identity: {
-+                name: response.email,
-+                displayname: ""     // not something persona knows
-+              }
-+            },
-+            request_origin: "rtcweb://peerconnection",
-+            contents: assertion
-+          });
-+        } else {
-+          this.receiveResponse({
-+            type: "FAILURE",
-+            id: message.id,
-+            message: { 
++        if (response) {
++          if (response.status === "okay") {
++            this.receiveResponse({
++              type: "SUCCESS",
++              id: message.id,
++              message: {
++                identity: {
++                  name: response.email,
++                  displayname: ""     // not something persona knows
++                }
++              },
++              request_origin: "rtcweb://peerconnection"
++              // XXX need contents: fingerprint here
++            });
++          } else { // not "okay"
++            this.receiveResponse({
++              type: "ERROR",
++              id: message.id,
 +              error: response.reason
-+            }
++            });
++          }
++        } else { // no response
++          this.receiveResponse({
++            type: "ERROR",
++            id: message.id,
++            error: "Server response was " + typeof response
 +          });
 +        }
-+      } else {
-+        // not a 200
-+        log("blah.  status code is " + req.status);
++      } else { // status != 200
 +        this.receiveResponse({
-+          type: "FAILURE",
++          type: "ERROR",
 +          id: message.id,
-+          message: {
-+            error: "Server responded with code " + req.status
-+          }
++          error: "Server responded with code " + req.status
 +        });
 +      }
 +    }.bind(this);
@@ -485,21 +481,17 @@ new file mode 100644
 +    req.onerror = function idpChannel__verify_onerror() {
 +      log('request error:', req.status, req.statusText);
 +      this.receiveResponse({
-+        type: "FAILURE",
++        type: "ERROR",
 +        id: message.id,
-+        message: {
-+          error: "Request error"
-+        }
++        error: "Request error"
 +      });
 +    }.bind(this);
 +
-+    log("send: " + body);
 +    req.send(body);
 +  },
 +
 +  send: function idpChannel_send(message) {
 +    log("send received: " + JSON.stringify(message));
-+    log("Send received " + message.type);
 +    switch (message.type) {
 +      case "SIGN":
 +        this._sign(message);
@@ -514,6 +506,8 @@ new file mode 100644
 +  }
 +};
 +
++this.HostFrame = HostFrame;
++this.Pipe = Pipe;
 +this.IDPChannel = IDPChannel;
 diff --git a/toolkit/identity/tests/unit/test_load_modules.js b/toolkit/identity/tests/unit/test_load_modules.js
 --- a/toolkit/identity/tests/unit/test_load_modules.js
@@ -527,7 +521,7 @@ diff --git a/toolkit/identity/tests/unit/test_load_modules.js b/toolkit/identity
    "IdentityStore.jsm",
    "jwcrypto.jsm",
    "RelyingParty.jsm",
-+  "RTCAuthModule.jsm",
++  "RTCIdentity.jsm",
    "Sandbox.jsm",
  ];
  
@@ -540,14 +534,23 @@ diff --git a/toolkit/identity/tests/unit/test_rtcauthmodule.js b/toolkit/identit
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/tests/unit/test_rtcauthmodule.js
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,196 @@
 +
 +Cu.import("resource://gre/modules/Services.jsm");
 +Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++Cu.import("resource://testing-common/httpd.js");
 +
-+XPCOMUtils.defineLazyModuleGetter(this, "PersonaAuthModule",
-+  "resource://gre/modules/identity/RTCAuthModule.jsm",
-+  "PersonaAuthModule");
++XPCOMUtils.defineLazyModuleGetter(this, "IDPChannel",
++  "resource://gre/modules/identity/RTCIdentity.jsm",
++  "IDPChannel");
++
++XPCOMUtils.defineLazyModuleGetter(this, "Pipe",
++  "resource://gre/modules/identity/RTCIdentity.jsm",
++  "Pipe");
++
++XPCOMUtils.defineLazyModuleGetter(this, "HostFrame",
++  "resource://gre/modules/identity/RTCIdentity.jsm",
++  "HostFrame");
 +
 +// Example fingerprint taken from draft specification:
 +// http://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.4.1
@@ -555,59 +558,146 @@ new file mode 100644
 +  algorithm: "SHA-1",
 +  digest: "4A:AD:B9:B1:3F:82:18:3B:54:02:12:DF:3E:5D:49:6B:19:E5:7C:AB"
 +};
++const USER_IDENTITY = "alice@example.com";
++const MOCK_ASSERTION = "I like pie";
 +
 +function test_import() {
-+  do_check_neq(PersonaAuthModule, null);
++  do_check_eq(typeof IDPChannel, "function");
++  do_check_eq(typeof Pipe, "function");
++  do_check_eq(typeof HostFrame, "function");
 +  run_next_test();
 +}
 +
-+function test_getIdentityAssertion() {
++function test_ready() {
 +  do_test_pending();
 +
-+  // Mock the PeerConnection.  Its onidentityresult callback will be 
-+  // invoked by the IdP proxy.
-+  let pc = mockPeerConnection(FINGERPRINT, function(action, params) {
-+    do_test_finished();
-+    do_check_eq(action, "onidentityresult");
-+    do_check_eq(params.assertion.fingerprint.algorithm, FINGERPRINT.algorithm);
-+    do_check_eq(params.assertion.fingerprint.digest, FINGERPRINT.digest);
-+    run_next_test();
-+  });
-+
-+  let am = new PersonaAuthModule();
-+
-+  am.onidentityresult = function(aResult) {
-+      let assertion = aSubject.wrappedJSObject;
-+      do_check_eq(assertion.audience, "rtcweb://peerconnection/");
-+      do_check_eq(assertion.fingerprint.digest, FINGERPRINT.digest);
-+      pc.onidentityresult({assertion: assertion});
-+    }
-+  );
-+
-+  am.getIdentityAssertion(pc.fingerprint, pc.onidentityresult); 
-+}
-+
-+function test_channelReady() {
-+  function onmessage = function(message) {
++  let onMessage = function onMessage(message) {
 +    do_check_eq(message.type, "READY");
++    do_test_finished();
 +    run_next_test();
-+  };
++  }
 +
-+  new PersonaAuthModule({onmessage: onmessage});
++  let channel = new IDPChannel(onMessage);
 +}
 +
 +function test_sign() {
-+  // Source: http://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.5.2.2
-+  let message = {
-+    "type":"SIGN",
-+    "id":1,
-+    "origin":"https://calling-service.example.com/",
-+    "message":"abcdefghijklmnopqrstuvwyz"
++  do_test_pending();
++  let sign_message = {
++    type: "SIGN",
++    id: 1,
++    origin: "https://calling-service.example.com/",
++    message: "abcdefghijklmnopqrstuvwyz"
 +  };
++
++  let onMessage = function onMessage(message) {
++    switch(message.type) {
++      case "READY":
++        // wait until the next tick so channel will not be undefined
++        do_timeout(0, function sendSignMessage() {
++          channel.send(sign_message);
++        });
++        break;
++      case "SUCCESS":
++        do_check_eq(message.id, sign_message.id);
++        do_check_eq(message.message.assertion, MOCK_ASSERTION);
++        do_test_finished();
++        run_next_test();
++        break;
++      default:
++        do_throw("Weird message type: " + message.type);
++        break;
++    }
++  };
++  let channel = new IDPChannel(onMessage, {
++    PipeConstructor: MockPipe, 
++    HostFrameConstructor: MockHostFrame
++  });
 +}
 +
 +function test_verify() {
++  do_test_pending();
++  let verify_message = {
++    type: "VERIFY",
++    id: 2,
++    origin: "https://calling-service.example.com/",
++    message: MOCK_ASSERTION
++  };
++
++  let server = new HttpServer();
++  server.registerPathHandler('/verify', function(data, response) {
++    var verifierResponse = JSON.stringify({
++      status: "okay",
++      email: USER_IDENTITY,
++      audience: "rtcweb://peerconnection"
++    });
++
++    response.processAsync();
++    response.setStatusLine("1.0", 200, "OK");
++    response.setHeader("Cache-Control", "no-cache", false);
++    response.setHeader("Content-Type", "aplication/json", false);
++    do_timeout(0, function() {
++      response.write(verifierResponse);
++      response.finish();
++    });
++  });
++  server.start(8080);
++
++  let onMessage = function onMessage(message) {
++    switch(message.type) {
++      case "READY":
++        // wait until the next tick so channel will not be undefined
++        do_timeout(0, function sendSignMessage() {
++          channel.send(verify_message);
++        });
++        break;
++      case "SUCCESS":
++        do_check_eq(message.id, verify_message.id);
++        do_check_eq(message.message.identity.name, USER_IDENTITY);
++        // XXX once verifier can unpack assertion
++        //do_check_eq(message.message.contents, FINGERPRINT);
++        do_test_finished();
++        run_next_test();
++        break;
++      default:
++        do_throw("Weird message type: " + message.type);
++        break;
++    }
++  };
++  let channel = new IDPChannel(onMessage, {
++    PipeConstructor: MockPipe, 
++    HostFrameConstructor: MockHostFrame,
++    verifierUri: "http://localhost:8080/verify"
++  });
 +}
++
++function MockHostFrame() { }
++MockHostFrame.prototype = {
++  getIframe: function getIframe(aOptions, aCallback) {
++    aCallback(null);
++  }
++};
++
++function MockPipe(aOptions, aController) { 
++  this.options = aOptions;
++  this.controller = aController;
++}
++MockPipe.prototype = {
++  close: function close() {},
++  communicate: function communicate() {
++    // here's where we would send our one async message (sign) 
++    // to the hosted persona iframe.  The iframe would send a
++    // certificate-backed assertion back to us in response, which
++    // we relay to the controller
++    let message = this.options.message;
++    this.controller.receiveResponse({
++      type: "SUCCESS",
++      id: message.id,
++      message: {
++        assertion: MOCK_ASSERTION
++      }
++    });
++  }
++};
 +
 +/*
 + * utilities
@@ -629,8 +719,9 @@ new file mode 100644
 +
 +let TESTS = [ 
 +  test_import,
-+  test_getIdentityAssertion,
-+  test_channelReady
++  test_ready,
++  test_sign,
++  test_verify
 +];
 +
 +TESTS.forEach(add_test);
