@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 86413e921d5d5bdbefd6475619ebb0eab6185184
+# Parent b830cfcdd16ea4f0d69b54f3db3efdb5192f52dc
 # User Jed Parsons <jparsons@mozilla.com>
 # Date Wed Jun 12 16:35:42 2013 -0700
 Bug 878941 - IdP Proxy and communication channel for RTC peer connection (wip)
@@ -172,7 +172,7 @@ diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/RTCIdentity.jsm
-@@ -0,0 +1,336 @@
+@@ -0,0 +1,354 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -185,12 +185,16 @@ new file mode 100644
 +
 +"use strict";
 +
-+this.EXPORTED_SYMBOLS = ["IDPChannel", "HostFrame", "Pipe"];
++this.EXPORTED_SYMBOLS = ["IDPChannel", "HostFrame", "Pipe", "unpackAssertion"];
 +
 +const {classes: Cc, interfaces: Ci, utils: Cu} = Components;
 +
 +Cu.import("resource://gre/modules/Services.jsm");
 +Cu.import("resource://gre/modules/XPCOMUtils.jsm");
++
++const crypto = Cc["@mozilla.org/identity/crypto-service;1"]
++                 .getService(Ci.nsIIdentityCryptoService);
++
 +
 +// XXX while developing this, we use an ephemeral instance of persona that
 +// provides new functionality we need, namely fingerprint-wrapping in the
@@ -215,6 +219,19 @@ new file mode 100644
 +}
 +
 +log("**** using persona uri: " + kPersonaUri);
++
++function unpackAssertion(signedObject) {
++  if (typeof(signedObject) !== "string") {
++    throw new Error("Malformed assertion");
++  }
++
++  var parts = signedObject.split(".");
++  return {header: JSON.parse(crypto.base64UrlDecode(parts[0])),
++          payload: JSON.parse(crypto.base64UrlDecode(parts[1])),
++          signature: parts[2],
++          assertion: JSON.parse(crypto.base64UrlDecode(parts[3]))};
++};
++
 +
 +/*
 + * An invisible iframe for hosting the persona logic.
@@ -506,6 +523,7 @@ new file mode 100644
 +  }
 +};
 +
++this.unpackAssertion = unpackAssertion;
 +this.HostFrame = HostFrame;
 +this.Pipe = Pipe;
 +this.IDPChannel = IDPChannel;
@@ -534,7 +552,7 @@ diff --git a/toolkit/identity/tests/unit/test_rtcauthmodule.js b/toolkit/identit
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/tests/unit/test_rtcauthmodule.js
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,209 @@
 +
 +Cu.import("resource://gre/modules/Services.jsm");
 +Cu.import("resource://gre/modules/XPCOMUtils.jsm");
@@ -552,6 +570,10 @@ new file mode 100644
 +  "resource://gre/modules/identity/RTCIdentity.jsm",
 +  "HostFrame");
 +
++XPCOMUtils.defineLazyModuleGetter(this, "unpackAssertion",
++  "resource://gre/modules/identity/RTCIdentity.jsm",
++  "unpackAssertion");
++
 +// Example fingerprint taken from draft specification:
 +// http://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.4.1
 +const FINGERPRINT = {
@@ -560,11 +582,19 @@ new file mode 100644
 +};
 +const USER_IDENTITY = "alice@example.com";
 +const MOCK_ASSERTION = "I like pie";
++const ASSERTION = "eyJhbGciOiJSUzI1NiJ9.eyJwdWJsaWMta2V5Ijp7ImFsZ29yaXRobSI6IkRTIiwieSI6ImExOWI2YzEwNmMxMDg1OTkzZDgyMzZlZGQxZmIxNzdiZDc0NzU4NWI0NTZhYWNmOTM1MmI4M2ZhODcwYWZlN2I3YjBhMDUyMWUwNmRiOWRiYzFjODYxYjAwZDhjYzJkMjhkZTYzYWQ2Y2MxYjgxMzVjMTZhMDgwOTgwMTMwZWI0MmQ0MjNjMTU1YjQ4ODI2NTQ1MzZjNDNiMGRhNjY2NTllMTc4NTBlZGMzYTllNDdlNzAyMGZkY2RhY2VjMzQzY2EyZjFkZWQ4ZWM0MzUwODc5NTllMmEwYTBiOTdhMGQ5ODc5N2Q5MGQ2ZTdhNWZlMzNhODBkNjA3NGI4ZmVmNWYiLCJwIjoiZmY2MDA0ODNkYjZhYmZjNWI0NWVhYjc4NTk0YjM1MzNkNTUwZDlmMWJmMmE5OTJhN2E4ZGFhNmRjMzRmODA0NWFkNGU2ZTBjNDI5ZDMzNGVlZWFhZWZkN2UyM2Q0ODEwYmUwMGU0Y2MxNDkyY2JhMzI1YmE4MWZmMmQ1YTViMzA1YThkMTdlYjNiZjRhMDZhMzQ5ZDM5MmUwMGQzMjk3NDRhNTE3OTM4MDM0NGU4MmExOGM0NzkzMzQzOGY4OTFlMjJhZWVmODEyZDY5YzhmNzVlMzI2Y2I3MGVhMDAwYzNmNzc2ZGZkYmQ2MDQ2MzhjMmVmNzE3ZmMyNmQwMmUxNyIsInEiOiJlMjFlMDRmOTExZDFlZDc5OTEwMDhlY2FhYjNiZjc3NTk4NDMwOWMzIiwiZyI6ImM1MmE0YTBmZjNiN2U2MWZkZjE4NjdjZTg0MTM4MzY5YTYxNTRmNGFmYTkyOTY2ZTNjODI3ZTI1Y2ZhNmNmNTA4YjkwZTVkZTQxOWUxMzM3ZTA3YTJlOWUyYTNjZDVkZWE3MDRkMTc1ZjhlYmY2YWYzOTdkNjllMTEwYjk2YWZiMTdjN2EwMzI1OTMyOWU0ODI5YjBkMDNiYmM3ODk2YjE1YjRhZGU1M2UxMzA4NThjYzM0ZDk2MjY5YWE4OTA0MWY0MDkxMzZjNzI0MmEzODg5NWM5ZDViY2NhZDRmMzg5YWYxZDdhNGJkMTM5OGJkMDcyZGZmYTg5NjIzMzM5N2EifSwicHJpbmNpcGFsIjp7ImVtYWlsIjoicnNleXNAbW96aWxsYS5jb20ifSwiaWF0IjoxMzcxNjg0NDA3NjA5LCJleHAiOjEzNzE2ODgwMDc2MDksImlzcyI6IjEyNy4wLjAuMSJ9.OovdL4L8gPJ5vd6hh1N8VBOLdVYOOPkueJNKMelsRvABrRGvi4BVWR4LZJjYjUCTB0he0fybyNBAAg7kKI8BjlBjKM26VP9ioNx-Cqt6ADNGyPxnoTkhjUCABkQ68fpgBSF7JHY1bGa1P0izppRIZh0LSxUlLXDo8HBwKvqL99ZgC3u-gOSjDEEEBZq9tTekLBD6Hg451Zlev8sh3FQok6VhB6I6iKqKfre4_WPXS9nDp-0lj0YzQg26e9WJhY32YcgHj4Sz-OzAP3JwvGHKcrvk9kPST2Nz1A5ouhpNbFXhuQKy1b1M9Xk2FeIsp7qXAT0fGxy0jjS4QBJsVeEzQg~eyJhbGciOiJEUzEyOCJ9.eyJleHAiOjEzNzE2ODY4NDM4NTksImF1ZCI6InJ0Y3dlYjovL3BlZXJjb25uZWN0aW9uIn0.RA9o8QyOTxuzItjy-o92ZQPEzVJu9eMxloD83IgZH0K8DKHHxtPVuw";
 +
 +function test_import() {
 +  do_check_eq(typeof IDPChannel, "function");
 +  do_check_eq(typeof Pipe, "function");
 +  do_check_eq(typeof HostFrame, "function");
++  do_check_eq(typeof unpackAssertion, "function");
++  run_next_test();
++}
++
++function test_unpackAssertion() {
++  let unpacked = unpackAssertion(ASSERTION);
++  do_check_eq(unpacked.assertion.aud, "rtcweb://peerconnection");
 +  run_next_test();
 +}
 +
@@ -719,6 +749,7 @@ new file mode 100644
 +
 +let TESTS = [ 
 +  test_import,
++  test_unpackAssertion,
 +  test_ready,
 +  test_sign,
 +  test_verify
