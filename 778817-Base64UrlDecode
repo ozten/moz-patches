@@ -1,0 +1,138 @@
+# HG changeset patch
+# Parent 86413e921d5d5bdbefd6475619ebb0eab6185184
+# User Jed Parsons <jparsons@mozilla.com>
+# Date Fri Jun 21 16:04:41 2013 -0700
+Bug 778817 - Add and expose Base64UrlDecode in IdentityCryptoService
+
+diff --git a/toolkit/identity/IdentityCryptoService.cpp b/toolkit/identity/IdentityCryptoService.cpp
+--- a/toolkit/identity/IdentityCryptoService.cpp
++++ b/toolkit/identity/IdentityCryptoService.cpp
+@@ -60,16 +60,38 @@ Base64UrlEncodeImpl(const nsACString & u
+     } else if (out[i] == '/') {
+       out[i] = '_';
+     }
+   }
+ 
+   return NS_OK;
+ }
+ 
++nsresult
++Base64UrlDecodeImpl(const nsACString & base64Input, nsACString & result)
++{
++  nsresult rv = Base64Decode(base64Input, result);
++  NS_ENSURE_SUCCESS(rv, rv);
++
++  nsACString::char_type * out = result.BeginWriting();
++  nsACString::size_type length = result.Length();
++  // base64url encoding is defined in RFC 4648. It replaces the last two
++  // alphabet characters of base64 encoding with '-' and '_' respectively.
++  // Reverse that encoding here.
++  for (unsigned int i = 0; i < length; ++i) {
++    if (out[i] == '-') {
++      out[i] = '+';
++    } else if (out[i] == '_') {
++      out[i] = '/';
++    }
++  }
++
++  return NS_OK;
++}
++
+ #define DSA_KEY_TYPE_STRING (NS_LITERAL_CSTRING("DS160"))
+ #define RSA_KEY_TYPE_STRING (NS_LITERAL_CSTRING("RS256"))
+ 
+ class KeyPair : public nsIIdentityKeyPair, public nsNSSShutDownObject
+ {
+ public:
+   NS_DECL_ISUPPORTS
+   NS_DECL_NSIIDENTITYKEYPAIR
+@@ -234,16 +256,23 @@ IdentityCryptoService::GenerateKeyPair(
+ 
+ NS_IMETHODIMP
+ IdentityCryptoService::Base64UrlEncode(const nsACString & utf8Input,
+                                        nsACString & result)
+ {
+   return Base64UrlEncodeImpl(utf8Input, result);
+ }
+ 
++NS_IMETHODIMP
++IdentityCryptoService::Base64UrlDecode(const nsACString & base64Input, 
++                                       nsACString & result)
++{
++  return Base64UrlDecodeImpl(base64Input, result);
++}
++
+ KeyPair::KeyPair(SECKEYPrivateKey * privateKey, SECKEYPublicKey * publicKey)
+   : mPrivateKey(privateKey)
+   , mPublicKey(publicKey)
+ {
+   MOZ_ASSERT(!NS_IsMainThread());
+ }
+ 
+ NS_IMETHODIMP
+diff --git a/toolkit/identity/nsIIdentityCryptoService.idl b/toolkit/identity/nsIIdentityCryptoService.idl
+--- a/toolkit/identity/nsIIdentityCryptoService.idl
++++ b/toolkit/identity/nsIIdentityCryptoService.idl
+@@ -40,16 +40,17 @@ interface nsIIdentitySignCallback;
+ // "@mozilla.org/identity/crypto-service;1"
+ [scriptable, builtinclass, uuid(f087e6bc-dd33-4f6c-a106-dd786e052ee9)]
+ interface nsIIdentityCryptoService : nsISupports
+ {
+   void generateKeyPair(in AUTF8String algorithm,
+                        in nsIIdentityKeyGenCallback callback);
+ 
+   ACString base64UrlEncode(in AUTF8String toEncode);
++  ACString base64UrlDecode(in AUTF8String toDecode);
+ };
+ 
+ /**
+  * This interface provides a keypair and signing interface for Identity functionality
+  */
+ [scriptable, uuid(73962dc7-8ee7-4346-a12b-b039e1d9b54d)]
+ interface nsIIdentityKeyPair : nsISupports
+ {
+diff --git a/toolkit/identity/tests/unit/test_crypto_service.js b/toolkit/identity/tests/unit/test_crypto_service.js
+--- a/toolkit/identity/tests/unit/test_crypto_service.js
++++ b/toolkit/identity/tests/unit/test_crypto_service.js
+@@ -13,16 +13,25 @@ const idService = Cc["@mozilla.org/ident
+ const ALG_DSA = "DS160";
+ const ALG_RSA = "RS256";
+ 
+ // When the output of an operation is a
+ function do_check_eq_or_slightly_less(x, y) {
+   do_check_true(x >= y - (3 * 8));
+ }
+ 
++function test_base64_roundtrip() {
++  let message = "Attack at dawn!";
++  let encoded = idService.base64UrlEncode(message);
++  let decoded = idService.base64UrlDecode(encoded);
++  do_check_neq(message, encoded);
++  do_check_eq(decoded, message);
++  run_next_test();
++}
++
+ function test_dsa() {
+   idService.generateKeyPair(ALG_DSA, function (rv, keyPair) {
+     log("DSA generateKeyPair finished ", rv);
+     do_check_true(Components.isSuccessCode(rv));
+     do_check_eq(typeof keyPair.sign, "function");
+     do_check_eq(keyPair.keyType, ALG_DSA);
+     do_check_eq_or_slightly_less(keyPair.hexDSAGenerator.length, 1024 / 8 * 2);
+     do_check_eq_or_slightly_less(keyPair.hexDSAPrime.length, 1024 / 8 * 2);
+@@ -56,14 +65,15 @@ function test_rsa() {
+       log("RSA sign finished ", rv, signature);
+       do_check_true(Components.isSuccessCode(rv));
+       do_check_true(signature.length > 1);
+       run_next_test();
+     });
+   });
+ }
+ 
++add_test(test_base64_roundtrip);
+ add_test(test_dsa);
+ add_test(test_rsa);
+ 
+ function run_test() {
+   run_next_test();
+ }
