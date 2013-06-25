@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 51dd81c70b1d5c5f1167198fe600839921af03d4
+# Parent 6caddb0b6246e7cc15b293c6127888475a0a5473
 
 diff --git a/content/events/src/nsContentEventHandler.cpp b/content/events/src/nsContentEventHandler.cpp
 --- a/content/events/src/nsContentEventHandler.cpp
@@ -263,7 +263,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this._onSetRemoteDescriptionFailure = onError;
  
      let type;
-@@ -660,22 +707,64 @@ RTCPeerConnection.prototype = {
+@@ -660,16 +707,47 @@ RTCPeerConnection.prototype = {
        case "pranswer":
          throw new Components.Exception("pranswer not yet implemented",
                                         Cr.NS_ERROR_NOT_IMPLEMENTED);
@@ -272,12 +272,6 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
                                         " provided to setRemoteDescription");
      }
  
--    this._queueOrRun({
--      func: this._getPC().setRemoteDescription,
--      args: [type, desc.sdp],
--      wait: true,
--      type: desc.type
--    });
 +    let verifyCallback = function(email) {
 +      if(!email) {
 +        // TODO: Currently throws NO_ERROR with message "Identity could not be verified". Fix this.
@@ -285,56 +279,39 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +        return; // abort setting report description because verification failed
 +      }
 +
-+      let browser = this._win.QueryInterface(Ci.nsIInterfaceRequestor)
++      var message = "You are now talking securely to " + email;
++
++        let browser = this._win.QueryInterface(Ci.nsIInterfaceRequestor)
 +                         .getInterface(Ci.nsIWebNavigation)
 +                         .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
-+      let chromeWin = browser.ownerDocument.defaultView;
++        let gBrowser = browser.ownerDocument.defaultView.gBrowser;
++        var notificationBox = gBrowser.getNotificationBox();
++        var buttons = [
++        // {
++        //   label: "Okay",
++        //   accessKey: "Y",
++        //   popup: "test",
++        //   callback: null
++        // }
++        ];
 +
-+      let acceptCall = function() {
-+        this._queueOrRun({
-+          func: this._getPC().setRemoteDescription,
-+          args: [type, desc.sdp],
-+          wait: true,
-+          type: desc.type
-+        });
-+      }.bind(this);
-+
-+      let mainAction = {
-+        label: "Allow",
-+        accessKey: "A",
-+        callback: acceptCall
-+      };
-+
-+      let secondaryActions = [{
-+        label: "Deny",
-+        accessKey: "D",
-+        callback: function () {
-+          // User denied the call
-+          // TODO: Currently throws NO_ERROR with message "Denied call". Fix this.
-+          this._observer.onSetRemoteDescriptionError(0, "Denied call");
-+        }
-+      }];
-+
-+      let options = null;
-+      let message = "You are connecting to " + email + "\nAre you sure you want to proceed?";
-+
-+      chromeWin.PopupNotifications.show(browser,
-+        'id-webrtc-notification', message,
-+        'identity-notification-icon', mainAction,
-+        secondaryActions, options
-+      );
++        var priority = notificationBox.PRIORITY_WARNING_MEDIUM;
++        notificationBox.appendNotification(message, "webrtc-auth",
++                                           "chrome://browser/skin/Secure-Glyph.png",
++                                           priority, buttons);
 +    }.bind(this);
 +
 +    this._idp.verifySDP(desc.sdp, verifyCallback);
++
+     this._queueOrRun({
+       func: this._getPC().setRemoteDescription,
+       args: [type, desc.sdp],
+       wait: true,
+       type: desc.type
+     });
    },
  
-   updateIce: function(config, constraints) {
-     throw new Components.Exception("updateIce not yet implemented",
-                                    Cr.NS_ERROR_NOT_IMPLEMENTED);
-   },
- 
-   addIceCandidate: function(cand, onSuccess, onError) {
-@@ -740,16 +829,20 @@ RTCPeerConnection.prototype = {
+@@ -740,16 +818,20 @@ RTCPeerConnection.prototype = {
      this.deprecated("localStreams");
      return this.getLocalStreams();
    },
@@ -355,7 +332,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      }
      return new this._win.mozRTCSessionDescription({ type: this._localType,
                                                      sdp: sdp });
-@@ -913,31 +1006,39 @@ PeerConnectionObserver.prototype = {
+@@ -932,31 +1014,39 @@ PeerConnectionObserver.prototype = {
          // want this to take down peerconnection, but we still want the user
          // to see it, so we catch it, report it, and move on.
          this._dompc.reportError(e.message, e.fileName, e.lineNumber);
@@ -397,7 +374,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this._dompc._executeNext();
    },
  
-@@ -1047,15 +1148,179 @@ PeerConnectionObserver.prototype = {
+@@ -1088,15 +1178,179 @@ PeerConnectionObserver.prototype = {
    },
  
    notifyConnection: function() {
@@ -464,7 +441,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    //       "displayname" : "Bob"
 +    //     },
 +    //     "request_origin":"rtcweb://peerconnection",
-+    //     "contents":"abcdefghijklmnopqrstuvwyz"
++    //     "contents":"abcdefghijklmnopqrstuvwyz" //fingerprint
 +    //   }
 +    // }
 +
@@ -473,7 +450,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    // let message = JSON.parse(message);
 +    if(!message) return;
 +    let msg = message.message || {};
-+    let identity = message.message.identity || {};
++    let identity = msg.identity || {};
 +    let stored = this.messages[message.id] || { callback: function(){} }; // lookup stored message
 +    if(message.type == 'SUCCESS') {
 +      if(stored.type == 'SIGN') {
@@ -481,7 +458,9 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +        return stored.callback(stored.sdp); // callback with sdp + assertion
 +      }
 +      else if(stored.type == 'VERIFY') {
-+        return stored.callback(identity.name); // callback with email
++        if(msg.request_origin != "rtcweb://peerconnection"); // error
++        else if(msg.contents != stored.message.fingerprint); // error
++        else return stored.callback(identity.name); // no error: callback with email
 +      }
 +    }
 +    return stored.callback(null);
@@ -497,7 +476,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    let pattern = /\na=fingerprint:\s*(\S+\s*\S*)/i;
 +    let fingerprint = sdp.match(pattern)[1];
 +
-+    this.messageCount = 1234; // TODO: remove this after testing
++    // this.messageCount = 1234; // TODO: remove this after testing
 +
 +    let data = {
 +      type: 'SIGN',
@@ -547,14 +526,12 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    if(!assertion_matches) return callback(null); //no matches (old browser?)
 +    else assertion = assertion_matches[1]; // a match!
 +
-+    dump("ASSERTION: " + assertion);
-+
 +    let message = {
 +      'identity': assertion,
 +      'fingerprint': fingerprint
 +    };
 +
-+    /* TESTING ONLY */ this.messageCount = 4321; // TODO: remove this when finished testing /* TESTING ONLY */
++    // /* TESTING ONLY */ this.messageCount = 4321; // TODO: remove this when finished testing /* TESTING ONLY */
 +
 +    let data = {
 +      type: 'VERIFY',
@@ -701,7 +678,7 @@ diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.
 diff --git a/dom/webidl/WebIDL.mk b/dom/webidl/WebIDL.mk
 --- a/dom/webidl/WebIDL.mk
 +++ b/dom/webidl/WebIDL.mk
-@@ -205,16 +205,17 @@ webidl_files = \
+@@ -211,16 +211,17 @@ webidl_files = \
    Rect.webidl \
    RGBColor.webidl \
    RTCConfiguration.webidl \
