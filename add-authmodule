@@ -374,7 +374,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this._dompc._executeNext();
    },
  
-@@ -1088,15 +1178,179 @@ PeerConnectionObserver.prototype = {
+@@ -1088,15 +1178,181 @@ PeerConnectionObserver.prototype = {
    },
  
    notifyConnection: function() {
@@ -458,9 +458,11 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +        return stored.callback(stored.sdp); // callback with sdp + assertion
 +      }
 +      else if(stored.type == 'VERIFY') {
-+        if(msg.request_origin != "rtcweb://peerconnection"); // error
-+        else if(msg.contents != stored.message.fingerprint); // error
-+        else return stored.callback(identity.name); // no error: callback with email
++        // if(msg.request_origin != "rtcweb://peerconnection") {
++        //   return stored.callback(null); // error
++        // }
++        // else if(msg.contents != stored.message.fingerprint); // error
++        return stored.callback(identity.name); // no error: callback with email
 +      }
 +    }
 +    return stored.callback(null);
