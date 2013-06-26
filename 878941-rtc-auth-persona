@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent b830cfcdd16ea4f0d69b54f3db3efdb5192f52dc
+# Parent 25d1683000014cd8cf3b97b92c40aaa4b01624f8
 # User Jed Parsons <jparsons@mozilla.com>
 # Date Wed Jun 12 16:35:42 2013 -0700
 Bug 878941 - IdP Proxy and communication channel for RTC peer connection (wip)
@@ -131,7 +131,7 @@ new file mode 100644
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -66,16 +66,17 @@ browser.jar:
+@@ -67,16 +67,17 @@ browser.jar:
  *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
          content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
          content/browser/pageinfo/pageInfo.css         (content/pageinfo/pageInfo.css)
@@ -152,7 +152,7 @@ diff --git a/browser/base/jar.mn b/browser/base/jar.mn
 diff --git a/toolkit/identity/Makefile.in b/toolkit/identity/Makefile.in
 --- a/toolkit/identity/Makefile.in
 +++ b/toolkit/identity/Makefile.in
-@@ -22,14 +22,15 @@ EXTRA_JS_MODULES = \
+@@ -21,14 +21,15 @@ EXTRA_JS_MODULES = \
  	IdentityUtils.jsm \
  	Identity.jsm \
  	IdentityProvider.jsm \
@@ -180,7 +180,7 @@ new file mode 100644
 +/*
 + * An Authentication Module for RTC that uses Persona
 + *
-+ * 
++ *
 + */
 +
 +"use strict";
@@ -235,8 +235,8 @@ new file mode 100644
 +
 +/*
 + * An invisible iframe for hosting the persona logic.
-+ * 
-+ * There is no visible UX here, as we assume the user has already 
++ *
++ * There is no visible UX here, as we assume the user has already
 + * logged in elsewhere (on a different screen in the web site hosting
 + * the RTC functions).  So all we have to do is get an assertion from
 + * Persona.
@@ -255,11 +255,11 @@ new file mode 100644
 +    let hiddenDoc = Services.appShell.hiddenDOMWindow.document;
 +
 +    this._iframe = hiddenDoc.createElementNS(
-+        "http://www.w3.org/1999/xhtml", "iframe"); 
++        "http://www.w3.org/1999/xhtml", "iframe");
 +
 +    this._iframe.setAttribute("mozframetype", "content");
 +    this._iframe.setAttribute("id", "persona-host-frame");
-+    this._iframe.setAttribute("src", 
++    this._iframe.setAttribute("src",
 +        aOptions.src || kPersonaUri+'/communication_iframe');
 +
 +    aOptions.iframe = this._iframe;
@@ -346,10 +346,10 @@ new file mode 100644
 +
 +IDPChannel.prototype = {
 +  /*
-+   * use the persona communication_iframe to request an assertion 
++   * use the persona communication_iframe to request an assertion
 +   *
 +   * https://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.5.2.2
-+   * Example transaction: 
++   * Example transaction:
 +   *
 +   *
 +   *  PeerConnection -> IdP proxy:
@@ -375,7 +375,7 @@ new file mode 100644
 +   *                       \"signature\":\"010203040506\"}"
 +   *      }
 +   *    }
-+   * 
++   *
 +   */
 +  _sign: function idpChannel__sign(message) {
 +    let hostFrame = new this.hostFrameConstructor();
@@ -402,7 +402,7 @@ new file mode 100644
 +   * XXX for now, this is quick and easy
 +   *
 +   * https://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.5.2.3
-+   * An example transaction: 
++   * An example transaction:
 +   *
 +   *    PeerConnection -> IdP Proxy:
 +   *      {
@@ -429,7 +429,7 @@ new file mode 100644
 +   *       }
 +   *      }
 +   *
-+   * 
++   *
 +   */
 +  _verify: function idpChannel__verify(message) {
 +    // message.message should be the base64-encoded assertion as a string
@@ -467,10 +467,10 @@ new file mode 100644
 +                identity: {
 +                  name: response.email,
 +                  displayname: ""     // not something persona knows
-+                }
-+              },
-+              request_origin: "rtcweb://peerconnection"
-+              // XXX need contents: fingerprint here
++                },
++                request_origin: "rtcweb://peerconnection"
++                // TODO: XXX need contents: fingerprint here
++              }
 +            });
 +          } else { // not "okay"
 +            this.receiveResponse({
