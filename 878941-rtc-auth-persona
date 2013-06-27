@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 25d1683000014cd8cf3b97b92c40aaa4b01624f8
+# Parent a1a87dc2d49573e04a058c297f79e30d185a96d5
 # User Jed Parsons <jparsons@mozilla.com>
 # Date Wed Jun 12 16:35:42 2013 -0700
 Bug 878941 - IdP Proxy and communication channel for RTC peer connection (wip)
@@ -172,7 +172,7 @@ diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/RTCIdentity.jsm
-@@ -0,0 +1,354 @@
+@@ -0,0 +1,356 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -260,7 +260,7 @@ new file mode 100644
 +    this._iframe.setAttribute("mozframetype", "content");
 +    this._iframe.setAttribute("id", "persona-host-frame");
 +    this._iframe.setAttribute("src",
-+        aOptions.src || kPersonaUri+'/communication_iframe');
++        (aOptions.idpUri || kPersonaUri) + '/communication_iframe');
 +
 +    aOptions.iframe = this._iframe;
 +
@@ -338,6 +338,7 @@ new file mode 100644
 +  this.pipeConstructor = aOptions.PipeConstructor || Pipe;
 +  this.hostFrameConstructor = aOptions.HostFrameConstructor || HostFrame;
 +  this.verifierUri = aOptions.verifierUri || kVerifierUri;
++  this.idpUri = aOptions.idpUri || kPersonaUri;
 +  this.pipe = null;
 +
 +  // https://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.5.2
@@ -380,6 +381,7 @@ new file mode 100644
 +  _sign: function idpChannel__sign(message) {
 +    let hostFrame = new this.hostFrameConstructor();
 +    let options = {
++      idpUri: this.idpUri,
 +      message: message
 +    };
 +    log("sign: " + JSON.stringify(options, null, 2));
