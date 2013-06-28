@@ -333,14 +333,6 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
          // No-op
          break;
 
-@@ -1056,16 +1147,20 @@ PeerConnectionObserver.prototype = {
-       case Ci.IPeerConnectionObserver.kSdpState:
-         // No-op
-         break;
-
-       case Ci.IPeerConnectionObserver.kSipccState:
-         // No-op
-         break;
 +      case 1:
 +        //TODO REMOVE AFTER TESTING
 +        break;
