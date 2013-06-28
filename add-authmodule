@@ -103,7 +103,6 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      // Nothing starts until ICE gathering completes.
      this._queueOrRun({
 @@ -311,35 +332,41 @@ RTCPeerConnection.prototype = {
-
    _getPC: function() {
      if (!this._pc) {
        throw new Components.Exception("RTCPeerConnection is gone (did you enter Offline mode?)");
@@ -166,7 +165,6 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
    dispatchEvent: function(event) {
      this.__DOM_IMPL__.dispatchEvent(event);
    },
-
 @@ -637,16 +665,46 @@ RTCPeerConnection.prototype = {
      this._queueOrRun({
        func: this._getPC().setLocalDescription,
@@ -335,6 +333,14 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
          // No-op
          break;
 
+@@ -1056,16 +1147,20 @@ PeerConnectionObserver.prototype = {
+       case Ci.IPeerConnectionObserver.kSdpState:
+         // No-op
+         break;
+
+       case Ci.IPeerConnectionObserver.kSipccState:
+         // No-op
+         break;
 +      case 1:
 +        //TODO REMOVE AFTER TESTING
 +        break;
@@ -496,6 +502,11 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +                       .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
 +    let gBrowser = browser.ownerDocument.defaultView.gBrowser;
 +
++    let browser = this._dompc._win.QueryInterface(Ci.nsIInterfaceRequestor)
++                       .getInterface(Ci.nsIWebNavigation)
++                       .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
++    let gBrowser = browser.ownerDocument.defaultView.gBrowser;
++
 +    let data = {
 +      type: 'SIGN',
 +      id: this.messageCount,
@@ -509,6 +520,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +      callback: callback
 +    };
 +
++    //send fingerprint to idp channel to create assertion
 +    this.idpChannel.send(data);
 +  },
 +
