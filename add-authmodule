@@ -494,11 +494,6 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +                       .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
 +    let gBrowser = browser.ownerDocument.defaultView.gBrowser;
 +
-+    let browser = this._dompc._win.QueryInterface(Ci.nsIInterfaceRequestor)
-+                       .getInterface(Ci.nsIWebNavigation)
-+                       .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
-+    let gBrowser = browser.ownerDocument.defaultView.gBrowser;
-+
 +    let data = {
 +      type: 'SIGN',
 +      id: this.messageCount,
