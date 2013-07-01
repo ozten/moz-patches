@@ -497,7 +497,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    let data = {
 +      type: 'SIGN',
 +      id: this.messageCount,
-+      origin: gBrowser.currentURI.spec, // "http://example.com/example" <-- entire url
++      origin: "http://127.0.0.1:3000", // TODO: Fix this
 +      message: fingerprint
 +    };
 +
