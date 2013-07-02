@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 25d1683000014cd8cf3b97b92c40aaa4b01624f8
+# Parent 34413584ca6b9984aa9ab9a3046566137b259b96
 # User Jed Parsons <jparsons@mozilla.com>
 # Date Wed Jun 12 16:35:42 2013 -0700
 Bug 878941 - IdP Proxy and communication channel for RTC peer connection (wip)
@@ -149,30 +149,11 @@ diff --git a/browser/base/jar.mn b/browser/base/jar.mn
  *       content/browser/sync/setup.xul                (content/sync/setup.xul)
          content/browser/sync/addDevice.js             (content/sync/addDevice.js)
          content/browser/sync/addDevice.xul            (content/sync/addDevice.xul)
-diff --git a/toolkit/identity/Makefile.in b/toolkit/identity/Makefile.in
---- a/toolkit/identity/Makefile.in
-+++ b/toolkit/identity/Makefile.in
-@@ -21,14 +21,15 @@ EXTRA_JS_MODULES = \
- 	IdentityUtils.jsm \
- 	Identity.jsm \
- 	IdentityProvider.jsm \
- 	IdentityStore.jsm \
- 	jwcrypto.jsm \
- 	LogUtils.jsm \
- 	MinimalIdentity.jsm \
- 	RelyingParty.jsm \
-+	RTCIdentity.jsm \
- 	Sandbox.jsm \
- 	$(NULL)
- 
- JS_MODULES_PATH = $(FINAL_TARGET)/modules/identity
- 
- include $(topsrcdir)/config/rules.mk
 diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/RTCIdentity.jsm
-@@ -0,0 +1,354 @@
+@@ -0,0 +1,356 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -260,7 +241,7 @@ new file mode 100644
 +    this._iframe.setAttribute("mozframetype", "content");
 +    this._iframe.setAttribute("id", "persona-host-frame");
 +    this._iframe.setAttribute("src",
-+        aOptions.src || kPersonaUri+'/communication_iframe');
++        (aOptions.idpUri || kPersonaUri) + '/communication_iframe');
 +
 +    aOptions.iframe = this._iframe;
 +
@@ -338,6 +319,7 @@ new file mode 100644
 +  this.pipeConstructor = aOptions.PipeConstructor || Pipe;
 +  this.hostFrameConstructor = aOptions.HostFrameConstructor || HostFrame;
 +  this.verifierUri = aOptions.verifierUri || kVerifierUri;
++  this.idpUri = aOptions.idpUri || kPersonaUri;
 +  this.pipe = null;
 +
 +  // https://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.5.2
@@ -380,6 +362,7 @@ new file mode 100644
 +  _sign: function idpChannel__sign(message) {
 +    let hostFrame = new this.hostFrameConstructor();
 +    let options = {
++      idpUri: this.idpUri,
 +      message: message
 +    };
 +    log("sign: " + JSON.stringify(options, null, 2));
@@ -527,6 +510,23 @@ new file mode 100644
 +this.HostFrame = HostFrame;
 +this.Pipe = Pipe;
 +this.IDPChannel = IDPChannel;
+diff --git a/toolkit/identity/moz.build b/toolkit/identity/moz.build
+--- a/toolkit/identity/moz.build
++++ b/toolkit/identity/moz.build
+@@ -22,12 +22,13 @@ JS_MODULES_PATH = 'modules/identity'
+ 
+ EXTRA_JS_MODULES += [
+     'Identity.jsm',
+     'IdentityProvider.jsm',
+     'IdentityStore.jsm',
+     'IdentityUtils.jsm',
+     'LogUtils.jsm',
+     'MinimalIdentity.jsm',
++    'RTCIdentity.jsm',
+     'RelyingParty.jsm',
+     'Sandbox.jsm',
+     'jwcrypto.jsm',
+ ]
 diff --git a/toolkit/identity/tests/unit/test_load_modules.js b/toolkit/identity/tests/unit/test_load_modules.js
 --- a/toolkit/identity/tests/unit/test_load_modules.js
 +++ b/toolkit/identity/tests/unit/test_load_modules.js
