@@ -76,7 +76,7 @@ new file mode 100644
 +    let stringifiedOptions = JSON.stringify({
 +      silent: true,
 +      origin: message.origin,
-+      extraData: message.message
++      payload: { extra : { webrtc: { fingerprint : message.message }}}
 +    });
 +    log("sign extra data: " + stringifiedOptions);
 +    let callback = function shim_getCallback(assertion) {
@@ -153,7 +153,7 @@ diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/RTCIdentity.jsm
-@@ -0,0 +1,356 @@
+@@ -0,0 +1,369 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -417,11 +417,24 @@ new file mode 100644
 +  _verify: function idpChannel__verify(message) {
 +    // message.message should be the base64-encoded assertion as a string
 +    let assertion = message.message;
++    let assertion_payload = null;
++    let assertion_aud = null;
++    try {
++      let obj = JSON.parse(crypto.base64UrlDecode(assertion.split("~")[1].split('.')[1]));
++      // obj = { "fingerprint" : "DE:AD:BE:EF", "exp" : 1372890745118, "aud" : "rtcweb://peerconnection" }
++      assertion_payload = obj.extra.webrtc.fingerprint;
++      assertion_aud = obj.aud;
++    }
++    catch(err) {
++      log(err);
++      // keep original null values
++    }
++
 +    var body, res;
 +    try {
 +      body = JSON.stringify({
 +        assertion: assertion,
-+        audience: "rtcweb://peerconnection"
++        audience: assertion_aud
 +      });
 +      log("verify: " + body);
 +    } catch (err) {
@@ -451,8 +464,8 @@ new file mode 100644
 +                  name: response.email,
 +                  displayname: ""     // not something persona knows
 +                },
-+                request_origin: "rtcweb://peerconnection"
-+                // TODO: XXX need contents: fingerprint here
++                request_origin: assertion_aud,
++                contents: assertion_payload
 +              }
 +            });
 +          } else { // not "okay"
