@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent a1a043f53ab9465c19fc3db09faeed00d3da57cb
+# Parent cd8d67cb2b73d500bb2842a3e6d71f14ecfec503
 
 diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 --- a/dom/media/PeerConnection.js
@@ -41,7 +41,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
    Services.obs.addObserver(this, "network:offline-about-to-go-offline", true);
    Services.obs.addObserver(this, "network:offline-status-changed", true);
  }
-@@ -234,21 +237,27 @@ function RTCPeerConnection() {
+@@ -234,21 +237,29 @@ function RTCPeerConnection() {
    this._pc = null;
    this._observer = null;
    this._closed = false;
@@ -61,6 +61,8 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    name: null
 +  };
 +
++  this._fingerprint = null;
++
    /**
     * Everytime we get a request from content, we put it in the queue. If
     * there are no pending operations though, we will execute it immediately.
@@ -69,7 +71,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
     * if neccesary. The _pending flag indicates whether an operation is currently
     * in progress.
     */
-@@ -286,20 +295,32 @@ RTCPeerConnection.prototype = {
+@@ -286,20 +297,32 @@ RTCPeerConnection.prototype = {
      this.makeGetterSetterEH("onicecandidate");
      this.makeGetterSetterEH("onnegotiationneeded");
      this.makeGetterSetterEH("onsignalingstatechange");
@@ -102,7 +104,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
  
      // Nothing starts until ICE gathering completes.
      this._queueOrRun({
-@@ -637,16 +658,46 @@ RTCPeerConnection.prototype = {
+@@ -637,16 +660,49 @@ RTCPeerConnection.prototype = {
      this._queueOrRun({
        func: this._getPC().setLocalDescription,
        args: [type, desc.sdp],
@@ -122,21 +124,24 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +  },
 +
 +  getIdentityAssertion: function() {
++    let gotAssertion = function (assertion) {
++      this._peerIdentity.name = assertion;
++      this._observer.notifyIdentityResult();
++    }.bind(this);
++
 +    if(this.signalingState == "closed") {
 +      this.reportError('getIdentityAssertion failed. signalingState is closed.', null, 0);
 +    }
 +    else {
-+      this.reportWarning('getIdentityAssertion is not yet implemented.', null, 0);
++      let fingerprint = this.fingerprint; //get fingerprint()
 +      if(!this._idp.set) {
 +        /// get key fingerprint
 +        this.reportWarning('setIdentityProvider has not been called.', null, 0);
 +        this._idp.init(this.defaultIDP, 'default', null); //default inititalization values
-+        var assertion = this._idp.requestIdentityAssertion(null);
-+        this.reportWarning("GOT ASSERTION: " + JSON.stringify(assertion), null, 0);
++        this._idp.requestIdentityAssertion(fingerprint, gotAssertion);
 +      }
 +      else {
-+        var assertion = this._idp.requestIdentityAssertion(null);
-+        this.reportWarning("GOT ASSERTION: " + JSON.stringify(assertion), null, 0);
++        this._idp.requestIdentityAssertion(fingerprint, gotAssertion);
 +      }
 +    }
 +  },
@@ -149,7 +154,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this._onSetRemoteDescriptionFailure = onError;
  
      let type;
-@@ -660,16 +711,48 @@ RTCPeerConnection.prototype = {
+@@ -660,16 +716,48 @@ RTCPeerConnection.prototype = {
        case "pranswer":
          throw new Components.Exception("pranswer not yet implemented",
                                         Cr.NS_ERROR_NOT_IMPLEMENTED);
@@ -198,7 +203,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      });
    },
  
-@@ -740,16 +823,20 @@ RTCPeerConnection.prototype = {
+@@ -740,26 +828,36 @@ RTCPeerConnection.prototype = {
      this.deprecated("localStreams");
      return this.getLocalStreams();
    },
@@ -219,7 +224,23 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      }
      return new this._win.mozRTCSessionDescription({ type: this._localType,
                                                      sdp: sdp });
-@@ -932,31 +1019,39 @@ PeerConnectionObserver.prototype = {
+   },
+ 
++  get fingerprint() {
++    let fingerprint = this._getPC().fingerprint;
++    dump("PC FINGERPRINT: " + fingerprint);
++    return fingerprint || "DE:AD:BE:EF";
++  },
++
+   get remoteDescription() {
+     this._checkClosed();
+     let sdp = this._getPC().remoteDescription;
+     if (sdp.length == 0) {
+       return null;
+     }
+     return new this._win.mozRTCSessionDescription({ type: this._remoteType,
+                                                     sdp: sdp });
+@@ -932,31 +1030,39 @@ PeerConnectionObserver.prototype = {
          // want this to take down peerconnection, but we still want the user
          // to see it, so we catch it, report it, and move on.
          this._dompc.reportError(e.message, e.fileName, e.lineNumber);
@@ -261,7 +282,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this._dompc._executeNext();
    },
  
-@@ -1056,16 +1151,20 @@ PeerConnectionObserver.prototype = {
+@@ -1056,16 +1162,20 @@ PeerConnectionObserver.prototype = {
        case Ci.IPeerConnectionObserver.kSdpState:
          // No-op
          break;
@@ -282,7 +303,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
  
    onAddStream: function(stream) {
      this.dispatchEvent(new this._dompc._win.MediaStreamEvent("addstream",
-@@ -1088,15 +1187,203 @@ PeerConnectionObserver.prototype = {
+@@ -1088,15 +1198,220 @@ PeerConnectionObserver.prototype = {
    },
  
    notifyConnection: function() {
@@ -307,6 +328,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +  this.idpChannel = null;
 +  this.messages = {};
 +  this.messageCount = 0;
++  this.ready = false;
 +};
 +PeerConnectionIDP.prototype = {
 +  init: function(provider, protocol, username) {
@@ -316,11 +338,11 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    else {
 +      // set the required values
 +      this.set = true;
-+      this.provider = provider;
++      this.provider = provider; // login.persona.org
++      this._dompc._peerIdentity.idp = provider;
 +      this.protocol = protocol;
 +      this.username = username;
 +      this.idpChannel = new IDPChannel(this.onMessage.bind(this), { idpUri: provider });
-+      dump('IDP has been (re-)initialized.');
 +    }
 +  },
 +
@@ -369,12 +391,18 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +      }
 +      else if(stored.type == 'VERIFY') {
 +        if(msg.request_origin == "rtcweb://peerconnection") { // very important check!
-+          return stored.callback(identity.name); // no error: callback with email
++          let stored_fingerprint = stored.message.fingerprint;
++          if(stored_fingerprint && msg.contents == stored_fingerprint) { // most important check
++            return stored.callback(identity.name); // no error: callback with email
++          }
 +        }
 +      }
 +    }
 +    else if(message.type == "ERROR"){
 +      dump("ERROR: " + message.error);
++    }
++    else if(message.type == "READY") {
++      this.ready = true;
 +    }
 +    return stored.callback(null);
 +  },
@@ -386,7 +414,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +   */
 +  getFingerprintFromSDP: function(sdp) {
 +    if(!sdp) return null;
-+    let pattern = /\na=fingerprint:\s*(\S+\s*\S*)/i;
++    let pattern = /\na=fingerprint:\s*\S+\s*(\S*)/i; //TODO: test the shit outta this
 +    let fingerprint_matches = sdp.match(pattern);
 +    if(!fingerprint_matches) return null;
 +    return fingerprint_matches[1];
@@ -426,15 +454,21 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +   * @return {undefined}            undefined
 +   */
 +  requestIdentityAssertion: function(fingerprint, callback) {
++    if(!this.ready) {
++      return callback(null);
++    }
++
 +    let browser = this._dompc._win.QueryInterface(Ci.nsIInterfaceRequestor)
 +                       .getInterface(Ci.nsIWebNavigation)
 +                       .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
 +    let gBrowser = browser.ownerDocument.defaultView.gBrowser;
 +
++    dump("BROWSER URI: " + gBrowser.currentURI.spec);
++
 +    let data = {
 +      type: 'SIGN',
 +      id: this.messageCount,
-+      origin: "http://127.0.0.1:3000", // TODO: Fix this
++      origin: gBrowser.currentURI.spec, // TODO: Monitor this change
 +      message: fingerprint
 +    };
 +
@@ -449,9 +483,13 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +  },
 +
 +  verifyIdentityAssertion: function(assertion, fingerprint, callback) {
++    if(!this.ready) {
++      return callback(null);
++    }
++
 +    let message = {
-+      'identity': assertion,
-+      'fingerprint': fingerprint
++      identity: assertion,
++      fingerprint: fingerprint
 +    };
 +
 +    let data = {
