@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent cd8d67cb2b73d500bb2842a3e6d71f14ecfec503
+# Parent 7352fce1eef89fa2971c745c0cab3426d1934b39
 
 diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 --- a/dom/media/PeerConnection.js
@@ -227,9 +227,9 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
    },
  
 +  get fingerprint() {
-+    let fingerprint = this._getPC().fingerprint;
-+    dump("PC FINGERPRINT: " + fingerprint);
-+    return fingerprint || "DE:AD:BE:EF";
++    if(!this._fingerprint)
++      this._fingerprint = this._getPC().fingerprint; // TODO: Fix this call, it is broken!
++    return this._fingerprint || "DE:AD:BE:EF";
 +  },
 +
    get remoteDescription() {
@@ -303,7 +303,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
  
    onAddStream: function(stream) {
      this.dispatchEvent(new this._dompc._win.MediaStreamEvent("addstream",
-@@ -1088,15 +1198,220 @@ PeerConnectionObserver.prototype = {
+@@ -1088,15 +1198,223 @@ PeerConnectionObserver.prototype = {
    },
  
    notifyConnection: function() {
@@ -333,7 +333,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +PeerConnectionIDP.prototype = {
 +  init: function(provider, protocol, username) {
 +    if(!provider) {
-+      dump("ERROR: PROVIDER REQUIRED FOR IDP INIT");
++      dump("PeerConnectionIDP ERROR: Provider required for IDP init\n");
 +    }
 +    else {
 +      // set the required values
@@ -463,12 +463,15 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +                       .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
 +    let gBrowser = browser.ownerDocument.defaultView.gBrowser;
 +
-+    dump("BROWSER URI: " + gBrowser.currentURI.spec);
++    let url_host = gBrowser.currentURI.host;
++    let url_port = gBrowser.currentURI.port;
++    let url_scheme = gBrowser.currentURI.scheme;
++    let origin = url_scheme + "://" + url_host + (url_port ? ":" + url_port : ""); // bare url
 +
 +    let data = {
 +      type: 'SIGN',
 +      id: this.messageCount,
-+      origin: gBrowser.currentURI.spec, // TODO: Monitor this change
++      origin: origin,
 +      message: fingerprint
 +    };
 +
@@ -648,21 +651,21 @@ diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.
 diff --git a/dom/webidl/WebIDL.mk b/dom/webidl/WebIDL.mk
 --- a/dom/webidl/WebIDL.mk
 +++ b/dom/webidl/WebIDL.mk
-@@ -213,16 +213,17 @@ webidl_files = \
+@@ -212,16 +212,17 @@ webidl_files = \
+   PositionError.webidl \
+   ProcessingInstruction.webidl \
+   Range.webidl \
    Rect.webidl \
    RGBColor.webidl \
    RTCConfiguration.webidl \
    RTCDataChannelEvent.webidl \
    RTCIceCandidate.webidl \
++  RTCIdentityAssertion.webidl \
    RTCPeerConnection.webidl \
    RTCPeerConnectionIceEvent.webidl \
    RTCSessionDescription.webidl \
-+  RTCIdentityAssertion.webidl \
    Screen.webidl \
    ScriptProcessorNode.webidl \
    ScrollAreaEvent.webidl \
    SimpleGestureEvent.webidl \
-   StyleSheet.webidl \
-   SVGAElement.webidl \
-   SVGAltGlyphElement.webidl \
-   SVGAngle.webidl \
+   SourceBufferList.webidl \
