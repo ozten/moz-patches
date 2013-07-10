@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 34413584ca6b9984aa9ab9a3046566137b259b96
+# Parent 04d8c309fe728f61d5a48122bf5706c6f86da209
 # User Jed Parsons <jparsons@mozilla.com>
 # Date Wed Jun 12 16:35:42 2013 -0700
 Bug 878941 - IdP Proxy and communication channel for RTC peer connection (wip)
@@ -153,7 +153,7 @@ diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/RTCIdentity.jsm
-@@ -0,0 +1,369 @@
+@@ -0,0 +1,383 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -176,12 +176,10 @@ new file mode 100644
 +const crypto = Cc["@mozilla.org/identity/crypto-service;1"]
 +                 .getService(Ci.nsIIdentityCryptoService);
 +
++XPCOMUtils.defineLazyModuleGetter(this, "Logger",
++                                  "resource://gre/modules/identity/LogUtils.jsm");
 +
-+// XXX while developing this, we use an ephemeral instance of persona that
-+// provides new functionality we need, namely fingerprint-wrapping in the
-+// assertion.
-+//let kPersonaUri = "https://webrtc.personatest.org";
-+let kPersonaUri = "http://127.0.0.1:10002";
++let kPersonaUri = "https://login.personatest.org";
 +try {
 +  kPersonaUri = Services.prefs.getCharPref("toolkit.identity.uri");
 +} catch (noSuchPref) {
@@ -195,11 +193,15 @@ new file mode 100644
 +  // stick with the default value
 +}
 +
-+function log(msg) {
-+  dump("* RTCIdentity: " + msg + "\n");
++function log(...aMessageArgs) {
++  Logger.log.apply(Logger, ["RTC"].concat(aMessageArgs));
 +}
 +
-+log("**** using persona uri: " + kPersonaUri);
++function reportError(...aMessageArgs) {
++  Logger.reportError.apply(Logger, ["RTC"].concat(aMessageArgs));
++}
++
++log("using persona uri: " + kPersonaUri);
 +
 +function unpackAssertion(signedObject) {
 +  if (typeof(signedObject) !== "string") {
@@ -212,7 +214,6 @@ new file mode 100644
 +          signature: parts[2],
 +          assertion: JSON.parse(crypto.base64UrlDecode(parts[3]))};
 +};
-+
 +
 +/*
 + * An invisible iframe for hosting the persona logic.
@@ -240,8 +241,7 @@ new file mode 100644
 +
 +    this._iframe.setAttribute("mozframetype", "content");
 +    this._iframe.setAttribute("id", "persona-host-frame");
-+    this._iframe.setAttribute("src",
-+        (aOptions.idpUri || kPersonaUri) + '/communication_iframe');
++    this._iframe.setAttribute("src", kPersonaUri + '/communication_iframe');
 +
 +    aOptions.iframe = this._iframe;
 +
@@ -292,7 +292,7 @@ new file mode 100644
 +
 +  communicate: function pipe_communicate() {
 +    if (this._closed) {
-+      logger.error("Cannot communicate; pipe is closed");
++      reportError("Cannot communicate; pipe is closed");
 +      return;
 +    }
 +
@@ -305,21 +305,36 @@ new file mode 100644
 +      this.mm.addMessageListener("rtcid-loaded", this._delegateLoaded.bind(this));
 +      this.mm.addMessageListener("rtcid-complete", this._delegateComplete.bind(this));
 +    } else {
-+      logger.error("Frame loader unavailable; frame attached properly?");
++      reportError("Frame loader unavailable; frame attached properly?");
 +    }
 +  }
 +};
 +
 +/*
-+ * aOptions can be used in testing to mock various components
++ * IDPChannel: A proxy for the Persona identity service.
++ *
++ * @param aMessageCallback  Callback to invoke to send messages back to
++ *        (function)        the caller.
++ *
++ * @param aOptions          Options from caller, as well as overrides to
++ *        (object)          make testing easier.
++ *
++ *                          PeerConnection.js may use any of the following
++ *                          options:
++ *
++ *                          provider:  identity provider (e.g., example.com)
++ *                          protocol:  identity protocol (e.g., browserid)
++ *                          identity:  user identity (e.g., alice@example.com)
 + */
-+function IDPChannel(messageCallback, aOptions) {
++function IDPChannel(aMessageCallback, aOptions) {
 +  aOptions = aOptions || {};
-+  this.receiveResponse = messageCallback;
++  this.receiveResponse = aMessageCallback;
++
++  // Options for making testing easier
 +  this.pipeConstructor = aOptions.PipeConstructor || Pipe;
 +  this.hostFrameConstructor = aOptions.HostFrameConstructor || HostFrame;
-+  this.verifierUri = aOptions.verifierUri || kVerifierUri;
-+  this.idpUri = aOptions.idpUri || kPersonaUri;
++  this.verifierUri = aOptions.verifierUri || kVerifierUri
++
 +  this.pipe = null;
 +
 +  // https://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.5.2
@@ -362,7 +377,6 @@ new file mode 100644
 +  _sign: function idpChannel__sign(message) {
 +    let hostFrame = new this.hostFrameConstructor();
 +    let options = {
-+      idpUri: this.idpUri,
 +      message: message
 +    };
 +    log("sign: " + JSON.stringify(options, null, 2));
@@ -426,7 +440,7 @@ new file mode 100644
 +      assertion_aud = obj.aud;
 +    }
 +    catch(err) {
-+      log(err);
++      reportError(err);
 +      // keep original null values
 +    }
 +
@@ -462,7 +476,7 @@ new file mode 100644
 +              message: {
 +                identity: {
 +                  name: response.email,
-+                  displayname: ""     // not something persona knows
++                  displayname: ""         // not something persona knows yet
 +                },
 +                request_origin: assertion_aud,
 +                contents: assertion_payload
@@ -492,7 +506,7 @@ new file mode 100644
 +    }.bind(this);
 +
 +    req.onerror = function idpChannel__verify_onerror() {
-+      log('request error:', req.status, req.statusText);
++      reportError('request error:', req.status, req.statusText);
 +      this.receiveResponse({
 +        type: "ERROR",
 +        id: message.id,
@@ -587,15 +601,9 @@ new file mode 100644
 +  "resource://gre/modules/identity/RTCIdentity.jsm",
 +  "unpackAssertion");
 +
-+// Example fingerprint taken from draft specification:
-+// http://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.4.1
-+const FINGERPRINT = {
-+  algorithm: "SHA-1",
-+  digest: "4A:AD:B9:B1:3F:82:18:3B:54:02:12:DF:3E:5D:49:6B:19:E5:7C:AB"
-+};
-+const USER_IDENTITY = "alice@example.com";
-+const MOCK_ASSERTION = "I like pie";
-+const ASSERTION = "eyJhbGciOiJSUzI1NiJ9.eyJwdWJsaWMta2V5Ijp7ImFsZ29yaXRobSI6IkRTIiwieSI6ImExOWI2YzEwNmMxMDg1OTkzZDgyMzZlZGQxZmIxNzdiZDc0NzU4NWI0NTZhYWNmOTM1MmI4M2ZhODcwYWZlN2I3YjBhMDUyMWUwNmRiOWRiYzFjODYxYjAwZDhjYzJkMjhkZTYzYWQ2Y2MxYjgxMzVjMTZhMDgwOTgwMTMwZWI0MmQ0MjNjMTU1YjQ4ODI2NTQ1MzZjNDNiMGRhNjY2NTllMTc4NTBlZGMzYTllNDdlNzAyMGZkY2RhY2VjMzQzY2EyZjFkZWQ4ZWM0MzUwODc5NTllMmEwYTBiOTdhMGQ5ODc5N2Q5MGQ2ZTdhNWZlMzNhODBkNjA3NGI4ZmVmNWYiLCJwIjoiZmY2MDA0ODNkYjZhYmZjNWI0NWVhYjc4NTk0YjM1MzNkNTUwZDlmMWJmMmE5OTJhN2E4ZGFhNmRjMzRmODA0NWFkNGU2ZTBjNDI5ZDMzNGVlZWFhZWZkN2UyM2Q0ODEwYmUwMGU0Y2MxNDkyY2JhMzI1YmE4MWZmMmQ1YTViMzA1YThkMTdlYjNiZjRhMDZhMzQ5ZDM5MmUwMGQzMjk3NDRhNTE3OTM4MDM0NGU4MmExOGM0NzkzMzQzOGY4OTFlMjJhZWVmODEyZDY5YzhmNzVlMzI2Y2I3MGVhMDAwYzNmNzc2ZGZkYmQ2MDQ2MzhjMmVmNzE3ZmMyNmQwMmUxNyIsInEiOiJlMjFlMDRmOTExZDFlZDc5OTEwMDhlY2FhYjNiZjc3NTk4NDMwOWMzIiwiZyI6ImM1MmE0YTBmZjNiN2U2MWZkZjE4NjdjZTg0MTM4MzY5YTYxNTRmNGFmYTkyOTY2ZTNjODI3ZTI1Y2ZhNmNmNTA4YjkwZTVkZTQxOWUxMzM3ZTA3YTJlOWUyYTNjZDVkZWE3MDRkMTc1ZjhlYmY2YWYzOTdkNjllMTEwYjk2YWZiMTdjN2EwMzI1OTMyOWU0ODI5YjBkMDNiYmM3ODk2YjE1YjRhZGU1M2UxMzA4NThjYzM0ZDk2MjY5YWE4OTA0MWY0MDkxMzZjNzI0MmEzODg5NWM5ZDViY2NhZDRmMzg5YWYxZDdhNGJkMTM5OGJkMDcyZGZmYTg5NjIzMzM5N2EifSwicHJpbmNpcGFsIjp7ImVtYWlsIjoicnNleXNAbW96aWxsYS5jb20ifSwiaWF0IjoxMzcxNjg0NDA3NjA5LCJleHAiOjEzNzE2ODgwMDc2MDksImlzcyI6IjEyNy4wLjAuMSJ9.OovdL4L8gPJ5vd6hh1N8VBOLdVYOOPkueJNKMelsRvABrRGvi4BVWR4LZJjYjUCTB0he0fybyNBAAg7kKI8BjlBjKM26VP9ioNx-Cqt6ADNGyPxnoTkhjUCABkQ68fpgBSF7JHY1bGa1P0izppRIZh0LSxUlLXDo8HBwKvqL99ZgC3u-gOSjDEEEBZq9tTekLBD6Hg451Zlev8sh3FQok6VhB6I6iKqKfre4_WPXS9nDp-0lj0YzQg26e9WJhY32YcgHj4Sz-OzAP3JwvGHKcrvk9kPST2Nz1A5ouhpNbFXhuQKy1b1M9Xk2FeIsp7qXAT0fGxy0jjS4QBJsVeEzQg~eyJhbGciOiJEUzEyOCJ9.eyJleHAiOjEzNzE2ODY4NDM4NTksImF1ZCI6InJ0Y3dlYjovL3BlZXJjb25uZWN0aW9uIn0.RA9o8QyOTxuzItjy-o92ZQPEzVJu9eMxloD83IgZH0K8DKHHxtPVuw";
++const FINGERPRINT = "7A:C9:96:BE:F9:D4:3B:CC:35:19:AF:40:84:49:C1:2C:12:7A:76:5C:C9:4B:4F:DE:95:95:FB:9B:B8:75:60:C4";
++const USER_IDENTITY = "rseys@mozilla.com";
++const ASSERTION = "eyJhbGciOiJSUzI1NiJ9.eyJwdWJsaWMta2V5Ijp7ImFsZ29yaXRobSI6IkRTIiwieSI6IjM2MTBkMzEzNDFkOTYzYjFhZWY2N2MzNmJlZGVmNjc2ZTk5NjllOGZjODE2YWM4YmY5ZmNhYmUwMjJhZDc0YTdiMDQzMjg0OGRmMmViOTdiYTQzNzhmYmJhNWY1NjZkZmZjMjQ2NzJmMWJhYWJhOWMwNmFlY2IzMmU1Y2JjMzhkMTlkZTMxMmY5YzZkY2FiMzNhNWI0ZjBiZWZkODBkNDMyMmVjZjYzZWYwNjI2ODdhMTVlMDBhYzBhNDZiNWIyZGQ0YWE3OTkwMGZhZmY0NzM1NmFjYzQ1MDk1ZmI2NGViZGM2OTI0ZjhlOGYyMmYwZGU3NjEzYzYzNmUzNjliZTIiLCJwIjoiZmY2MDA0ODNkYjZhYmZjNWI0NWVhYjc4NTk0YjM1MzNkNTUwZDlmMWJmMmE5OTJhN2E4ZGFhNmRjMzRmODA0NWFkNGU2ZTBjNDI5ZDMzNGVlZWFhZWZkN2UyM2Q0ODEwYmUwMGU0Y2MxNDkyY2JhMzI1YmE4MWZmMmQ1YTViMzA1YThkMTdlYjNiZjRhMDZhMzQ5ZDM5MmUwMGQzMjk3NDRhNTE3OTM4MDM0NGU4MmExOGM0NzkzMzQzOGY4OTFlMjJhZWVmODEyZDY5YzhmNzVlMzI2Y2I3MGVhMDAwYzNmNzc2ZGZkYmQ2MDQ2MzhjMmVmNzE3ZmMyNmQwMmUxNyIsInEiOiJlMjFlMDRmOTExZDFlZDc5OTEwMDhlY2FhYjNiZjc3NTk4NDMwOWMzIiwiZyI6ImM1MmE0YTBmZjNiN2U2MWZkZjE4NjdjZTg0MTM4MzY5YTYxNTRmNGFmYTkyOTY2ZTNjODI3ZTI1Y2ZhNmNmNTA4YjkwZTVkZTQxOWUxMzM3ZTA3YTJlOWUyYTNjZDVkZWE3MDRkMTc1ZjhlYmY2YWYzOTdkNjllMTEwYjk2YWZiMTdjN2EwMzI1OTMyOWU0ODI5YjBkMDNiYmM3ODk2YjE1YjRhZGU1M2UxMzA4NThjYzM0ZDk2MjY5YWE4OTA0MWY0MDkxMzZjNzI0MmEzODg5NWM5ZDViY2NhZDRmMzg5YWYxZDdhNGJkMTM5OGJkMDcyZGZmYTg5NjIzMzM5N2EifSwicHJpbmNpcGFsIjp7ImVtYWlsIjoicnNleXNAbW96aWxsYS5jb20ifSwiaWF0IjoxMzczMzg4MDg2NzY5LCJleHAiOjEzNzMzOTE2ODY3NjksImlzcyI6IjEyNy4wLjAuMSJ9.ZAbQAIe_0rRTlTBCIjSjfOW74WpUs_TuZGG2_4d_j1Tsa8MWGwvjLEPO8XLI2fpZugqKCjUaMHi-4EzpJYYRMPaw7geuH-VFq7l_yvXBNZnj8MOOjXU-TjlDgNR6-y_X2bSxbnrDtdKAHSEnQCc-YBzx3RPEkbJZwODpaZyE3CQZ-L1AjoeMAvF6BL8yt6f-kI-13l2qM5r55cvJsU0zpKEt8xUu9R7Elc-wvXjM_90c2f5PzQtVv_xS87nyyj4U6maVMKJbsCiWfzjrAaL2n8wdOtZY9Tf0AVZRU9vEJcjWh5B8ifafuaWg1Ki48plPNX5tnbZ44o95AFOMqnM_Bg~eyJhbGciOiJEUzEyOCJ9.eyJleHRyYSI6eyJ3ZWJydGMiOnsiZmluZ2VycHJpbnQiOiI3QTpDOTo5NjpCRTpGOTpENDozQjpDQzozNToxOTpBRjo0MDo4NDo0OTpDMToyQzoxMjo3QTo3Njo1QzpDOTo0Qjo0RjpERTo5NTo5NTpGQjo5QjpCODo3NTo2MDpDNCJ9fSwiZXhwIjoxMzczMzg4MjIzNDg5LCJhdWQiOiJydGN3ZWI6Ly9wZWVyY29ubmVjdGlvbiJ9.kzJUYLiCfdbm_nYS47HBYwRUUxm3-EU2S2VMjJZuqjGCS9qGt2bzmA";
 +
 +function test_import() {
 +  do_check_eq(typeof IDPChannel, "function");
@@ -607,6 +615,7 @@ new file mode 100644
 +
 +function test_unpackAssertion() {
 +  let unpacked = unpackAssertion(ASSERTION);
++  dump("*** unpacked: " + JSON.stringify(unpacked, null, 2));
 +  do_check_eq(unpacked.assertion.aud, "rtcweb://peerconnection");
 +  run_next_test();
 +}
@@ -642,7 +651,7 @@ new file mode 100644
 +        break;
 +      case "SUCCESS":
 +        do_check_eq(message.id, sign_message.id);
-+        do_check_eq(message.message.assertion, MOCK_ASSERTION);
++        do_check_eq(message.message.assertion, ASSERTION);
 +        do_test_finished();
 +        run_next_test();
 +        break;
@@ -663,8 +672,10 @@ new file mode 100644
 +    type: "VERIFY",
 +    id: 2,
 +    origin: "https://calling-service.example.com/",
-+    message: MOCK_ASSERTION
++    message: ASSERTION
 +  };
++
++  log("1"); 
 +
 +  let server = new HttpServer();
 +  server.registerPathHandler('/verify', function(data, response) {
@@ -685,7 +696,10 @@ new file mode 100644
 +  });
 +  server.start(8080);
 +
++  log("2");
++
 +  let onMessage = function onMessage(message) {
++    log("xxx message", message);
 +    switch(message.type) {
 +      case "READY":
 +        // wait until the next tick so channel will not be undefined
@@ -696,8 +710,7 @@ new file mode 100644
 +      case "SUCCESS":
 +        do_check_eq(message.id, verify_message.id);
 +        do_check_eq(message.message.identity.name, USER_IDENTITY);
-+        // XXX once verifier can unpack assertion
-+        //do_check_eq(message.message.contents, FINGERPRINT);
++        do_check_eq(message.message.contents, FINGERPRINT);
 +        do_test_finished();
 +        run_next_test();
 +        break;
@@ -706,6 +719,7 @@ new file mode 100644
 +        break;
 +    }
 +  };
++  log("3");
 +  let channel = new IDPChannel(onMessage, {
 +    PipeConstructor: MockPipe, 
 +    HostFrameConstructor: MockHostFrame,
@@ -736,7 +750,7 @@ new file mode 100644
 +      type: "SUCCESS",
 +      id: message.id,
 +      message: {
-+        assertion: MOCK_ASSERTION
++        assertion: ASSERTION
 +      }
 +    });
 +  }
