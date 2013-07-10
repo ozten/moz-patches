@@ -153,7 +153,7 @@ diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/RTCIdentity.jsm
-@@ -0,0 +1,383 @@
+@@ -0,0 +1,443 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -179,20 +179,6 @@ new file mode 100644
 +XPCOMUtils.defineLazyModuleGetter(this, "Logger",
 +                                  "resource://gre/modules/identity/LogUtils.jsm");
 +
-+let kPersonaUri = "https://login.personatest.org";
-+try {
-+  kPersonaUri = Services.prefs.getCharPref("toolkit.identity.uri");
-+} catch (noSuchPref) {
-+  // stick with the default value
-+}
-+
-+let kVerifierUri = "https://verifier.login.persona.org/verify";
-+try {
-+  kVerifierUri = Services.prefs.getCharPref("toolkit.identity.verifier_uri");
-+} catch (noSuchPref) {
-+  // stick with the default value
-+}
-+
 +function log(...aMessageArgs) {
 +  Logger.log.apply(Logger, ["RTC"].concat(aMessageArgs));
 +}
@@ -200,8 +186,6 @@ new file mode 100644
 +function reportError(...aMessageArgs) {
 +  Logger.reportError.apply(Logger, ["RTC"].concat(aMessageArgs));
 +}
-+
-+log("using persona uri: " + kPersonaUri);
 +
 +function unpackAssertion(signedObject) {
 +  if (typeof(signedObject) !== "string") {
@@ -213,22 +197,34 @@ new file mode 100644
 +          payload: JSON.parse(crypto.base64UrlDecode(parts[1])),
 +          signature: parts[2],
 +          assertion: JSON.parse(crypto.base64UrlDecode(parts[3]))};
-+};
++}
 +
 +/*
-+ * An invisible iframe for hosting the persona logic.
++ * An invisible iframe for hosting the idp shim.
 + *
 + * There is no visible UX here, as we assume the user has already
 + * logged in elsewhere (on a different screen in the web site hosting
-+ * the RTC functions).  So all we have to do is get an assertion from
-+ * Persona.
++ * the RTC functions).
 + */
 +this.HostFrame = function HostFrame() {
 +  this._iframe = null;
 +};
 +
 +HostFrame.prototype = {
-+  getIframe: function hostFrame_getIframe(aOptions, aCallback) {
++  /*
++   * Create a hidden, sandboxed iframe for hosting the IdP's js shim.
++   *
++   * @param aSourceURI
++   *        (string)        the URI of the hosted IdP's js shim
++   *
++   * @param aScriptPath
++   *        (string)        path part of the chrome url locating the 
++   *                        framescript to inject into the iframe.
++   *                        The function of the framescript is to enable
++   *                        message passing between the Pipe and the 
++   *                        content js.
++   */
++  getIframe: function hostFrame_getIframe(aSourceURI, aScriptPath, aOptions, aCallback) {
 +    if (this._gotIframe) {
 +      return aCallback(
 +        new Error("Can only get iframe once with HostFrame helper"));
@@ -240,12 +236,36 @@ new file mode 100644
 +        "http://www.w3.org/1999/xhtml", "iframe");
 +
 +    this._iframe.setAttribute("mozframetype", "content");
-+    this._iframe.setAttribute("id", "persona-host-frame");
-+    this._iframe.setAttribute("src", kPersonaUri + '/communication_iframe');
 +
-+    aOptions.iframe = this._iframe;
++    // sandbox the iframe
++    this._iframe.sandbox = "allow-forms allow-scripts allow-same-origin";
 +
 +    hiddenDoc.documentElement.appendChild(this._iframe);
++
++    let docShell = frame.contentWindow
++                    .QueryInterface(Ci.nsIInterfaceRequestor)
++                    .getInterface(Ci.nsIWebNavigation)
++                    .QueryInterface(Ci.nsIInterfaceRequestor)
++                    .getInterface(Ci.nsIDocShell);
++
++    // Stop about:blank from being loaded.
++    docShell.stop(Ci.nsIWebNavigation.STOP_NETWORK);
++
++    // Disable some types of content
++    docShell.allowAuth = false;
++    docShell.allowPlugins = false;
++    docShell.allowImages = false;
++    docShell.allowMedia = false;
++    docShell.allowWindowControl = false;
++
++    // Disable stylesheet loading since the document is not visible.
++    docShell
++      .contentViewer
++      .QueryInterface(Ci.nsIMarkupDocumentViewer)
++      .authorStyleDisabled = true;
++
++    // Load the embedding shim
++    this._iframe.setAttribute("src", aSourceURI);
 +
 +    // Inject a framescript into the iframe that can receive messages
 +    // from its parent process telling it which persona internal_api
@@ -253,10 +273,9 @@ new file mode 100644
 +    this._iframe
 +      .QueryInterface(Ci.nsIFrameLoaderOwner)
 +      .frameLoader.messageManager
-+      .loadFrameScript("chrome://browser/content/rtc-persona-framescript.js", true);
++      .loadFrameScript("chrome://"+aScriptPath, true);
 +
-+    // no error
-+    aCallback(null);
++    aCallback(this._iframe);
 +  }
 +};
 +
@@ -311,37 +330,43 @@ new file mode 100644
 +};
 +
 +/*
-+ * IDPChannel: A proxy for the Persona identity service.
++ * BrowserIDProxy: IdP Proxy module for the browserid protocol.
 + *
-+ * @param aMessageCallback  Callback to invoke to send messages back to
-+ *        (function)        the caller.
-+ *
-+ * @param aOptions          Options from caller, as well as overrides to
-+ *        (object)          make testing easier.
-+ *
-+ *                          PeerConnection.js may use any of the following
-+ *                          options:
-+ *
-+ *                          provider:  identity provider (e.g., example.com)
-+ *                          protocol:  identity protocol (e.g., browserid)
-+ *                          identity:  user identity (e.g., alice@example.com)
-+ */
-+function IDPChannel(aMessageCallback, aOptions) {
++ * Used by IDPChannel (below).
++ */ 
++function BrowserIDProxy(aMessageCallback, aOptions) {
 +  aOptions = aOptions || {};
 +  this.receiveResponse = aMessageCallback;
++
++  this.personaUri = "https://login.personatest.org";
++  try {
++    this.personaURI = Services.prefs.getCharPref("toolkit.identity.uri");
++  } catch (noSuchPref) {
++    // stick with the default value
++  }
++
++  log("Using persona uri:", this.personaUri);  
++
++  this.verifierUri = "https://verifier.login.persona.org/verify";
++  try {
++    this.verifierUri = Services.prefs.getCharPref("toolkit.identity.verifier_uri");
++  } catch (noSuchPref) {
++    // stick with the default value
++  }
 +
 +  // Options for making testing easier
 +  this.pipeConstructor = aOptions.PipeConstructor || Pipe;
 +  this.hostFrameConstructor = aOptions.HostFrameConstructor || HostFrame;
-+  this.verifierUri = aOptions.verifierUri || kVerifierUri
++  this.verifierUri = aOptions.verifierUri || this.verifierUri;
 +
 +  this.pipe = null;
 +
 +  // https://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.5.2
 +  this.receiveResponse({type: "READY"});
-+}
 +
-+IDPChannel.prototype = {
++  // XXX Try to get an assertion immediately
++}
++BrowserIDProxy.prototype = {
 +  /*
 +   * use the persona communication_iframe to request an assertion
 +   *
@@ -374,14 +399,16 @@ new file mode 100644
 +   *    }
 +   *
 +   */
-+  _sign: function idpChannel__sign(message) {
++  sign: function idpChannel_sign(message) {
 +    let hostFrame = new this.hostFrameConstructor();
++    let frameSource = this.personaUri + '/communication_iframe';
++    let frameScript = "browser/content/rtc-persona-framescript.js";
 +    let options = {
 +      message: message
 +    };
 +    log("sign: " + JSON.stringify(options, null, 2));
-+    hostFrame.getIframe(options, function() {
-+      // iframe has been added to options
++    hostFrame.getIframe(frameSource, frameScript, options, function(aIframe) {
++      options.iframe = aIframe;
 +
 +      // callback for the pipe when flow is complete
 +      options.onComplete = function pipe_onComplete(response) {
@@ -428,7 +455,7 @@ new file mode 100644
 +   *
 +   *
 +   */
-+  _verify: function idpChannel__verify(message) {
++  verify: function idpChannel_verify(message) {
 +    // message.message should be the base64-encoded assertion as a string
 +    let assertion = message.message;
 +    let assertion_payload = null;
@@ -439,7 +466,7 @@ new file mode 100644
 +      assertion_payload = obj.extra.webrtc.fingerprint;
 +      assertion_aud = obj.aud;
 +    }
-+    catch(err) {
++    catch (err) {
 +      reportError(err);
 +      // keep original null values
 +    }
@@ -450,7 +477,6 @@ new file mode 100644
 +        assertion: assertion,
 +        audience: assertion_aud
 +      });
-+      log("verify: " + body);
 +    } catch (err) {
 +      this.receiveResponse(new Error("Cannot verify message; bad json"));
 +    }
@@ -463,7 +489,7 @@ new file mode 100644
 +    req.setRequestHeader('Content-Type', 'application/json');
 +    req.mozBackgroundRequest = true;
 +
-+    req.onload = function idpChannel__verify_onload() {
++    req.onload = function idpChannel_verify_onload() {
 +      let response = req.response;
 +      // The 'error' message is not in the spec.
 +      // Leaving it in for now, so we can debug more easily
@@ -505,7 +531,7 @@ new file mode 100644
 +      }
 +    }.bind(this);
 +
-+    req.onerror = function idpChannel__verify_onerror() {
++    req.onerror = function idpChannel_verify_onerror() {
 +      reportError('request error:', req.status, req.statusText);
 +      this.receiveResponse({
 +        type: "ERROR",
@@ -515,16 +541,50 @@ new file mode 100644
 +    }.bind(this);
 +
 +    req.send(body);
-+  },
++  }
++};
 +
++/*
++ * IDPChannel: A message channel between the RTC PeerConnection and a
++ * designated IdP Proxy.  The default protocol to proxy is "browserid".
++ *
++ * @param aMessageCallback  Callback to invoke to send messages back to
++ *        (function)        the caller.
++ *
++ * @param aOptions          Options from caller, as well as overrides to
++ *        (object)          make testing easier.
++ *
++ *                          PeerConnection.js may use any of the following
++ *                          options:
++ *
++ *                          provider:  identity provider (e.g., example.com)
++ *                          protocol:  identity protocol (e.g., browserid)
++ *                          identity:  user identity (e.g., alice@example.com)
++ */
++function IDPChannel(aMessageCallback, aOptions) {
++  aOptions = aOptions || {};
++  aOptions.protocol = aOptions.protocol || "default";
++
++  switch (aOptions.protocol) {
++    case "browserid":
++    case "default":
++      this.idpProxy = new BrowserIDProxy(aMessageCallback, aOptions);
++      break;
++
++    default:
++      throw new Error("Unsupported protocol: " + aOptions.protocol);
++      break;
++  }
++}
++IDPChannel.prototype = {
 +  send: function idpChannel_send(message) {
 +    log("send received: " + JSON.stringify(message));
 +    switch (message.type) {
 +      case "SIGN":
-+        this._sign(message);
++        this.idpProxy.sign(message);
 +        break;
 +      case "VERIFY":
-+        this._verify(message);
++        this.idpProxy.verify(message);
 +        break;
 +      default:
 +        this.receiveResponse(new Error("Unknown message type: " + message.type));
@@ -579,7 +639,7 @@ diff --git a/toolkit/identity/tests/unit/test_rtcauthmodule.js b/toolkit/identit
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/tests/unit/test_rtcauthmodule.js
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,218 @@
 +
 +Cu.import("resource://gre/modules/Services.jsm");
 +Cu.import("resource://gre/modules/XPCOMUtils.jsm");
@@ -675,8 +735,6 @@ new file mode 100644
 +    message: ASSERTION
 +  };
 +
-+  log("1"); 
-+
 +  let server = new HttpServer();
 +  server.registerPathHandler('/verify', function(data, response) {
 +    var verifierResponse = JSON.stringify({
@@ -696,10 +754,7 @@ new file mode 100644
 +  });
 +  server.start(8080);
 +
-+  log("2");
-+
 +  let onMessage = function onMessage(message) {
-+    log("xxx message", message);
 +    switch(message.type) {
 +      case "READY":
 +        // wait until the next tick so channel will not be undefined
@@ -719,7 +774,6 @@ new file mode 100644
 +        break;
 +    }
 +  };
-+  log("3");
 +  let channel = new IDPChannel(onMessage, {
 +    PipeConstructor: MockPipe, 
 +    HostFrameConstructor: MockHostFrame,
@@ -727,9 +781,24 @@ new file mode 100644
 +  });
 +}
 +
++// Check that the IDPChannel throws an exception when asked to provide
++// a proxy for an unsupported protocol
++function test_unsupported() {
++  do_test_pending();
++  try {
++    new IDPChannel(function(){}, {protocol: "cupcakes"});
++  } catch(err) {
++    do_check_neq(err);
++    do_test_finished();
++    run_next_test();
++    return;
++  }
++  do_throw("Oops.  Shouldn't have gotten an IDPChannel for unsupported protocol");
++}
++
 +function MockHostFrame() { }
 +MockHostFrame.prototype = {
-+  getIframe: function getIframe(aOptions, aCallback) {
++  getIframe: function getIframe(aFrameSource, aFrameScript, aOptions, aCallback) {
 +    aCallback(null);
 +  }
 +};
@@ -779,7 +848,8 @@ new file mode 100644
 +  test_unpackAssertion,
 +  test_ready,
 +  test_sign,
-+  test_verify
++  test_verify,
++  test_unsupported
 +];
 +
 +TESTS.forEach(add_test);
@@ -787,7 +857,6 @@ new file mode 100644
 +function run_test() {
 +  run_next_test();
 +}
-+
 +
 diff --git a/toolkit/identity/tests/unit/xpcshell.ini b/toolkit/identity/tests/unit/xpcshell.ini
 --- a/toolkit/identity/tests/unit/xpcshell.ini
