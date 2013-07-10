@@ -242,7 +242,7 @@ new file mode 100644
 +
 +    hiddenDoc.documentElement.appendChild(this._iframe);
 +
-+    let docShell = frame.contentWindow
++    let docShell = this._iframe.contentWindow
 +                    .QueryInterface(Ci.nsIInterfaceRequestor)
 +                    .getInterface(Ci.nsIWebNavigation)
 +                    .QueryInterface(Ci.nsIInterfaceRequestor)
