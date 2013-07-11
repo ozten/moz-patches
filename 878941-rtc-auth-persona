@@ -340,7 +340,7 @@ new file mode 100644
 +
 +  this.personaUri = "https://login.personatest.org";
 +  try {
-+    this.personaURI = Services.prefs.getCharPref("toolkit.identity.uri");
++    this.personaUri = Services.prefs.getCharPref("toolkit.identity.uri");
 +  } catch (noSuchPref) {
 +    // stick with the default value
 +  }
