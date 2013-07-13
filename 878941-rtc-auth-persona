@@ -1,7 +1,7 @@
 # HG changeset patch
-# Parent 04d8c309fe728f61d5a48122bf5706c6f86da209
+# Parent 4dda210929fb56003dba4de87b19c6c5d5cb7d5a
 # User Jed Parsons <jparsons@mozilla.com>
-# Date Wed Jun 12 16:35:42 2013 -0700
+# Date Fri Jul 12 17:38:27 2013 -0700
 Bug 878941 - IdP Proxy and communication channel for RTC peer connection (wip)
 
 diff --git a/browser/base/content/rtc-persona-framescript.js b/browser/base/content/rtc-persona-framescript.js
@@ -861,21 +861,22 @@ new file mode 100644
 diff --git a/toolkit/identity/tests/unit/xpcshell.ini b/toolkit/identity/tests/unit/xpcshell.ini
 --- a/toolkit/identity/tests/unit/xpcshell.ini
 +++ b/toolkit/identity/tests/unit/xpcshell.ini
-@@ -1,16 +1,17 @@
- [DEFAULT]
- head = head_identity.js
- tail = tail_identity.js
- 
- # Test load modules first so syntax failures are caught early.
+@@ -6,16 +6,18 @@ tail = tail_identity.js
  [test_load_modules.js]
  [test_minimalidentity.js]
  
-+[test_rtcauthmodule.js]
  [test_identity_utils.js]
  [test_log_utils.js]
  [test_authentication.js]
+ # Identity modules aren't packaged on Android.
+ skip-if = os == "android"
++[test_rtcauthmodule.js]
++skip-if = os == "android"
  [test_crypto_service.js]
+ skip-if = os == "android"
  [test_identity.js]
+ skip-if = os == "android"
  [test_jwcrypto.js]
+ skip-if = os == "android"
  [test_observer_topics.js]
- [test_provisioning.js]
+ skip-if = os == "android"
