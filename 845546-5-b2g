@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 060e2a3f4e2c3296442b8de72ffc9861cdc5f1f5
+# Parent 11cacc0a8d1bf108587cd9757da561a5c3b2b8a1
 # User Jed Parsons <jparsons@mozilla.com>
 Bug 845546: Identity service: part 5, b2g component
 
@@ -76,14 +76,14 @@ diff --git a/b2g/chrome/content/identity.js b/b2g/chrome/content/identity.js
          internalParams = internalParams || {};
          if (assertion) {
            identityCall({
-@@ -112,17 +110,17 @@ function doInternalRequest() {
+@@ -115,17 +113,17 @@ function doInternalRequest() {
+           });
          }
          closeIdentityDialog();
        },
        stringifiedOptions);
    }
  }
- 
  function doInternalLogout(aOptions) {
 -  log("doInternalLogout:", (options && isLoaded));
 +  logger.log("doInternalLogout:", (options && isLoaded));
@@ -95,7 +95,7 @@ diff --git a/b2g/chrome/content/identity.js b/b2g/chrome/content/identity.js
      });
    }
  }
-@@ -132,32 +130,32 @@ addEventListener("DOMContentLoaded", fun
+@@ -135,32 +133,32 @@ addEventListener("DOMContentLoaded", fun
      isLoaded = true;
       // bring da func
       if (func) func();
@@ -153,13 +153,13 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
   * content will open the trusty UI.  If user interaction is not required,
   * and we only need to get to Persona functions, content will open a
   * hidden iframe.  In either case, a window is opened into which the
-@@ -74,20 +74,17 @@ this.EXPORTED_SYMBOLS = ["SignInToWebsit
- const Ci = Components.interfaces;
- const Cu = Components.utils;
+@@ -76,20 +76,17 @@ const Cu = Components.utils;
  
  Cu.import("resource://gre/modules/Services.jsm");
  Cu.import("resource://gre/modules/XPCOMUtils.jsm");
- Cu.import("resource://gre/modules/identity/IdentityUtils.jsm");
+ 
+ XPCOMUtils.defineLazyModuleGetter(this, "getRandomId",
+                                   "resource://gre/modules/identity/IdentityUtils.jsm");
  
  XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
 -                                  "resource://gre/modules/identity/MinimalIdentity.jsm");
@@ -175,7 +175,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
  // on start-up.
  let kPersonaUri = "https://firefoxos.persona.org";
  try {
-@@ -109,21 +106,22 @@ const kCloseIdentityDialog = "id-dialog-
+@@ -111,21 +108,22 @@ const kCloseIdentityDialog = "id-dialog-
  const kIdentityDelegateWatch = "identity-delegate-watch";
  const kIdentityDelegateRequest = "identity-delegate-request";
  const kIdentityDelegateLogout = "identity-delegate-logout";
@@ -202,7 +202,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
   * sendChromeEvent  - send a chromeEvent from the browser shell
   */
  let ContentInterface = {
-@@ -158,29 +156,29 @@ Pipe.prototype = {
+@@ -160,29 +158,29 @@ Pipe.prototype = {
  
    observe: function Pipe_observe(aSubject, aTopic, aData) {
      let options = {};
@@ -235,7 +235,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
        }
      }
      this._watchers.push({id: aId, count: 1, mm: aMm});
-@@ -204,45 +202,45 @@ Pipe.prototype = {
+@@ -206,45 +204,45 @@ Pipe.prototype = {
            this._watchers.splice(index, 1);
          }
        } else {
@@ -285,7 +285,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
        if (mm) {
          mm.removeMessageListener(kIdentityDelegateFinished, identityDelegateFinished);
          mm.removeMessageListener(kIdentityControllerDoMethod, aMessageCallback);
-@@ -253,17 +251,17 @@ Pipe.prototype = {
+@@ -255,17 +253,17 @@ Pipe.prototype = {
        removeMessageListeners();
  
        let detail = {
@@ -304,7 +304,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
        let msg = evt.detail;
        if (!msg.id.match(uuid)) {
          return;
-@@ -281,19 +279,19 @@ Pipe.prototype = {
+@@ -283,19 +281,19 @@ Pipe.prototype = {
              // the callbacks in the content script.  This could be either the
              // visible popup that the user interacts with, or it could be an
              // invisible frame.
@@ -326,7 +326,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
              // If we receive a "finished" event, then the delegate is done, so
              // we shut down the pipe and clean up.
              mm.addMessageListener(kIdentityControllerDoMethod, aMessageCallback);
-@@ -306,17 +304,17 @@ Pipe.prototype = {
+@@ -308,17 +306,17 @@ Pipe.prototype = {
          case kDoneIdentityDialog + '-' + uuid:
            // Received our assertion.  The message manager callbacks will handle
            // communicating back to the IDService.  All we have to do is remove
@@ -345,7 +345,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
      // Tell content to open the identity iframe or trusty popup. The parameter
      // showUI signals whether user interaction is needed.  If it is, content will
      // open a dialog; if not, a hidden iframe.  In each case, BrowserID is
-@@ -358,17 +356,17 @@ this.SignInToWebsiteController = {
+@@ -360,17 +358,17 @@ this.SignInToWebsiteController = {
  
    uninit: function SignInToWebsiteController_uninit() {
      Services.obs.removeObserver(this, "identity-controller-watch");
@@ -364,7 +364,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
        case "identity-controller-watch":
          this.doWatch(options);
          break;
-@@ -412,17 +410,17 @@ this.SignInToWebsiteController = {
+@@ -414,17 +412,17 @@ this.SignInToWebsiteController = {
            IdentityService.doLogout(aRpId);
            break;
  
@@ -383,7 +383,7 @@ diff --git a/b2g/components/SignInToWebsite.jsm b/b2g/components/SignInToWebsite
    doWatch: function SignInToWebsiteController_doWatch(aRpOptions) {
      // dom prevents watch from  being called twice
      let contentOptions = {
-@@ -432,30 +430,30 @@ this.SignInToWebsiteController = {
+@@ -434,30 +432,30 @@ this.SignInToWebsiteController = {
      this.pipe.communicate(aRpOptions, contentOptions,
          this._makeDoMethodCallback(aRpOptions.id));
    },

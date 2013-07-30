@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 63c6685e2e9c5cb067e7350f3a0a5f59f3621ba4
+# Parent 00cbb9f7d4713e07d74e3fe0c4270e5269a2c36c
 
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm

@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent f66d956d188e4d392a271d5c9152c6aa755ef040
+# Parent dbd7d55d64ffb24fef1b83ac44477cb91957398c
 # User Jed Parsons <jparsons@mozilla.com>
 Bug 845546: Identity service: part 1, remove obsolete files
 
@@ -917,36 +917,30 @@ deleted file mode 100644
 diff --git a/toolkit/identity/Makefile.in b/toolkit/identity/Makefile.in
 --- a/toolkit/identity/Makefile.in
 +++ b/toolkit/identity/Makefile.in
-@@ -14,22 +14,17 @@ FAIL_ON_WARNINGS := 1
- MODULE_NAME = identity
- LIBRARY_NAME = identity
- FORCE_STATIC_LIB = 1
+@@ -9,9 +9,18 @@ VPATH     = @srcdir@
+ 
+ include $(DEPTH)/config/autoconf.mk
+ 
+ FAIL_ON_WARNINGS := 1
+ 
  LIBXUL_LIBRARY = 1
- IS_COMPONENT = 1
  EXPORT_LIBRARY = 1
  
- EXTRA_JS_MODULES = \
-+	jwcrypto.jsm \
-+	MinimalIdentity.jsm \
- 	IdentityUtils.jsm \
--	Identity.jsm \
--	IdentityProvider.jsm \
--	IdentityStore.jsm \
--	jwcrypto.jsm \
- 	LogUtils.jsm \
--	MinimalIdentity.jsm \
--	RelyingParty.jsm \
--	Sandbox.jsm \
- 	$(NULL)
- 
- JS_MODULES_PATH = $(FINAL_TARGET)/modules/identity
- 
++EXTRA_JS_MODULES = \
++    jwcrypto.jsm \
++    MinimalIdentity.jsm \
++    IdentityUtils.jsm \
++    LogUtils.jsm \
++    $(NULL)
++
++JS_MODULES_PATH = $(FINAL_TARGET)/modules/identity
++
  include $(topsrcdir)/config/rules.mk
 diff --git a/toolkit/identity/RelyingParty.jsm b/toolkit/identity/RelyingParty.jsm
 deleted file mode 100644
 --- a/toolkit/identity/RelyingParty.jsm
 +++ /dev/null
-@@ -1,370 +0,0 @@
+@@ -1,372 +0,0 @@
 -/* -*- Mode: js2; js2-basic-offset: 2; indent-tabs-mode: nil; -*- */
 -/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 -/* This Source Code Form is subject to the terms of the Mozilla Public
@@ -963,10 +957,12 @@ deleted file mode 100644
 -Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 -Cu.import("resource://gre/modules/Services.jsm");
 -Cu.import("resource://gre/modules/identity/LogUtils.jsm");
--Cu.import("resource://gre/modules/identity/IdentityUtils.jsm");
 -Cu.import("resource://gre/modules/identity/IdentityStore.jsm");
 -
 -this.EXPORTED_SYMBOLS = ["RelyingParty"];
+-
+-XPCOMUtils.defineLazyModuleGetter(this, "objectCopy",
+-                                  "resource://gre/modules/identity/IdentityUtils.jsm");
 -
 -XPCOMUtils.defineLazyModuleGetter(this,
 -                                  "jwcrypto",
@@ -1423,8 +1419,8 @@ deleted file mode 100644
 -    docShell.allowAuth = false;
 -    docShell.allowPlugins = false;
 -    docShell.allowImages = false;
+-    docShell.allowMedia = false;
 -    docShell.allowWindowControl = false;
--    // TODO: disable media (bug 759964)
 -
 -    // Disable stylesheet loading since the document is not visible.
 -    let markupDocViewer = docShell.contentViewer
@@ -1744,7 +1740,7 @@ diff --git a/toolkit/identity/tests/chrome/test_sandbox.xul b/toolkit/identity/t
 deleted file mode 100644
 --- a/toolkit/identity/tests/chrome/test_sandbox.xul
 +++ /dev/null
-@@ -1,327 +0,0 @@
+@@ -1,324 +0,0 @@
 -<?xml version="1.0"?>
 -<?xml-stylesheet type="text/css" href="chrome://global/skin"?>
 -<?xml-stylesheet type="text/css" href="/tests/SimpleTest/test.css"?>
@@ -1780,7 +1776,6 @@ deleted file mode 100644
 -const Cc = Components.classes;
 -const Ci = Components.interfaces;
 -const Cu = Components.utils;
--const OSX_10_5 = navigator.oscpu == "Intel Mac OS X 10.5";
 -
 -const secMan = Cc["@mozilla.org/scriptsecuritymanager;1"].getService(Ci.nsIScriptSecurityManager);
 -
@@ -1878,20 +1873,18 @@ deleted file mode 100644
 -
 -    if (aNothingShouldLoad) {
 -      is(res, "NOTHING", "Check that nothing was loaded on the server");
--    } else if (!OSX_10_5) {
--      let allowedTypes = [ "application/javascript", "text/html", "video/webm",
--                           "audio/ogg", "application/x-test" ];
+-    } else {
+-      let allowedTypes = [ "application/javascript", "text/html", "application/x-test" ];
 -      let loadedTypes = res == "NOTHING" ? [] : res.split(",");
 -
 -      for (let loadedType of loadedTypes) {
--        isnot(allowedTypes.indexOf(loadedType), -1, "Check that " + loadedType + " was expected to load");
+-        isnot(allowedTypes.indexOf(loadedType), -1, "Check that " + loadedType + " was expected to load"); // TODO
 -      }
 -
--      // TODO: Media should be disabled after bug 759964.
 -      isnot(loadedTypes.indexOf("application/javascript"), -1, "Check JS was loaded");
 -      isnot(loadedTypes.indexOf("text/html"), -1, "Check iframe was loaded");
--      //todo_is(loadedTypes.indexOf("video/webm"), -1, "Check webm was not loaded");
--      //todo_is(loadedTypes.indexOf("audio/ogg"), -1, "Check ogg was not loaded");
+-      is(loadedTypes.indexOf("video/webm"), -1, "Check webm was not loaded");
+-      is(loadedTypes.indexOf("audio/ogg"), -1, "Check ogg was not loaded");
 -
 -      // Check that no plugin tags have a type other than TYPE_NULL (failed load)
 -      // --
@@ -3298,7 +3291,7 @@ deleted file mode 100644
 diff --git a/toolkit/identity/tests/unit/xpcshell.ini b/toolkit/identity/tests/unit/xpcshell.ini
 --- a/toolkit/identity/tests/unit/xpcshell.ini
 +++ b/toolkit/identity/tests/unit/xpcshell.ini
-@@ -3,17 +3,10 @@ head = head_identity.js
+@@ -3,25 +3,13 @@ head = head_identity.js
  tail = tail_identity.js
  
  # Test load modules first so syntax failures are caught early.
@@ -3308,11 +3301,21 @@ diff --git a/toolkit/identity/tests/unit/xpcshell.ini b/toolkit/identity/tests/u
  [test_identity_utils.js]
  [test_log_utils.js]
 -[test_authentication.js]
+ # Identity modules aren't packaged on Android.
+ skip-if = os == "android"
  [test_crypto_service.js]
+ skip-if = os == "android"
 -[test_identity.js]
- [test_jwcrypto.js]
+-skip-if = os == "android"
+-[test_jwcrypto.js]
+-skip-if = os == "android"
 -[test_observer_topics.js]
+-skip-if = os == "android"
 -[test_provisioning.js]
+-skip-if = os == "android"
 -[test_relying_party.js]
+-skip-if = os == "android"
 -[test_store.js]
 -[test_well-known.js]
++[test_jwcrypto.js]
+\ No newline at end of file

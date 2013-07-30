@@ -1,35 +1,37 @@
 # HG changeset patch
-# Parent c10f806e84032f2f5aaace2de8faca2cedf69b02
+# Parent f9f6f073462bf79710ed7a6a54021d4e7d550d08
 # User Jed Parsons <jparsons@mozilla.com>
 Bug 845546: Identity service: part 3, dom component
 
 diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
 --- a/dom/identity/DOMIdentity.jsm
 +++ b/dom/identity/DOMIdentity.jsm
-@@ -9,33 +9,26 @@ const {classes: Cc, interfaces: Ci, util
- // This is the parent process corresponding to nsDOMIdentity.
+@@ -10,34 +10,29 @@ const {classes: Cc, interfaces: Ci, util
  this.EXPORTED_SYMBOLS = ["DOMIdentity"];
  
  Cu.import("resource://gre/modules/Services.jsm");
  Cu.import("resource://gre/modules/XPCOMUtils.jsm");
- Cu.import("resource://gre/modules/identity/IdentityUtils.jsm");
  
- XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
+ XPCOMUtils.defineLazyModuleGetter(this, "objectCopy",
+                                   "resource://gre/modules/identity/IdentityUtils.jsm");
+ 
+-XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
 -#ifdef MOZ_B2G_VERSION
 -                                  "resource://gre/modules/identity/MinimalIdentity.jsm");
 -#else
 -                                  "resource://gre/modules/identity/Identity.jsm");
 -#endif
 -
--XPCOMUtils.defineLazyModuleGetter(this,
--                                  "Logger",
--                                  "resource://gre/modules/identity/LogUtils.jsm");
++                                  XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
 +                                  "resource://gre/modules/identity/IdentityService.jsm");
+ XPCOMUtils.defineLazyModuleGetter(this,
+                                   "Logger",
+                                   "resource://gre/modules/identity/LogUtils.jsm");
  
  XPCOMUtils.defineLazyServiceGetter(this, "ppmm",
                                     "@mozilla.org/parentprocessmessagemanager;1",
                                     "nsIMessageListenerManager");
- 
+-
 -function log(...aMessageArgs) {
 -  Logger.log.apply(Logger, ["DOMIdentity"].concat(aMessageArgs));
 -}
@@ -45,7 +47,7 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
  function IDPProvisioningContext(aID, aOrigin, aTargetMM) {
    this._id = aID;
    this._origin = aOrigin;
-@@ -50,24 +43,24 @@ IDPProvisioningContext.prototype = {
+@@ -52,24 +47,24 @@ IDPProvisioningContext.prototype = {
      let message = new IDDOMMessage({id: this.id});
      message.identity = aID;
      message.certDuration = aCertDuration;
@@ -72,7 +74,7 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
    this._origin = aOrigin;
    this._mm = aTargetMM;
  }
-@@ -79,61 +72,63 @@ IDPAuthenticationContext.prototype = {
+@@ -81,61 +76,63 @@ IDPAuthenticationContext.prototype = {
    doBeginAuthenticationCallback: function IDPAC_doBeginAuthCB(aIdentity) {
      let message = new IDDOMMessage({id: this.id});
      message.identity = aIdentity;
@@ -142,7 +144,7 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
      log("doError: " + aMessage);
    }
  };
-@@ -142,16 +137,18 @@ this.DOMIdentity = {
+@@ -144,16 +141,18 @@ this.DOMIdentity = {
    // nsIMessageListener
    receiveMessage: function DOMIdentity_receiveMessage(aMessage) {
      let msg = aMessage.json;
@@ -161,7 +163,7 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
        case "Identity:RP:Unwatch":
          this._unwatch(msg, targetMM);
          break;
-@@ -212,16 +209,17 @@ this.DOMIdentity = {
+@@ -214,16 +213,17 @@ this.DOMIdentity = {
               "Identity:RP:Unwatch",
               "child-process-shutdown"],
  
@@ -179,7 +181,7 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
        ppmm.addMessageListener(message, this);
      }
    },
-@@ -229,26 +227,28 @@ this.DOMIdentity = {
+@@ -231,26 +231,28 @@ this.DOMIdentity = {
    _unsubscribeListeners: function DOMIdentity__unsubscribeListeners() {
      for (let message of this.messages) {
        ppmm.removeMessageListener(message, this);
@@ -214,10 +216,10 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
 diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
 --- a/dom/identity/nsDOMIdentity.js
 +++ b/dom/identity/nsDOMIdentity.js
-@@ -22,16 +22,21 @@ const MAX_RP_CALLS = 100;
- Cu.import("resource://gre/modules/Services.jsm");
- Cu.import("resource://gre/modules/XPCOMUtils.jsm");
- Cu.import("resource://gre/modules/identity/IdentityUtils.jsm");
+@@ -28,16 +28,21 @@ XPCOMUtils.defineLazyModuleGetter(this, 
+                                   "resource://gre/modules/identity/IdentityUtils.jsm");
+ XPCOMUtils.defineLazyModuleGetter(this, "objectCopy",
+                                   "resource://gre/modules/identity/IdentityUtils.jsm");
  
  XPCOMUtils.defineLazyServiceGetter(this, "uuidgen",
                                     "@mozilla.org/uuid-generator;1",
@@ -236,7 +238,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
  function nsDOMIdentity(aIdentityInternal) {
    this._identityInternal = aIdentityInternal;
  }
-@@ -64,22 +69,27 @@ nsDOMIdentity.prototype = {
+@@ -70,22 +75,27 @@ nsDOMIdentity.prototype = {
      return true;
    },
  
@@ -266,7 +268,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
        if ((!(cbName in aOptions))
            || typeof(aOptions[cbName]) !== "function") {
             throw new Error(cbName + " callback is required.");
-@@ -88,16 +98,17 @@ nsDOMIdentity.prototype = {
+@@ -94,16 +104,17 @@ nsDOMIdentity.prototype = {
  
      // Optional callback "onready"
      if (aOptions["onready"]
@@ -284,7 +286,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      // but code should be changed to use loggedInUser instead.
      checkRenamed(aOptions, "loggedInEmail", "loggedInUser");
      message["loggedInUser"] = aOptions["loggedInUser"];
-@@ -112,44 +123,47 @@ nsDOMIdentity.prototype = {
+@@ -118,44 +129,47 @@ nsDOMIdentity.prototype = {
        // See HTMLInputElement::IsValidEmailAddress
        if (aOptions["loggedInUser"].indexOf("@") == -1
            || aOptions["loggedInUser"].length > MAX_STRING_LENGTH) {
@@ -334,7 +336,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
          if (!aOptions[propName] || aOptions[propName] === "undefined")
            continue;
          if (typeof(aOptions[propName]) !== "string") {
-@@ -170,16 +184,17 @@ nsDOMIdentity.prototype = {
+@@ -176,16 +190,17 @@ nsDOMIdentity.prototype = {
        }
      }
  
@@ -352,7 +354,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      }
  
      this._rpCalls++;
-@@ -243,72 +258,72 @@ nsDOMIdentity.prototype = {
+@@ -250,72 +265,72 @@ nsDOMIdentity.prototype = {
        onlogout: function get_onlogout() {},
        onready: function get_onready() {
          self.request(opts);
@@ -430,7 +432,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      }
      this._provisioningEnded = true;
  
-@@ -317,17 +332,17 @@ nsDOMIdentity.prototype = {
+@@ -324,17 +339,17 @@ nsDOMIdentity.prototype = {
      this._identityInternal._mm.sendAsyncMessage("Identity:IDP:ProvisioningFailure", message);
    },
  
@@ -449,7 +451,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      }
      if (!aCallback || typeof(aCallback) !== "function") {
        throw new Error("beginAuthentication callback is required.");
-@@ -408,54 +423,54 @@ nsDOMIdentity.prototype = {
+@@ -415,54 +430,54 @@ nsDOMIdentity.prototype = {
            return;
          }
          this._initializeState();
@@ -508,7 +510,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
          }
          break;
        case "Identity:IDP:CallBeginProvisioningCallback":
-@@ -465,20 +480,16 @@ nsDOMIdentity.prototype = {
+@@ -472,20 +487,16 @@ nsDOMIdentity.prototype = {
          this._callGenKeyPairCallback(msg);
          break;
        case "Identity:IDP:CallBeginAuthenticationCallback":
@@ -529,7 +531,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      function genPropDesc(value) {
        return {
          enumerable: true, configurable: true, writable: true, value: value
-@@ -528,17 +539,17 @@ nsDOMIdentity.prototype = {
+@@ -535,17 +546,17 @@ nsDOMIdentity.prototype = {
  
      // window origin
      message.origin = this._origin;
@@ -548,7 +550,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
  
  };
  
-@@ -608,17 +619,17 @@ nsDOMIdentityInternal.prototype = {
+@@ -615,17 +626,17 @@ nsDOMIdentityInternal.prototype = {
      this._id = uuidgen.generateUUID().toString();
      this._innerWindowID = util.currentInnerWindowID;
  
@@ -567,7 +569,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
        "Identity:ResetState",
        "Identity:RP:Watch:OnLogin",
        "Identity:RP:Watch:OnLogout",
-@@ -633,24 +644,16 @@ nsDOMIdentityInternal.prototype = {
+@@ -640,24 +651,16 @@ nsDOMIdentityInternal.prototype = {
      }, this);
  
      // Setup observers so we can remove message listeners.

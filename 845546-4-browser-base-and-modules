@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 14c74cb83902ea701c062c80f9ebcbb98fedcc57
+# Parent 8e910c82a8ba10edf2b75fe77f2ef20f54b466b4
 # User Jed Parsons <jparsons@mozilla.com>
 Bug 845546: Identity service: part 4, browser component
 
@@ -43,7 +43,7 @@ diff --git a/browser/base/content/browser.css b/browser/base/content/browser.css
  #back-button > .toolbarbutton-menu-dropmarker,
  #forward-button > .toolbarbutton-menu-dropmarker {
    display: none;
-@@ -380,26 +360,16 @@ window[chromehidden~="toolbar"] toolbar:
+@@ -380,31 +360,16 @@ window[chromehidden~="toolbar"] toolbar:
  #historySwipeAnimationCurrentPage {
    background-image: -moz-element(#historySwipeAnimationCurrentPageSnapshot);
  }
@@ -53,6 +53,11 @@ diff --git a/browser/base/content/browser.css b/browser/base/content/browser.css
  }
  
 -/* Identity UI */
+-#identity-popup-content-box:not(.chromeUI) > #identity-popup-brandName,
+-#identity-popup-content-box:not(.chromeUI) > #identity-popup-chromeLabel,
+-#identity-popup-content-box.chromeUI > .identity-popup-label:not(#identity-popup-brandName):not(#identity-popup-chromeLabel),
+-#identity-popup-content-box.chromeUI > .identity-popup-description,
+-#identity-popup.chromeUI > #identity-popup-button-container,
 -#identity-popup-content-box.unknownIdentity > #identity-popup-connectedToLabel ,
 -#identity-popup-content-box.unknownIdentity > #identity-popup-runByLabel ,
 -#identity-popup-content-box.unknownIdentity > #identity-popup-content-host ,
@@ -70,163 +75,29 @@ diff --git a/browser/base/content/browser.css b/browser/base/content/browser.css
  }
  
  #full-screen-warning-container {
-diff --git a/browser/base/content/identity-framescript.js b/browser/base/content/identity-framescript.js
-new file mode 100644
---- /dev/null
-+++ b/browser/base/content/identity-framescript.js
-@@ -0,0 +1,148 @@
-+/* -*- Mode: js2; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- /
-+/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
-+/* This Source Code Form is subject to the terms of the Mozilla Public
-+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
-+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
-+
-+// This JS shim contains the callbacks to fire DOMRequest events for
-+// navigator.mozId API within the caller's scope.
-+
-+'use strict';
-+
-+let { classes: Cc, interfaces: Ci, utils: Cu } = Components;
-+Cu.import('resource://gre/modules/XPCOMUtils.jsm');
-+
-+XPCOMUtils.defineLazyGetter(this, "logger", function() {
-+  Cu.import('resource://gre/modules/identity/LogUtils.jsm');
-+  return getLogger("Identity", "toolkit.identity.debug");
-+});
-+
-+function IdentityShim() {
-+  this.isLoaded = false;
-+}
-+
-+IdentityShim.prototype = {
-+  init: function IdentityShim_init() {
-+    addMessageListener('identity-delegate-watch', this);
-+    addMessageListener('identity-delegate-request', this);
-+    addMessageListener('identity-delegate-logout', this);
-+    sendAsyncMessage('identity-delegate-loaded');
-+    logger.log('sent identity-delegate-loaded');
-+    this.isLoaded = true;
-+  },
-+
-+  uninit: function IdentityShim_uninit() {
-+    if (this.isLoaded) {
-+      removeMessageListener('identity-delegate-watch', this);
-+      removeMessageListener('identity-delegate-request', this);
-+      removeMessageListener('identity-delegate-logout', this);
-+      sendAsyncMessage('identity-delegate-complete', null);
-+      logger.log('sent identity-delegate-complete');
-+      this.isLoaded = false;
-+    }
-+  },
-+
-+  receiveMessage: function IdentityShim_receiveMessage(aMessage) {
-+    switch (aMessage.name) {
-+      case 'identity-delegate-watch':
-+        this.watch(aMessage.json);
-+        break;
-+      case 'identity-delegate-request':
-+        this.request(aMessage.json);
-+        break;
-+      case 'identity-delegate-logout':
-+        this.logout(aMessage.json);
-+        break;
-+      default:
-+        //logger.error("received unexpected message:", aMessage.name);
-+        break;
-+    }
-+  },
-+
-+  _identityDoMethod: function IdentityShim__identityDoMethod(message) {
-+    sendAsyncMessage('identity-service-doMethod', message);
-+  },
-+
-+  _close: function IdentityShim__close() {
-+    this.uninit();
-+  },
-+
-+  watch: function IdentityShim_watch(options) {
-+    logger.log('doInternalWatch: isLoaded:', this.isLoaded, 'options:', options);
-+    if (options) {
-+      let BrowserID = content.wrappedJSObject.BrowserID;
-+      let callback = function(aParams, aInternalParams) {
-+        this._identityDoMethod(aParams);
-+        if (aParams.method === 'ready') {
-+          this._close();
-+        }
-+      }.bind(this);
-+
-+      BrowserID.internal.watch(
-+        callback,
-+        JSON.stringify(options),
-+        function(...things) {
-+          logger.log('internal watch returned:', things);
-+        }
-+      );
-+    }
-+  },
-+
-+  request: function IdentityShim_request(options) {
-+    logger.log('doInternalRequest: isLoaded:', this.isLoaded, 'options:', options);
-+    if (options) {
-+      let stringifiedOptions = JSON.stringify(options);
-+      let callback = function shim_requestCallback(assertion, internalParams) {
-+        internalParams = internalParams || {};
-+        this._identityDoMethod({
-+          method: 'login',
-+          assertion: assertion,
-+          _internal: options._internal,
-+          _internalParams: internalParams});
-+        this._close();
-+      }.bind(this);
-+
-+      content.wrappedJSObject.BrowserID.internal.get(
-+        options.origin,
-+        callback,
-+        stringifiedOptions
-+      );
-+    }
-+  },
-+
-+  logout: function IdentityShim_logout(options) {
-+    logger.log('doInternalLogout: isLoaded:', this.isLoaded, 'options:', options);
-+    if (options) {
-+      let BrowserID = content.wrappedJSObject.BrowserID;
-+      let callback = function() {
-+        this._identityDoMethod({method: 'logout', _internal: options._internal});
-+        this._close();
-+      }.bind(this);
-+
-+      BrowserID.internal.logout(options.origin, callback);
-+    }
-+  }
-+};
-+
-+this.shim = null;
-+
-+// XXX wha?  why both events
-+// dump out these events - should just be on 'load'
-+addEventListener('DOMContentLoaded', function(e) {
-+  content.addEventListener('load', function(e) {
-+    logger.log('content loaded');
-+    this.shim = new IdentityShim();
-+    this.shim.init();
-+  });
-+});
-+
-+// Having an event listener for 'unload' prevents the page from
-+// being cached.  So use 'pagehide' instead.
-+// https://developer.mozilla.org/en-US/docs/Using_Firefox_1.5_caching
-+content.addEventListener('pagehide', function(e) {
-+  if (this.shim) {
-+    this.shim.uninit();
-+  }
-+});
-+
-+
+@@ -684,17 +649,17 @@ chatbox:-moz-full-screen-ancestor  {
+   bottom: 0 !important;
+   width: 100% !important;
+   height: 100% !important;
+   margin: 0 !important;
+   min-width: 0 !important;
+   max-width: none !important;
+   min-height: 0 !important;
+   max-height: none !important;
+-  -moz-box-sizing: border-box !important; 
++  -moz-box-sizing: border-box !important;
+ }
+ 
+ /* hide chat chrome when chat is fullscreen */
+ chatbox:-moz-full-screen-ancestor > .chat-titlebar {
+   display: none;
+ }
+ 
+ /* hide chatbar if browser tab is fullscreen */
 diff --git a/browser/base/content/urlbarBindings.xml b/browser/base/content/urlbarBindings.xml
 --- a/browser/base/content/urlbarBindings.xml
 +++ b/browser/base/content/urlbarBindings.xml
-@@ -1117,264 +1117,74 @@
+@@ -1129,264 +1129,74 @@
        <method name="onDownloadEnded">
          <body><![CDATA[
            this.updateProgress();
@@ -535,19 +406,19 @@ diff --git a/browser/base/content/urlbarBindings.xml b/browser/base/content/urlb
      </implementation>
    </binding>
  
-   <binding id="center-item">
+   <binding id="plugin-popupnotification-center-item">
      <content align="center">
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -55,16 +55,17 @@ browser.jar:
-         content/browser/aboutRobots-icon.png          (content/aboutRobots-icon.png)
+@@ -56,16 +56,17 @@ browser.jar:
          content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
          content/browser/aboutSocialError.xhtml        (content/aboutSocialError.xhtml)
  *       content/browser/browser.css                   (content/browser.css)
  *       content/browser/browser.js                    (content/browser.js)
  *       content/browser/browser.xul                   (content/browser.xul)
  *       content/browser/browser-tabPreviews.xml       (content/browser-tabPreviews.xml)
+ *       content/browser/chatWindow.xul                (content/chatWindow.xul)
          content/browser/content.js                    (content/content.js)
 +        content/browser/identity-framescript.js       (content/identity-framescript.js)
          content/browser/newtab/newTab.xul             (content/newtab/newTab.xul)
@@ -1204,34 +1075,25 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 diff --git a/browser/modules/test/Makefile.in b/browser/modules/test/Makefile.in
 --- a/browser/modules/test/Makefile.in
 +++ b/browser/modules/test/Makefile.in
-@@ -8,21 +8,21 @@ srcdir		= @srcdir@
+@@ -7,16 +7,18 @@ topsrcdir	= @top_srcdir@
+ srcdir		= @srcdir@
  VPATH		= @srcdir@
  relativesrcdir  = @relativesrcdir@
  
  include $(DEPTH)/config/autoconf.mk
  
- include $(topsrcdir)/config/rules.mk
- 
- _BROWSER_FILES = \
--                 browser_NetworkPrioritizer.js \
--                 # bug 793906 - temporarily disabling desktop UI while working on b2g
--                 # browser_SignInToWebsite.js \
--                 $(NULL)
-+	browser_NetworkPrioritizer.js \
-+	browser_SignInToWebsite.js \
-+	mock_personaIframe.html \
-+	$(NULL)
+ MOCHITEST_BROWSER_FILES := \
+   browser_NetworkPrioritizer.js \
++  browser_SignInToWebsite.js \
++  mock_personaIframe.html \
+   $(NULL)
  
  ifeq ($(MOZ_WIDGET_TOOLKIT),windows)
- _BROWSER_FILES += \
--                 browser_taskbar_preview.js \
--                 $(NULL)
-+	browser_taskbar_preview.js \
-+	$(NULL)
+ MOCHITEST_BROWSER_FILES += \
+   browser_taskbar_preview.js \
+   $(NULL)
  endif
  
- libs::	$(_BROWSER_FILES)
- 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
 diff --git a/browser/modules/test/browser_SignInToWebsite.js b/browser/modules/test/browser_SignInToWebsite.js
 --- a/browser/modules/test/browser_SignInToWebsite.js
 +++ b/browser/modules/test/browser_SignInToWebsite.js
@@ -2178,7 +2040,7 @@ new file mode 100644
 diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
 --- a/dom/identity/nsDOMIdentity.js
 +++ b/dom/identity/nsDOMIdentity.js
-@@ -611,17 +611,17 @@ nsDOMIdentityInternal.prototype = {
+@@ -618,17 +618,17 @@ nsDOMIdentityInternal.prototype = {
      let util = aWindow.QueryInterface(Ci.nsIInterfaceRequestor)
                        .getInterface(Ci.nsIDOMWindowUtils);
  

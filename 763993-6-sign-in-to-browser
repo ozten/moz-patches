@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 2196fc4d26fa814597e7d53b084d43d89f23f6a1
+# Parent 73a82b326d792ffcc82e24fbf3313c19593cd7a9
 try: -b do -p all -u all -t none
 
 diff --git a/browser/base/content/browser-id-signIn.html b/browser/base/content/browser-id-signIn.html
@@ -159,228 +159,16 @@ new file mode 100644
 +    </script>
 +  </body>
 +</html>
-diff --git a/browser/base/content/identity-framescript.js b/browser/base/content/identity-framescript.js
---- a/browser/base/content/identity-framescript.js
-+++ b/browser/base/content/identity-framescript.js
-@@ -21,45 +21,75 @@ function IdentityShim() {
-   this.isLoaded = false;
- }
- 
- IdentityShim.prototype = {
-   init: function IdentityShim_init() {
-     addMessageListener('identity-delegate-watch', this);
-     addMessageListener('identity-delegate-request', this);
-     addMessageListener('identity-delegate-logout', this);
-+
-+    addMessageListener('identity-delegate-getIdentity', this);
-+    addMessageListener('identity-delegate-signIn', this);
-+    addMessageListener('identity-delegate-signOut', this);
-+    addMessageListener('identity-delegate-accountExists', this);
-+
-     sendAsyncMessage('identity-delegate-loaded');
-     logger.log('sent identity-delegate-loaded');
-     this.isLoaded = true;
-   },
- 
-   uninit: function IdentityShim_uninit() {
-     if (this.isLoaded) {
-       removeMessageListener('identity-delegate-watch', this);
-       removeMessageListener('identity-delegate-request', this);
-       removeMessageListener('identity-delegate-logout', this);
-+
-+      removeMessageListener('identity-delegate-getIdentity', this);
-+      removeMessageListener('identity-delegate-signIn', this);
-+      removeMessageListener('identity-delegate-signOut', this);
-+      removeMessageListener('identity-delegate-accountExists', this);
-+
-       sendAsyncMessage('identity-delegate-complete', null);
-       logger.log('sent identity-delegate-complete');
-       this.isLoaded = false;
-     }
-   },
- 
-   receiveMessage: function IdentityShim_receiveMessage(aMessage) {
-+    let options = aMessage.json;
-     switch (aMessage.name) {
-       case 'identity-delegate-watch':
--        this.watch(aMessage.json);
-+        this.watch(options);
-         break;
-       case 'identity-delegate-request':
--        this.request(aMessage.json);
-+        this.request(options);
-         break;
-       case 'identity-delegate-logout':
--        this.logout(aMessage.json);
-+        this.logout(options);
-         break;
-+
-+      case 'identity-delegate-getIdentity':
-+        this.getIdentity(options);
-+        break;
-+      case 'identity-delegate-signIn':
-+        this.signIn(options);
-+        break;
-+      case 'identity-delegate-signOut':
-+        this.signOut(options);
-+        break;
-+      case 'identity-delegate-accountExists':
-+        this.accountExists(options);
-+        break;
-+      case 'identity-delegate-createAccount':
-+        this.createAccount(options);
-+        break;
-+
-       default:
--        //logger.error("received unexpected message:", aMessage.name);
-+        logger.error("received unexpected message:", aMessage.name);
-         break;
-     }
-   },
- 
-   _identityDoMethod: function IdentityShim__identityDoMethod(message) {
-     sendAsyncMessage('identity-service-doMethod', message);
-   },
- 
-@@ -116,19 +146,127 @@ IdentityShim.prototype = {
-       let BrowserID = content.wrappedJSObject.BrowserID;
-       let callback = function() {
-         this._identityDoMethod({method: 'logout', _internal: options._internal});
-         this._close();
-       }.bind(this);
- 
-       BrowserID.internal.logout(options.origin, callback);
-     }
-+  },
-+
-+  /*
-+   * Get identity for browser
-+   */
-+  getIdentity: function IdentityShim_getIdentity(options) {
-+    let stringifiedOptions = JSON.stringify(options);
-+    let callback = function shim_getIdentityCallback(err, assertion, internalParams) {
-+      logger.log("got identity:", assertion);
-+      internalParams = internalParams || {};
-+      this._identityDoMethod({
-+        method: 'getIdentity',
-+        assertion: assertion,
-+        _internal: options._internal,
-+        _internalParams: internalParams});
-+      this._close();
-+    }.bind(this);
-+
-+    content.wrappedJSObject.BrowserID.internal.getIdentity(
-+      options.origin,
-+      callback,
-+      stringifiedOptions
-+    );
-+    logger.log("called internal getIdentity");
-+  },
-+
-+  /*
-+   * Sign in to browser
-+   */
-+  signIn: function IdentityShim_signIn(options) {
-+    logger.log("signin with options", options);
-+    let stringifiedOptions = JSON.stringify(options);
-+    let BrowserID = content.wrappedJSObject.BrowserID;
-+
-+    let callback = function shim_signInCallback(err, assertion, internalParams) {
-+      internalParams = internalParams || {};
-+      logger.log("got err, assertion", err, assertion);
-+      this._identityDoMethod({
-+        method: 'signIn',
-+        assertion: assertion,
-+        error: err,
-+        _internal: options._internal,
-+        _internalParams: internalParams});
-+    }.bind(this);
-+
-+    logger.log("calling signIn:", stringifiedOptions);
-+    BrowserID.internal.signIn(stringifiedOptions, callback);
-+  },
-+
-+  /*
-+   * Sign out of browser
-+   */
-+
-+  signOut: function IdentityShim_signOut(options) {
-+    logger.log("signout with options", options);
-+    let BrowserID = content.wrappedJSObject.BrowserID;
-+    let stringifiedOptions = JSON.stringify(options);
-+
-+    let callback = function shim_signOutCallback() {
-+      this._identityDoMethod({method: 'signOut', _internal: options._internal});
-+      this._close();
-+    }.bind(this);
-+
-+    BrowserID.internal.signOut(stringifiedOptions, callback);
-+  },
-+
-+  /*
-+   * Test whether an account exists
-+   */
-+  accountExists: function IdentityShim_accountExists(options) {
-+    logger.log("check account exists", options);
-+    let stringifiedOptions = JSON.stringify(options);
-+    let BrowserID = content.wrappedJSObject.BrowserID;
-+
-+    let callback = function shim_accountExistsCallback(err, exists) {
-+      exists = parseResult(exists);
-+      this._identityDoMethod({
-+        id: options.id,
-+        error: err,
-+        method: 'accountExists',
-+        exists: exists});
-+    }.bind(this);
-+
-+    BrowserID.internal.accountExists(stringifiedOptions, callback);
-+  },
-+
-+  /*
-+   * Create user from browser
-+   */
-+  createAccount: function IdentityShim_createAccount(options) {
-+    logger.log("create user with options", options);
-+    let stringifiedOptions = JSON.stringify(options);
-+    let BrowserID = content.wrappedJSObject.BrowserID;
-+
-+    let callback = function shim_createAccountCallback(err, assertion, internalParams) {
-+      logger.log("got assertion", assertion);
-+      this._identityDoMethod({
-+        id: options.id,
-+        error: err,
-+        method: 'createAccount',
-+        assertion: assertion,
-+        email: options.email,
-+        origin: options.origin,
-+        _internal: options._internal,
-+        _internalParams: internalParams});
-+    }.bind(this);
-+
-+    BrowserID.internal.createAccount(stringifiedOptions, callback);
-   }
- };
--
-+ 
- this.shim = null;
- 
- // XXX wha?  why both events
- // dump out these events - should just be on 'load'
- addEventListener('DOMContentLoaded', function(e) {
-   content.addEventListener('load', function(e) {
-     logger.log('content loaded');
-     this.shim = new IdentityShim();
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -56,16 +56,17 @@ browser.jar:
-         content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
+@@ -57,16 +57,17 @@ browser.jar:
          content/browser/aboutSocialError.xhtml        (content/aboutSocialError.xhtml)
  *       content/browser/browser.css                   (content/browser.css)
  *       content/browser/browser.js                    (content/browser.js)
  *       content/browser/browser.xul                   (content/browser.xul)
  *       content/browser/browser-tabPreviews.xml       (content/browser-tabPreviews.xml)
+ *       content/browser/chatWindow.xul                (content/chatWindow.xul)
          content/browser/content.js                    (content/content.js)
          content/browser/identity-framescript.js       (content/identity-framescript.js)
 +        content/browser/browser-id-signIn.html        (content/browser-id-signIn.html)
@@ -395,6 +183,42 @@ diff --git a/browser/base/jar.mn b/browser/base/jar.mn
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
+@@ -1,15 +1,15 @@
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ "use strict";
+ 
+-// This is only applied to the identity frame when it is created; 
++// This is only applied to the identity frame when it is created;
+ // it's not a traditional frame script.
+ this.EXPORTED_SYMBOLS = ['SignInToWebsiteUX', 'HostFrame', 'Pipe'];
+ 
+ const Cc = Components.classes;
+ const Ci = Components.interfaces;
+ const Cu = Components.utils;
+ 
+ Cu.import("resource://gre/modules/Services.jsm");
+@@ -60,17 +60,17 @@ function sizePanelToContent(iframe) {
+   let computedWidth = parseInt(cs.marginLeft) + body.offsetWidth + parseInt(cs.marginRight);
+   let width = Math.max(computedWidth, PANEL_MIN_WIDTH);
+ 
+   // The panel can only resize vertically; otherwise, we would have to
+   // compensate for leftward or rightward shifts here
+   iframe.style.height = height + "px";
+   iframe.style.width = width + "px";
+  }
+- 
++
+ function ResizeWatcher(iframe) {
+   this._mutationObserver = null;
+   this._iframe = iframe;
+   this.start();
+ }
+ 
+ // XXX why this no worky?
+ ResizeWatcher.prototype = {
 @@ -111,17 +111,26 @@ ResizeWatcher.prototype = {
    }
  };
@@ -423,6 +247,27 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
                           .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
      let chromeWin = browser.ownerDocument.defaultView;
  
+@@ -178,18 +187,18 @@ HostFrame.prototype = {
+       logger.error("No callback was given to getIframe");
+     }
+   },
+ 
+   cleanUp: function HostFrame_cleanUp() {
+     if (this._resizeWatcher) {
+       this._resizeWatcher.stop();
+     }
+-  }, 
+- 
++  },
++
+   _createIframe: function HostFrame_createIframe(aOptions) {
+     let hiddenDoc = Services.appShell.hiddenDOMWindow.document;
+     this._iframe = hiddenDoc.createElementNS('http://www.w3.org/1999/xhtml', 'iframe');
+ 
+     //this._iframe.setAttribute('mozbrowser', true);
+     this._iframe.setAttribute('mozframetype', 'content');
+     this._iframe.setAttribute('id', 'persona-host-frame');
+     this._iframe.setAttribute('src', aOptions.src);
 @@ -257,27 +266,30 @@ Pipe.prototype = {
      Services.obs.notifyObservers(subject, 'identity-delegate-ui-close', null);
  
@@ -454,7 +299,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
          return;
        }
      }
-@@ -306,27 +318,40 @@ Pipe.prototype = {
+@@ -306,45 +318,58 @@ Pipe.prototype = {
  this.SignInToWebsiteUX = {
    init: function SignInToWebsiteUX_init(pipeConstructor) {
      this.PipeConstructor = pipeConstructor || Pipe;
@@ -495,7 +340,27 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
          rpOptions = aSubject.wrappedJSObject;
        } else {
          rpOptions = {id: aSubject.QueryInterface(Ci.nsISupportsString).data};
-@@ -353,16 +378,36 @@ this.SignInToWebsiteUX = {
+       }
+     }
+     if (!rpOptions.id) {
+       logger.error('Got a message with no RP id');
+       return;
+      }
+- 
++
+     let rpId = rpOptions.id;
+     let UI = getUIForWindowID(rpId);
+- 
++
+     let options = {
+       id: rpOptions.id,
+       rpOptions: rpOptions
+     };
+ 
+     switch (aTopic) {
+       case 'identity-controller-watch':
+         this.doWatch(options);
+@@ -353,66 +378,106 @@ this.SignInToWebsiteUX = {
        case 'identity-controller-request':
          this.doRequest(options);
          break;
@@ -529,10 +394,25 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
          break;
       }
     },
-  
+- 
++
    serviceDoMethod: function SignInToWebsiteUX_doMethod(aMessage, aId) {
      logger.log('serviceDoMethod received:', aMessage);
-@@ -382,16 +427,36 @@ this.SignInToWebsiteUX = {
+     switch (aMessage.method) {
+       case 'ready':
+         IdentityService.doReady(aId);
+         break;
+- 
++
+       case 'login':
+         if (aMessage._internalParams) {
+           IdentityService.doLogin(aId, aMessage.assertion, aMessage._internalParams);
+         } else {
+           IdentityService.doLogin(aId, aMessage.assertion);
+         }
+         break;
+- 
++
        case 'logout':
          IdentityService.doLogout(aId);
          break;
@@ -566,10 +446,58 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
          break;
      }
    },
-  
+- 
++
    cleanUp: function SignInToWebsiteUX_cleanUp(aId) {
      let context = this.contexts[aId];
-@@ -445,10 +510,47 @@ this.SignInToWebsiteUX = {
+     if (context) {
+       if (context.hostFrame) {
+         context.hostFrame.cleanUp();
+       }
+       if (context.iframe && context.iframe.parentNode) {
+         context.iframe.parentNode.removeChild(context.iframe);
+         delete context.iframe;
+       }
+       this.contexts[aId] = {};
+       delete this.contexts[aId];
+     }
+   },
+- 
++
+   delegate: function SignInToWebsiteUX_delegate(aOptions) {
+     let hostFrame = new HostFrame();
+     hostFrame.getIframe(aOptions, function() {
+       // iframe has been added to aOptions
+ 
+       // callback for the pipe when flow is complete
+       aOptions.onComplete = function pipe_onComplete() {
+         logger.log("pipe clean up now");
+@@ -422,33 +487,70 @@ this.SignInToWebsiteUX = {
+       // store context and communicate with pipe
+       this.contexts[aOptions.id] = aOptions;
+       this.contexts[aOptions.id].hostFrame = hostFrame;
+ 
+       let pipe = new this.PipeConstructor(aOptions, this);
+       pipe.communicate();
+     }.bind(this));
+   },
+- 
++
+   doWatch: function SignInToWebsiteUX_doWatch(aOptions) {
+     aOptions.message = 'identity-delegate-watch';
+     aOptions.src = kHiddenPersonaIframe;
+     aOptions.showUI = false;
+     logger.log("options:", aOptions);
+     this.delegate(aOptions);
+   },
+- 
++
+   doRequest: function SignInToWebsiteUX_doRequest(aOptions) {
+     aOptions.message = 'identity-delegate-request';
+     aOptions.src = kInteractivePersonaIframe;
+     aOptions.showUI = true;
+     logger.log("options:", aOptions);
+     this.delegate(aOptions);
    },
  
    doLogout: function SignInToWebsiteUX_doLogout(aOptions) {
@@ -578,7 +506,6 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
      aOptions.showUI = false;
      logger.log("options:", aOptions);
      this.delegate(aOptions);
--  }
 +  },
 +
 +  doGetIdentity: function SignInToWebsiteUX_doGetIdentity(aOptions) {
@@ -616,7 +543,7 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +    aOptions.src = kHiddenPersonaIframe;
 +    aOptions.showUI = false;
 +    this.delegate(aOptions);
-+  },
+   }
  };
 diff --git a/dom/identity/tests/head_identity.js b/dom/identity/tests/head_identity.js
 --- a/dom/identity/tests/head_identity.js
@@ -633,10 +560,10 @@ diff --git a/dom/identity/tests/head_identity.js b/dom/identity/tests/head_ident
 +      // XXX [jedp] this blows up in the b2g test when pushing to try
 +      // Error is:
 +      //
-+      // 15:51:04 INFO - 25778 ERROR TEST-UNEXPECTED-FAIL 
-+      // | /tests/dom/identity/tests/test_rp.html 
-+      // | uncaught exception - NS_ERROR_NOT_IMPLEMENTED: 
-+      //   Component returned failure code: 0x80004001 (NS_ERROR_NOT_IMPLEMENTED) 
++      // 15:51:04 INFO - 25778 ERROR TEST-UNEXPECTED-FAIL
++      // | /tests/dom/identity/tests/test_rp.html
++      // | uncaught exception - NS_ERROR_NOT_IMPLEMENTED:
++      //   Component returned failure code: 0x80004001 (NS_ERROR_NOT_IMPLEMENTED)
 +      //   [nsIObserverService.addObserver] at chrome://specialpowers/content/specialpowersAPI.js:83
 +      //
 +      // XXX need to figure out if this is expected to behave differently on
