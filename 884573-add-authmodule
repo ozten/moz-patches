@@ -1,21 +1,21 @@
 # HG changeset patch
-# Parent a76c60a1dd8dbb679df03153c5f9ac76384b4498
+# Parent 07a3e7a5a7b272f364d03876cedb56b57e49e278
 
 diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 --- a/dom/media/PeerConnection.js
 +++ b/dom/media/PeerConnection.js
 @@ -3,16 +3,18 @@
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
+ 
  "use strict";
-
+ 
  const {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
-
+ 
  Cu.import("resource://gre/modules/Services.jsm");
  Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 +Cu.import("resource://gre/modules/PopupNotifications.jsm");
 +Cu.import('resource://gre/modules/identity/RTCIdentity.jsm');
-
+ 
  const PC_CONTRACT = "@mozilla.org/dom/peerconnection;1";
  const PC_ICE_CONTRACT = "@mozilla.org/dom/rtcicecandidate;1";
  const PC_SESSION_CONTRACT = "@mozilla.org/dom/rtcsessiondescription;1";
@@ -29,7 +29,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
  const PC_ICEEVENT_CID = Components.ID("{b9cd25a7-9859-4f9e-8f84-ef5181ff36c0}");
  const MSEVENT_CID = Components.ID("{a722a8a9-2290-4e99-a5ed-07b504292d08}");
  const DCEVENT_CID = Components.ID("{d5ed7fbf-01a8-4b18-af6c-861cf2aac920}");
-
+ 
  // Global list of PeerConnection objects, so they can be cleaned up when
  // a page is torn down. (Maps inner window ID to an array of PC objects).
 +//
@@ -41,21 +41,21 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
    Services.obs.addObserver(this, "network:offline-about-to-go-offline", true);
    Services.obs.addObserver(this, "network:offline-status-changed", true);
  }
-@@ -234,21 +237,29 @@ function RTCPeerConnection() {
+@@ -228,21 +231,29 @@ function RTCPeerConnection() {
    this._pc = null;
    this._observer = null;
    this._closed = false;
-
+ 
    this._onCreateOfferSuccess = null;
    this._onCreateOfferFailure = null;
    this._onCreateAnswerSuccess = null;
    this._onCreateAnswerFailure = null;
 +  this._onIdentityAssertionSuccess = null;
-
+ 
    this._pendingType = null;
    this._localType = null;
    this._remoteType = null;
-
+ 
 +  this._peerIdentity = {
 +    idp: null,
 +    name: null
@@ -71,7 +71,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
     * if neccesary. The _pending flag indicates whether an operation is currently
     * in progress.
     */
-@@ -286,20 +297,25 @@ RTCPeerConnection.prototype = {
+@@ -280,20 +291,24 @@ RTCPeerConnection.prototype = {
      this.makeGetterSetterEH("onicecandidate");
      this.makeGetterSetterEH("onnegotiationneeded");
      this.makeGetterSetterEH("onsignalingstatechange");
@@ -81,23 +81,22 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this.makeGetterSetterEH("onclosedconnection");
      this.makeGetterSetterEH("oniceconnectionstatechange");
 +    this.makeGetterSetterEH("onidentityresult");
-
+ 
      this._pc = Cc["@mozilla.org/peerconnection;1"].
               createInstance(Ci.IPeerConnection);
      this._observer = new PeerConnectionObserver(this);
 +
 +    this._idp = new PeerConnectionIDP(this);
-+    this._idp.init();
 +
      this._winID = this._win.QueryInterface(Ci.nsIInterfaceRequestor)
                             .getInterface(Ci.nsIDOMWindowUtils).currentInnerWindowID;
-
+ 
      // Add a reference to the PeerConnection to global list (before init).
      _globalPCList.addPC(this);
-
+ 
      // Nothing starts until ICE gathering completes.
      this._queueOrRun({
-@@ -637,16 +653,40 @@ RTCPeerConnection.prototype = {
+@@ -631,16 +646,40 @@ RTCPeerConnection.prototype = {
      this._queueOrRun({
        func: this._getPC().setLocalDescription,
        args: [type, desc.sdp],
@@ -105,7 +104,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
        type: desc.type
      });
    },
-
+ 
 +  setIdentityProvider: function(provider, protocol, username) {
 +    if(this.signalingState == "closed") {
 +      this.reportError('setIdentityProvider failed. signalingState is closed.', null, 0);
@@ -136,9 +135,9 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      // one with the callbacks for the second one. See Bug 831759.
      this._onSetRemoteDescriptionSuccess = onSuccess;
      this._onSetRemoteDescriptionFailure = onError;
-
+ 
      let type;
-@@ -660,16 +700,48 @@ RTCPeerConnection.prototype = {
+@@ -654,16 +693,48 @@ RTCPeerConnection.prototype = {
        case "pranswer":
          throw new Components.Exception("pranswer not yet implemented",
                                         Cr.NS_ERROR_NOT_IMPLEMENTED);
@@ -146,7 +145,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
          throw new Components.Exception("Invalid type " + desc.type +
                                         " provided to setRemoteDescription");
      }
-
+ 
 +    let verifyCallback = function(email) {
 +      let message, icon, priority;
 +      let browser = this._win.QueryInterface(Ci.nsIInterfaceRequestor)
@@ -186,8 +185,8 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
        type: desc.type
      });
    },
-
-@@ -740,26 +812,36 @@ RTCPeerConnection.prototype = {
+ 
+@@ -734,26 +805,36 @@ RTCPeerConnection.prototype = {
      this.deprecated("localStreams");
      return this.getLocalStreams();
    },
@@ -195,7 +194,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      this.deprecated("remoteStreams");
      return this.getRemoteStreams();
    },
-
+ 
 +  get peerIdentity() {
 +    return this._peerIdentity;
 +  },
@@ -209,7 +208,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      return new this._win.mozRTCSessionDescription({ type: this._localType,
                                                      sdp: sdp });
    },
-
+ 
 +  get fingerprint() {
 +    if(!this._fingerprint)
 +      this._fingerprint = this._getPC().fingerprint; // TODO: Fix this. It should always work.
@@ -224,14 +223,14 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
      }
      return new this._win.mozRTCSessionDescription({ type: this._remoteType,
                                                      sdp: sdp });
-@@ -932,31 +1014,39 @@ PeerConnectionObserver.prototype = {
+@@ -926,31 +1007,39 @@ PeerConnectionObserver.prototype = {
          // want this to take down peerconnection, but we still want the user
          // to see it, so we catch it, report it, and move on.
          this._dompc.reportError(e.message, e.fileName, e.lineNumber);
        }
      }
    },
-
+ 
    onCreateOfferSuccess: function(sdp) {
 -    this.callCB(this._dompc._onCreateOfferSuccess,
 +    // getIdentityAssertion here and pass in the sdp
@@ -243,12 +242,12 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    this._dompc._idp.signSDPWithAssertion(sdp, onAssertionCB);
      this._dompc._executeNext();
    },
-
+ 
    onCreateOfferError: function(code, message) {
      this.callCB(this._dompc._onCreateOfferFailure, new RTCError(code, message));
      this._dompc._executeNext();
    },
-
+ 
    onCreateAnswerSuccess: function(sdp) {
 -    this.callCB (this._dompc._onCreateAnswerSuccess,
 +    //attach the sdp assertion to asnswer as well
@@ -260,21 +259,21 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    this._dompc._idp.signSDPWithAssertion(sdp, onAssertionCB);
      this._dompc._executeNext();
    },
-
+ 
    onCreateAnswerError: function(code, message) {
      this.callCB(this._dompc._onCreateAnswerFailure, new RTCError(code, message));
      this._dompc._executeNext();
    },
-
-@@ -1056,16 +1146,20 @@ PeerConnectionObserver.prototype = {
+ 
+@@ -1050,16 +1139,20 @@ PeerConnectionObserver.prototype = {
        case Ci.IPeerConnectionObserver.kSdpState:
          // No-op
          break;
-
+ 
        case Ci.IPeerConnectionObserver.kSipccState:
          // No-op
          break;
-
+ 
 +      case 1:
 +        //TODO REMOVE AFTER TESTING
 +        break;
@@ -284,21 +283,21 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
          break;
      }
    },
-
+ 
    onAddStream: function(stream) {
      this.dispatchEvent(new this._dompc._win.MediaStreamEvent("addstream",
-@@ -1088,15 +1182,231 @@ PeerConnectionObserver.prototype = {
+@@ -1082,15 +1175,242 @@ PeerConnectionObserver.prototype = {
    },
-
+ 
    notifyConnection: function() {
      this.dispatchEvent(new this._dompc._win.Event("connection"));
    },
-
+ 
    notifyClosedConnection: function() {
      this.dispatchEvent(new this._dompc._win.Event("closedconnection"));
 +  },
 +
-+  notifyIdentityResult: function() {
++  notifyIdentityResult: function() {f
 +    this.dispatchEvent(new this._dompc._win.Event('identityresult'));
 +  }
 +};
@@ -307,19 +306,21 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +  this._dompc = pc; // peer connection object
 +  this.provider = null; // user specified idp domain (gmail.com/login.persona.org/yahoo.com)
 +  this.protocol = null; // protocol to use ("default")
-+  this.username = null; // "assertion" used to verify the identity
++  this.username = null; // unique identity string for that IDP
 +  this.set = false; // true if the IDP has been initialized previously
 +  this.idpChannel = null;
 +  this.messages = {};
 +  this.messageCount = 0;
 +  this.ready = false;
++
++  this.init();
 +};
 +PeerConnectionIDP.prototype = {
 +  log: function(message) {
 +    if(typeof(message) == "string") {
 +      try {
 +        if(Services.prefs.getBoolPref("toolkit.identity.debug")) {
-+          dump("PeerCoonnectionIDP: " + message);
++          dump("PeerConnectionIDP: " + message);
 +        }
 +      }
 +      catch(err) {
@@ -335,10 +336,11 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    this.protocol = protocol || null;
 +    this.username = username || null;
 +    this._dompc._peerIdentity.idp = this.provider;
-+    this.idpChannel = new IDPChannel(this.onMessage.bind(this), { provider: provider, protocol: protocol, username: username });
++    this.idpChannel = !this.provider ? null : new IDPChannel(this.onMessage.bind(this), { provider: this.provider, protocol: this.protocol, username: this.username });
 +  },
 +
 +  onMessage: function(message) {
++    message = JSON.parse(message);
 +    /*
 +      RETURNED FROM SIGN MESSAGE:
 +      {
@@ -370,7 +372,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +        }
 +      }
 +    */
-+    this.log("GOT MESSAGE: " + JSON.stringify(message));
++    this.log("Received message: " + JSON.stringify(message));
 +
 +    // let message = JSON.parse(message);
 +    if(!message) return;
@@ -406,7 +408,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +  */
 +  getFingerprintFromSDP: function(sdp) {
 +    if(!sdp) return null;
-+    let pattern = /\na=fingerprint:\s*\S+\s*(\S*)/i; //TODO: test the shit outta this
++    let pattern = /\na=fingerprint:\s*(\S+\s*\S*)/i; //TODO: test the shit outta this
 +    let fingerprint_matches = sdp.match(pattern);
 +    if(!fingerprint_matches) return null;
 +    return fingerprint_matches[1];
@@ -460,18 +462,22 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    let url_scheme = gBrowser.currentURI.scheme;
 +    let origin = url_scheme + "://" + url_host + (url_port ? ":" + url_port : ""); // bare url
 +
-+    let data = {
++    let message_id = ++this.messageCount;
++
++    let data = JSON.stringify({
 +      type: 'SIGN',
-+      id: this.messageCount,
++      id: message_id,
 +      origin: origin,
 +      message: fingerprint
-+    };
++    });
 +
-+    this.messages[this.messageCount++] = {
++    this.messages[message_id] = {
 +      type: 'SIGN',
 +      message: fingerprint,
 +      callback: callback
 +    };
++
++    this.log('Sending to idpChannel: ' + data);
 +
 +    //send fingerprint to idp channel to create assertion
 +    this.idpChannel.send(data);
@@ -487,17 +493,21 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +      fingerprint: fingerprint
 +    };
 +
-+    let data = {
-+      type: 'VERIFY',
-+      id: this.messageCount,
-+      message: assertion
-+    };
++    let message_id = ++this.messageCount;
 +
-+    this.messages[this.messageCount++] = {
++    let data = JSON.stringify({
++      type: 'VERIFY',
++      id: message_id,
++      message: assertion
++    });
++
++    this.messages[message_id] = {
 +      type: 'VERIFY',
 +      message: message,
 +      callback: callback
 +    };
++
++    this.log('Sending to idpChannel: ' + data);
 +
 +    this.idpChannel.send(data);
 +  },
@@ -514,7 +524,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    this.verifyIdentityAssertion(assertion, fingerprint, callback);
    }
  };
-
+ 
  this.NSGetFactory = XPCOMUtils.generateNSGetFactory(
    [GlobalPCList, RTCIceCandidate, RTCSessionDescription, RTCPeerConnection,
     RTCPeerConnectionIceEvent, MediaStreamEvent, RTCDataChannelEvent]
@@ -531,7 +541,7 @@ diff --git a/dom/media/PeerConnection.manifest b/dom/media/PeerConnection.manife
  component {a722a8a9-2290-4e99-a5ed-07b504292d08} PeerConnection.js
  component {d5ed7fbf-01a8-4b18-af6c-861cf2aac920} PeerConnection.js
 +component {498df9b5-87dd-40e5-b717-9cab40b1f99b} PeerConnection.js
-
+ 
  contract @mozilla.org/dom/peerconnection;1 {9878b414-afaa-4176-a887-1e02b3b047c2}
  contract @mozilla.org/dom/rtcicecandidate;1 {02b9970c-433d-4cc2-923d-f7028ac66073}
  contract @mozilla.org/dom/rtcsessiondescription;1 {1775081b-b62d-4954-8ffe-a067bbf508a7}
@@ -566,12 +576,12 @@ diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.
   * The origin of this IDL file is
   * http://dev.w3.org/2011/webrtc/editor/webrtc.html#idl-def-RTCPeerConnection
   */
-
+ 
  callback RTCSessionDescriptionCallback = void (mozRTCSessionDescription sdp);
  callback RTCPeerConnectionErrorCallback = void (DOMString errorInformation);
 +callback RTCIdentityResultCallback = void (RTCIdentityAssertion result);
  callback VoidFunction = void ();
-
+ 
  enum RTCSignalingState {
      "stable",
      "have-local-offer",
@@ -621,16 +631,16 @@ diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.
 +
 +  readonly attribute RTCIdentityAssertion peerIdentity;
  };
-
+ 
  // Mozilla extensions.
  partial interface mozRTCPeerConnection {
    // Deprecated callbacks (use causes warning)
    attribute RTCPeerConnectionErrorCallback onicechange;
    attribute RTCPeerConnectionErrorCallback ongatheringchange;
-
+ 
 @@ -107,9 +116,11 @@ partial interface mozRTCPeerConnection {
    readonly attribute DOMString readyState;
-
+ 
    // Data channel.
    RTCDataChannel createDataChannel (DOMString label,
                                      optional RTCDataChannelInit dataChannelDict);
@@ -643,9 +653,9 @@ diff --git a/dom/webidl/RTCPeerConnection.webidl b/dom/webidl/RTCPeerConnection.
 diff --git a/dom/webidl/WebIDL.mk b/dom/webidl/WebIDL.mk
 --- a/dom/webidl/WebIDL.mk
 +++ b/dom/webidl/WebIDL.mk
-@@ -212,16 +212,17 @@ webidl_files = \
-   PositionError.webidl \
-   ProcessingInstruction.webidl \
+@@ -232,16 +232,17 @@ webidl_files = \
+   Promise.webidl \
+   PushManager.webidl \
    Range.webidl \
    Rect.webidl \
    RGBColor.webidl \
@@ -659,5 +669,5 @@ diff --git a/dom/webidl/WebIDL.mk b/dom/webidl/WebIDL.mk
    Screen.webidl \
    ScriptProcessorNode.webidl \
    ScrollAreaEvent.webidl \
+   SettingsManager.webidl \
    SimpleGestureEvent.webidl \
-   SourceBufferList.webidl \

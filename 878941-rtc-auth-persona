@@ -1,183 +1,37 @@
 # HG changeset patch
-# Parent 4dda210929fb56003dba4de87b19c6c5d5cb7d5a
+# Parent cab2830efeae17a3372e783b2b456037536fe8c1
 # User Jed Parsons <jparsons@mozilla.com>
-# Date Fri Jul 12 17:38:27 2013 -0700
+# Date Thu Aug  8 18:40:43 2013 -0700
 Bug 878941 - IdP Proxy and communication channel for RTC peer connection (wip)
 
-diff --git a/browser/base/content/rtc-persona-framescript.js b/browser/base/content/rtc-persona-framescript.js
-new file mode 100644
---- /dev/null
-+++ b/browser/base/content/rtc-persona-framescript.js
-@@ -0,0 +1,119 @@
-+/* -*- Mode: js2; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- /
-+/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
-+/* This Source Code Form is subject to the terms of the Mozilla Public
-+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
-+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
-+
-+// This JS shim contains the callbacks to fire DOMRequest events for
-+// navigator.mozId API within the caller's scope.
-+
-+'use strict';
-+
-+let { classes: Cc, interfaces: Ci, utils: Cu } = Components;
-+Cu.import('resource://gre/modules/XPCOMUtils.jsm');
-+
-+function log(msg) {
-+  dump(" ** rtc shim: " + msg + "\n");
-+}
-+
-+function IdentityShim() {
-+  this.isLoaded = false;
-+}
-+
-+IdentityShim.prototype = {
-+  init: function IdentityShim_init() {
-+    addMessageListener('rtcid-message', this);
-+    log("init; sending rtcid-loaded");
-+    sendAsyncMessage('rtcid-loaded');
-+    this.isLoaded = true;
-+  },
-+
-+  uninit: function IdentityShim_uninit() {
-+    if (this.isLoaded) {
-+      removeMessageListener('rtcid-message', this);
-+      log("uninit; sending rtcid-complete");
-+      sendAsyncMessage('rtcid-complete', null);
-+      this.isLoaded = false;
-+    }
-+  },
-+
-+  receiveMessage: function IdentityShim_receiveMessage(aMessage) {
-+    let data = aMessage.json;
-+    log("receiveMessage: " + JSON.stringify(data));
-+    switch (data.message.type) {
-+      case 'SIGN':
-+        this.sign(data);
-+        break;
-+      default:
-+        log("ERROR: unknown messge type: " + data.type);
-+        break;
-+    }
-+  },
-+
-+  sendResponse: function IdentityShim_sendResponse(message) {
-+    log("send response:" + message);
-+    sendAsyncMessage('rtcid-response', message);
-+  },
-+
-+  _close: function IdentityShim__close() {
-+    this.uninit();
-+  },
-+
-+  sign: function IdentityShim_sign(data) {
-+    log("sign received: " + JSON.stringify(data));
-+    let message = data.message;
-+    let stringifiedOptions = JSON.stringify({
-+      silent: true,
-+      origin: message.origin,
-+      payload: { extra : { webrtc: { fingerprint : message.message }}}
-+    });
-+    log("sign extra data: " + stringifiedOptions);
-+    let callback = function shim_getCallback(assertion) {
-+      log("yay! internal.get called back with assertion: " + assertion);
-+      this.sendResponse({
-+        type: (assertion ? 'SUCCESS' : 'FAILURE'),
-+        id: message.id,
-+        message: {
-+          idp: {
-+            domain: message.origin,
-+            protocol: "browserid"
-+          },
-+          assertion: assertion
-+        }
-+      });
-+      this._close();
-+    }.bind(this);
-+
-+    log("calling get");
-+    content.wrappedJSObject.BrowserID.internal.get(
-+      'rtcweb://peerconnection',
-+      callback,
-+      stringifiedOptions
-+    );
-+    log("called get with options: " + typeof stringifiedOptions + ': ' + stringifiedOptions);
-+  }
-+};
-+
-+this.shim = null;
-+
-+// XXX wha?  why both events
-+// dump out these events - should just be on 'load'
-+addEventListener('DOMContentLoaded', function(e) {
-+  log("got DOMContentLoaded");
-+  content.addEventListener('load', function(e) {
-+    log("got load event");
-+    this.shim = new IdentityShim();
-+    this.shim.init();
-+  });
-+});
-+
-+// Having an event listener for 'unload' prevents the page from
-+// being cached.  So use 'pagehide' instead.
-+// https://developer.mozilla.org/en-US/docs/Using_Firefox_1.5_caching
-+content.addEventListener('pagehide', function(e) {
-+  log("got pagehide event");
-+  if (this.shim) {
-+    this.shim.uninit();
-+  }
-+});
-+
-diff --git a/browser/base/jar.mn b/browser/base/jar.mn
---- a/browser/base/jar.mn
-+++ b/browser/base/jar.mn
-@@ -67,16 +67,17 @@ browser.jar:
- *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
-         content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
-         content/browser/pageinfo/pageInfo.css         (content/pageinfo/pageInfo.css)
-         content/browser/pageinfo/pageInfo.xml         (content/pageinfo/pageInfo.xml)
-         content/browser/pageinfo/feeds.js             (content/pageinfo/feeds.js)
-         content/browser/pageinfo/feeds.xml            (content/pageinfo/feeds.xml)
-         content/browser/pageinfo/permissions.js       (content/pageinfo/permissions.js)
-         content/browser/pageinfo/security.js          (content/pageinfo/security.js)
-+        content/browser/rtc-persona-framescript.js    (content/rtc-persona-framescript.js)
- #ifdef MOZ_SERVICES_SYNC
-         content/browser/sync/aboutSyncTabs.xul        (content/sync/aboutSyncTabs.xul)
-         content/browser/sync/aboutSyncTabs.js         (content/sync/aboutSyncTabs.js)
-         content/browser/sync/aboutSyncTabs.css        (content/sync/aboutSyncTabs.css)
-         content/browser/sync/aboutSyncTabs-bindings.xml  (content/sync/aboutSyncTabs-bindings.xml)
- *       content/browser/sync/setup.xul                (content/sync/setup.xul)
-         content/browser/sync/addDevice.js             (content/sync/addDevice.js)
-         content/browser/sync/addDevice.xul            (content/sync/addDevice.xul)
 diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/RTCIdentity.jsm
-@@ -0,0 +1,443 @@
+@@ -0,0 +1,119 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
-+/*
-+ * An Authentication Module for RTC that uses Persona
-+ *
-+ *
-+ */
-+
 +"use strict";
 +
-+this.EXPORTED_SYMBOLS = ["IDPChannel", "HostFrame", "Pipe", "unpackAssertion"];
++//
++
++this.EXPORTED_SYMBOLS = ["IDPChannel"];
 +
 +const {classes: Cc, interfaces: Ci, utils: Cu} = Components;
 +
 +Cu.import("resource://gre/modules/Services.jsm");
 +Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 +
-+const crypto = Cc["@mozilla.org/identity/crypto-service;1"]
-+                 .getService(Ci.nsIIdentityCryptoService);
++// XXX protocol handler example
++// https://mxr.mozilla.org/mozilla-central/source/toolkit/components/thumbnails/PageThumbsProtocol.js
 +
 +XPCOMUtils.defineLazyModuleGetter(this, "Logger",
 +                                  "resource://gre/modules/identity/LogUtils.jsm");
++
++XPCOMUtils.defineLazyModuleGetter(this, "Sandbox",
++                                  "resource://gre/modules/identity/Sandbox.jsm");
 +
 +function log(...aMessageArgs) {
 +  Logger.log.apply(Logger, ["RTC"].concat(aMessageArgs));
@@ -187,366 +41,9 @@ new file mode 100644
 +  Logger.reportError.apply(Logger, ["RTC"].concat(aMessageArgs));
 +}
 +
-+function unpackAssertion(signedObject) {
-+  if (typeof(signedObject) !== "string") {
-+    throw new Error("Malformed assertion");
-+  }
-+
-+  var parts = signedObject.split(".");
-+  return {header: JSON.parse(crypto.base64UrlDecode(parts[0])),
-+          payload: JSON.parse(crypto.base64UrlDecode(parts[1])),
-+          signature: parts[2],
-+          assertion: JSON.parse(crypto.base64UrlDecode(parts[3]))};
-+}
-+
-+/*
-+ * An invisible iframe for hosting the idp shim.
-+ *
-+ * There is no visible UX here, as we assume the user has already
-+ * logged in elsewhere (on a different screen in the web site hosting
-+ * the RTC functions).
-+ */
-+this.HostFrame = function HostFrame() {
-+  this._iframe = null;
-+};
-+
-+HostFrame.prototype = {
-+  /*
-+   * Create a hidden, sandboxed iframe for hosting the IdP's js shim.
-+   *
-+   * @param aSourceURI
-+   *        (string)        the URI of the hosted IdP's js shim
-+   *
-+   * @param aScriptPath
-+   *        (string)        path part of the chrome url locating the 
-+   *                        framescript to inject into the iframe.
-+   *                        The function of the framescript is to enable
-+   *                        message passing between the Pipe and the 
-+   *                        content js.
-+   */
-+  getIframe: function hostFrame_getIframe(aSourceURI, aScriptPath, aOptions, aCallback) {
-+    if (this._gotIframe) {
-+      return aCallback(
-+        new Error("Can only get iframe once with HostFrame helper"));
-+    }
-+
-+    let hiddenDoc = Services.appShell.hiddenDOMWindow.document;
-+
-+    this._iframe = hiddenDoc.createElementNS(
-+        "http://www.w3.org/1999/xhtml", "iframe");
-+
-+    this._iframe.setAttribute("mozframetype", "content");
-+
-+    // sandbox the iframe
-+    this._iframe.sandbox = "allow-forms allow-scripts allow-same-origin";
-+
-+    hiddenDoc.documentElement.appendChild(this._iframe);
-+
-+    let docShell = this._iframe.contentWindow
-+                    .QueryInterface(Ci.nsIInterfaceRequestor)
-+                    .getInterface(Ci.nsIWebNavigation)
-+                    .QueryInterface(Ci.nsIInterfaceRequestor)
-+                    .getInterface(Ci.nsIDocShell);
-+
-+    // Stop about:blank from being loaded.
-+    docShell.stop(Ci.nsIWebNavigation.STOP_NETWORK);
-+
-+    // Disable some types of content
-+    docShell.allowAuth = false;
-+    docShell.allowPlugins = false;
-+    docShell.allowImages = false;
-+    docShell.allowMedia = false;
-+    docShell.allowWindowControl = false;
-+
-+    // Disable stylesheet loading since the document is not visible.
-+    docShell
-+      .contentViewer
-+      .QueryInterface(Ci.nsIMarkupDocumentViewer)
-+      .authorStyleDisabled = true;
-+
-+    // Load the embedding shim
-+    this._iframe.setAttribute("src", aSourceURI);
-+
-+    // Inject a framescript into the iframe that can receive messages
-+    // from its parent process telling it which persona internal_api
-+    // methods to call.
-+    this._iframe
-+      .QueryInterface(Ci.nsIFrameLoaderOwner)
-+      .frameLoader.messageManager
-+      .loadFrameScript("chrome://"+aScriptPath, true);
-+
-+    aCallback(this._iframe);
-+  }
-+};
-+
-+this.Pipe = function Pipe(aOptions, aController) {
-+  this.options = aOptions;
-+  this.controller = aController;
-+  this.mm = null;
-+  this._closed = false;
-+  return this;
-+};
-+
-+Pipe.prototype = {
-+  close: function pipe__close() {
-+    this._closed = true;
-+    if (this.mm) {
-+      this.mm.removeMessageListener("rtcid-response", this._receiveMessage);
-+      this.mm.removeMessageListener("rtcid-complete", this._delegateComplete);
-+      this.mm.removeMessageListener("rtcid-loaded", this._delegateLoaded);
-+    }
-+  },
-+
-+  _delegateLoaded: function pipe__delegateLoaded() {
-+    this.mm.sendAsyncMessage('rtcid-message', this.options);
-+  },
-+
-+  _delegateComplete: function pipe__delegateComplete() {
-+    this.close();
-+  },
-+
-+  _receiveMessage: function pipe__receiveMessage(message) {
-+    this.controller.receiveResponse(message.json);
-+  },
-+
-+  communicate: function pipe_communicate() {
-+    if (this._closed) {
-+      reportError("Cannot communicate; pipe is closed");
-+      return;
-+    }
-+
-+    let frameLoader = this.options.iframe.QueryInterface(
-+        Ci.nsIFrameLoaderOwner).frameLoader;
-+
-+    if (frameLoader) {
-+      this.mm = frameLoader.messageManager;
-+      this.mm.addMessageListener("rtcid-response", this._receiveMessage.bind(this));
-+      this.mm.addMessageListener("rtcid-loaded", this._delegateLoaded.bind(this));
-+      this.mm.addMessageListener("rtcid-complete", this._delegateComplete.bind(this));
-+    } else {
-+      reportError("Frame loader unavailable; frame attached properly?");
-+    }
-+  }
-+};
-+
-+/*
-+ * BrowserIDProxy: IdP Proxy module for the browserid protocol.
-+ *
-+ * Used by IDPChannel (below).
-+ */ 
-+function BrowserIDProxy(aMessageCallback, aOptions) {
-+  aOptions = aOptions || {};
-+  this.receiveResponse = aMessageCallback;
-+
-+  this.personaUri = "https://login.personatest.org";
-+  try {
-+    this.personaUri = Services.prefs.getCharPref("toolkit.identity.uri");
-+  } catch (noSuchPref) {
-+    // stick with the default value
-+  }
-+
-+  log("Using persona uri:", this.personaUri);  
-+
-+  this.verifierUri = "https://verifier.login.persona.org/verify";
-+  try {
-+    this.verifierUri = Services.prefs.getCharPref("toolkit.identity.verifier_uri");
-+  } catch (noSuchPref) {
-+    // stick with the default value
-+  }
-+
-+  // Options for making testing easier
-+  this.pipeConstructor = aOptions.PipeConstructor || Pipe;
-+  this.hostFrameConstructor = aOptions.HostFrameConstructor || HostFrame;
-+  this.verifierUri = aOptions.verifierUri || this.verifierUri;
-+
-+  this.pipe = null;
-+
-+  // https://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.5.2
-+  this.receiveResponse({type: "READY"});
-+
-+  // XXX Try to get an assertion immediately
-+}
-+BrowserIDProxy.prototype = {
-+  /*
-+   * use the persona communication_iframe to request an assertion
-+   *
-+   * https://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.5.2.2
-+   * Example transaction:
-+   *
-+   *
-+   *  PeerConnection -> IdP proxy:
-+   *    {
-+   *      "type":"SIGN",
-+   *       "id":1,
-+   *       "origin":"https://calling-service.example.com/",
-+   *       "message":"abcdefghijklmnopqrstuvwyz"
-+   *    }
-+   *
-+   *  IdPProxy -> PeerConnection:
-+   *    {
-+   *      "type":"SUCCESS",
-+   *      "id":1,
-+   *      "message": {
-+   *        "idp":{
-+   *          "domain": "example.org"
-+   *          "protocol": "bogus"
-+   *        },
-+   *        "assertion":\"{\"identity\":\"bob@example.org\",
-+   *                       \"contents\":\"abcdefghijklmnopqrstuvwyz\",
-+   *                       \"request_origin\":\"rtcweb://peerconnection\",
-+   *                       \"signature\":\"010203040506\"}"
-+   *      }
-+   *    }
-+   *
-+   */
-+  sign: function idpChannel_sign(message) {
-+    let hostFrame = new this.hostFrameConstructor();
-+    let frameSource = this.personaUri + '/communication_iframe';
-+    let frameScript = "browser/content/rtc-persona-framescript.js";
-+    let options = {
-+      message: message
-+    };
-+    log("sign: " + JSON.stringify(options, null, 2));
-+    hostFrame.getIframe(frameSource, frameScript, options, function(aIframe) {
-+      options.iframe = aIframe;
-+
-+      // callback for the pipe when flow is complete
-+      options.onComplete = function pipe_onComplete(response) {
-+        this.pipe.close();
-+      }.bind(this);
-+
-+      this.pipe = new this.pipeConstructor(options, this);
-+      this.pipe.communicate();
-+    }.bind(this));
-+  },
-+
-+  /*
-+   * communicate with the persona verifier to verify the assertion.
-+   * XXX this should be done completely natively with no httprequest
-+   * XXX for now, this is quick and easy
-+   *
-+   * https://tools.ietf.org/html/draft-ietf-rtcweb-security-arch-06#section-5.6.5.2.3
-+   * An example transaction:
-+   *
-+   *    PeerConnection -> IdP Proxy:
-+   *      {
-+   *        "type":"VERIFY",
-+   *        "id":2,
-+   *        "origin":"https://calling-service.example.com/",
-+   *        "message":\"{\"identity\":\"bob@example.org\",
-+   *                     \"contents\":\"abcdefghijklmnopqrstuvwyz\",
-+   *                     \"request_origin\":\"rtcweb://peerconnection\",
-+   *                     \"signature\":\"010203040506\"}"
-+   *      }
-+   *
-+   *    IdP Proxy -> PeerConnection:
-+   *      {
-+   *       "type":"SUCCESS",
-+   *       "id":2,
-+   *       "message": {
-+   *         "identity" : {
-+   *           "name" : "bob@example.org",
-+   *           "displayname" : "Bob"
-+   *         },
-+   *         "request_origin":"rtcweb://peerconnection",
-+   *         "contents":"abcdefghijklmnopqrstuvwyz"
-+   *       }
-+   *      }
-+   *
-+   *
-+   */
-+  verify: function idpChannel_verify(message) {
-+    // message.message should be the base64-encoded assertion as a string
-+    let assertion = message.message;
-+    let assertion_payload = null;
-+    let assertion_aud = null;
-+    try {
-+      let obj = JSON.parse(crypto.base64UrlDecode(assertion.split("~")[1].split('.')[1]));
-+      // obj = { "fingerprint" : "DE:AD:BE:EF", "exp" : 1372890745118, "aud" : "rtcweb://peerconnection" }
-+      assertion_payload = obj.extra.webrtc.fingerprint;
-+      assertion_aud = obj.aud;
-+    }
-+    catch (err) {
-+      reportError(err);
-+      // keep original null values
-+    }
-+
-+    var body, res;
-+    try {
-+      body = JSON.stringify({
-+        assertion: assertion,
-+        audience: assertion_aud
-+      });
-+    } catch (err) {
-+      this.receiveResponse(new Error("Cannot verify message; bad json"));
-+    }
-+
-+    let req = Cc['@mozilla.org/xmlextras/xmlhttprequest;1']
-+                .createInstance(Ci.nsIXMLHttpRequest);
-+
-+    req.open('POST', this.verifierUri, true);
-+    req.responseType = 'json';
-+    req.setRequestHeader('Content-Type', 'application/json');
-+    req.mozBackgroundRequest = true;
-+
-+    req.onload = function idpChannel_verify_onload() {
-+      let response = req.response;
-+      // The 'error' message is not in the spec.
-+      // Leaving it in for now, so we can debug more easily
-+      if (req.status === 200) {
-+        if (response) {
-+          if (response.status === "okay") {
-+            this.receiveResponse({
-+              type: "SUCCESS",
-+              id: message.id,
-+              message: {
-+                identity: {
-+                  name: response.email,
-+                  displayname: ""         // not something persona knows yet
-+                },
-+                request_origin: assertion_aud,
-+                contents: assertion_payload
-+              }
-+            });
-+          } else { // not "okay"
-+            this.receiveResponse({
-+              type: "ERROR",
-+              id: message.id,
-+              error: response.reason
-+            });
-+          }
-+        } else { // no response
-+          this.receiveResponse({
-+            type: "ERROR",
-+            id: message.id,
-+            error: "Server response was " + typeof response
-+          });
-+        }
-+      } else { // status != 200
-+        this.receiveResponse({
-+          type: "ERROR",
-+          id: message.id,
-+          error: "Server responded with code " + req.status
-+        });
-+      }
-+    }.bind(this);
-+
-+    req.onerror = function idpChannel_verify_onerror() {
-+      reportError('request error:', req.status, req.statusText);
-+      this.receiveResponse({
-+        type: "ERROR",
-+        id: message.id,
-+        error: "Request error"
-+      });
-+    }.bind(this);
-+
-+    req.send(body);
-+  }
-+};
-+
 +/*
 + * IDPChannel: A message channel between the RTC PeerConnection and a
-+ * designated IdP Proxy.  The default protocol to proxy is "browserid".
++ * designated IdP Proxy.
 + *
 + * @param aMessageCallback  Callback to invoke to send messages back to
 + *        (function)        the caller.
@@ -563,39 +60,73 @@ new file mode 100644
 + */
 +function IDPChannel(aMessageCallback, aOptions) {
 +  aOptions = aOptions || {};
-+  aOptions.protocol = aOptions.protocol || "default";
++  log(aOptions);
 +
-+  switch (aOptions.protocol) {
-+    case "browserid":
-+    case "default":
-+      this.idpProxy = new BrowserIDProxy(aMessageCallback, aOptions);
-+      break;
++  this.receiveResponse = aMessageCallback;
 +
-+    default:
-+      throw new Error("Unsupported protocol: " + aOptions.protocol);
-+      break;
++  this.provider = aOptions.provider;
++  this.protocol = aOptions.protocol || "default";
++  this.well_known = this.provider + '/.well-known/idp-proxy/' + this.protocol;
++  this.contentWindow = null;
++
++  try {
++    Services.io.newURI(this.well_known, null, null).spec;
++    this.init();
 +  }
++  catch(e) {
++    reportError("Bad URL");
++  }
++  // XXX Try to get an assertion immediately
 +}
++
 +IDPChannel.prototype = {
++  init: function idpChannel_init() {
++    // XXX origin for postMessage should be rtcweb://peerconnection
++    // Does this require using Cu.Sandbox instead?
++    new Sandbox(this.well_known, function(aSandbox) {
++      this.contentWindow = aSandbox._frame.contentWindow;
++
++      // when getting msg sent from sandbox
++      this.contentWindow.addEventListener('message', function(e) {
++        // log('target: '+ e.target);
++        // log("source: " + e.source);
++        // log('target origin: '+ e.target.location.origin);
++        // log("source origin: " + e.source.location.origin);
++        // log("origin: " + e.origin);
++        // log("msg: " + e.data);
++
++        //ensures message came from itself
++        if(e.source == this.contentWindow) {
++          this.receiveResponse(e.data);
++        }
++        else {
++          reportError("Message from incorrect origin");
++        }
++      }.bind(this), false, true);
++
++    }.bind(this));
++  },
++
 +  send: function idpChannel_send(message) {
-+    log("send received: " + JSON.stringify(message));
-+    switch (message.type) {
-+      case "SIGN":
-+        this.idpProxy.sign(message);
-+        break;
-+      case "VERIFY":
-+        this.idpProxy.verify(message);
-+        break;
-+      default:
-+        this.receiveResponse(new Error("Unknown message type: " + message.type));
-+        break;
++    if (!this.contentWindow) {
++      return reportError("HostFrame or MessageChannel not open");
++    }
++
++    try {
++      // this is sending a message to the sandbox
++      log('Sending message to sandbox: ' + message);
++      var eve = new this.contentWindow.CustomEvent('rtcmessage', { detail : message });
++      this.contentWindow.dispatchEvent(eve);
++
++      // this.contentWindow.frames.wrappedJSObject.getMessage(message);
++      // this.contentWindow.postMessage(message, this.provider);
++    } catch (err) {
++      log('Failed to send message: ' + message);
++      reportError(err);
 +    }
 +  }
 +};
 +
-+this.unpackAssertion = unpackAssertion;
-+this.HostFrame = HostFrame;
-+this.Pipe = Pipe;
 +this.IDPChannel = IDPChannel;
 diff --git a/toolkit/identity/moz.build b/toolkit/identity/moz.build
 --- a/toolkit/identity/moz.build
@@ -614,6 +145,44 @@ diff --git a/toolkit/identity/moz.build b/toolkit/identity/moz.build
      'Sandbox.jsm',
      'jwcrypto.jsm',
  ]
+diff --git a/toolkit/identity/tests/unit/data/rtc_idp/.well-known/idp-proxy/bogus b/toolkit/identity/tests/unit/data/rtc_idp/.well-known/idp-proxy/bogus
+new file mode 100644
+--- /dev/null
++++ b/toolkit/identity/tests/unit/data/rtc_idp/.well-known/idp-proxy/bogus
+@@ -0,0 +1,8 @@
++<!DOCTYPE html>
++ <head>
++  <script src="bogus.js"></script>
++ </head>
++ <body>
++ </body>
++</html>
++
+diff --git a/toolkit/identity/tests/unit/data/rtc_idp/bogus.js b/toolkit/identity/tests/unit/data/rtc_idp/bogus.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/identity/tests/unit/data/rtc_idp/bogus.js
+@@ -0,0 +1,20 @@
++onmessage = function(e) {
++  switch (e.type) {
++    case "SIGN":
++      postMessage({
++        type: "SUCCESS",
++        message: "Signed message"
++      }, "rtcweb://peerconnection");
++      break;
++    case "VERIFY":
++      postMessage({
++        type: "SUCCESS",
++        message: "Verified message"
++      }, "rtcweb://peerconnection");
++      break;
++    default:
++      break;
++  }
++};
++
++postMessage({type: "READY"}, "rtcweb://peerconnection");
 diff --git a/toolkit/identity/tests/unit/test_load_modules.js b/toolkit/identity/tests/unit/test_load_modules.js
 --- a/toolkit/identity/tests/unit/test_load_modules.js
 +++ b/toolkit/identity/tests/unit/test_load_modules.js
@@ -639,7 +208,7 @@ diff --git a/toolkit/identity/tests/unit/test_rtcauthmodule.js b/toolkit/identit
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/tests/unit/test_rtcauthmodule.js
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,217 @@
 +
 +Cu.import("resource://gre/modules/Services.jsm");
 +Cu.import("resource://gre/modules/XPCOMUtils.jsm");
@@ -649,34 +218,13 @@ new file mode 100644
 +  "resource://gre/modules/identity/RTCIdentity.jsm",
 +  "IDPChannel");
 +
-+XPCOMUtils.defineLazyModuleGetter(this, "Pipe",
-+  "resource://gre/modules/identity/RTCIdentity.jsm",
-+  "Pipe");
-+
-+XPCOMUtils.defineLazyModuleGetter(this, "HostFrame",
-+  "resource://gre/modules/identity/RTCIdentity.jsm",
-+  "HostFrame");
-+
-+XPCOMUtils.defineLazyModuleGetter(this, "unpackAssertion",
-+  "resource://gre/modules/identity/RTCIdentity.jsm",
-+  "unpackAssertion");
-+
-+const FINGERPRINT = "7A:C9:96:BE:F9:D4:3B:CC:35:19:AF:40:84:49:C1:2C:12:7A:76:5C:C9:4B:4F:DE:95:95:FB:9B:B8:75:60:C4";
-+const USER_IDENTITY = "rseys@mozilla.com";
-+const ASSERTION = "eyJhbGciOiJSUzI1NiJ9.eyJwdWJsaWMta2V5Ijp7ImFsZ29yaXRobSI6IkRTIiwieSI6IjM2MTBkMzEzNDFkOTYzYjFhZWY2N2MzNmJlZGVmNjc2ZTk5NjllOGZjODE2YWM4YmY5ZmNhYmUwMjJhZDc0YTdiMDQzMjg0OGRmMmViOTdiYTQzNzhmYmJhNWY1NjZkZmZjMjQ2NzJmMWJhYWJhOWMwNmFlY2IzMmU1Y2JjMzhkMTlkZTMxMmY5YzZkY2FiMzNhNWI0ZjBiZWZkODBkNDMyMmVjZjYzZWYwNjI2ODdhMTVlMDBhYzBhNDZiNWIyZGQ0YWE3OTkwMGZhZmY0NzM1NmFjYzQ1MDk1ZmI2NGViZGM2OTI0ZjhlOGYyMmYwZGU3NjEzYzYzNmUzNjliZTIiLCJwIjoiZmY2MDA0ODNkYjZhYmZjNWI0NWVhYjc4NTk0YjM1MzNkNTUwZDlmMWJmMmE5OTJhN2E4ZGFhNmRjMzRmODA0NWFkNGU2ZTBjNDI5ZDMzNGVlZWFhZWZkN2UyM2Q0ODEwYmUwMGU0Y2MxNDkyY2JhMzI1YmE4MWZmMmQ1YTViMzA1YThkMTdlYjNiZjRhMDZhMzQ5ZDM5MmUwMGQzMjk3NDRhNTE3OTM4MDM0NGU4MmExOGM0NzkzMzQzOGY4OTFlMjJhZWVmODEyZDY5YzhmNzVlMzI2Y2I3MGVhMDAwYzNmNzc2ZGZkYmQ2MDQ2MzhjMmVmNzE3ZmMyNmQwMmUxNyIsInEiOiJlMjFlMDRmOTExZDFlZDc5OTEwMDhlY2FhYjNiZjc3NTk4NDMwOWMzIiwiZyI6ImM1MmE0YTBmZjNiN2U2MWZkZjE4NjdjZTg0MTM4MzY5YTYxNTRmNGFmYTkyOTY2ZTNjODI3ZTI1Y2ZhNmNmNTA4YjkwZTVkZTQxOWUxMzM3ZTA3YTJlOWUyYTNjZDVkZWE3MDRkMTc1ZjhlYmY2YWYzOTdkNjllMTEwYjk2YWZiMTdjN2EwMzI1OTMyOWU0ODI5YjBkMDNiYmM3ODk2YjE1YjRhZGU1M2UxMzA4NThjYzM0ZDk2MjY5YWE4OTA0MWY0MDkxMzZjNzI0MmEzODg5NWM5ZDViY2NhZDRmMzg5YWYxZDdhNGJkMTM5OGJkMDcyZGZmYTg5NjIzMzM5N2EifSwicHJpbmNpcGFsIjp7ImVtYWlsIjoicnNleXNAbW96aWxsYS5jb20ifSwiaWF0IjoxMzczMzg4MDg2NzY5LCJleHAiOjEzNzMzOTE2ODY3NjksImlzcyI6IjEyNy4wLjAuMSJ9.ZAbQAIe_0rRTlTBCIjSjfOW74WpUs_TuZGG2_4d_j1Tsa8MWGwvjLEPO8XLI2fpZugqKCjUaMHi-4EzpJYYRMPaw7geuH-VFq7l_yvXBNZnj8MOOjXU-TjlDgNR6-y_X2bSxbnrDtdKAHSEnQCc-YBzx3RPEkbJZwODpaZyE3CQZ-L1AjoeMAvF6BL8yt6f-kI-13l2qM5r55cvJsU0zpKEt8xUu9R7Elc-wvXjM_90c2f5PzQtVv_xS87nyyj4U6maVMKJbsCiWfzjrAaL2n8wdOtZY9Tf0AVZRU9vEJcjWh5B8ifafuaWg1Ki48plPNX5tnbZ44o95AFOMqnM_Bg~eyJhbGciOiJEUzEyOCJ9.eyJleHRyYSI6eyJ3ZWJydGMiOnsiZmluZ2VycHJpbnQiOiI3QTpDOTo5NjpCRTpGOTpENDozQjpDQzozNToxOTpBRjo0MDo4NDo0OTpDMToyQzoxMjo3QTo3Njo1QzpDOTo0Qjo0RjpERTo5NTo5NTpGQjo5QjpCODo3NTo2MDpDNCJ9fSwiZXhwIjoxMzczMzg4MjIzNDg5LCJhdWQiOiJydGN3ZWI6Ly9wZWVyY29ubmVjdGlvbiJ9.kzJUYLiCfdbm_nYS47HBYwRUUxm3-EU2S2VMjJZuqjGCS9qGt2bzmA";
++const IDP_PORT = 8081;
++const WELL_KNOWN_PATH = '/.well-known/idp-proxy/bogus';
 +
 +function test_import() {
 +  do_check_eq(typeof IDPChannel, "function");
 +  do_check_eq(typeof Pipe, "function");
 +  do_check_eq(typeof HostFrame, "function");
-+  do_check_eq(typeof unpackAssertion, "function");
-+  run_next_test();
-+}
-+
-+function test_unpackAssertion() {
-+  let unpacked = unpackAssertion(ASSERTION);
-+  dump("*** unpacked: " + JSON.stringify(unpacked, null, 2));
-+  do_check_eq(unpacked.assertion.aud, "rtcweb://peerconnection");
 +  run_next_test();
 +}
 +
@@ -694,35 +242,39 @@ new file mode 100644
 +
 +function test_sign() {
 +  do_test_pending();
-+  let sign_message = {
-+    type: "SIGN",
-+    id: 1,
-+    origin: "https://calling-service.example.com/",
-+    message: "abcdefghijklmnopqrstuvwyz"
-+  };
++  usingIdpProxy(function(proxy) {
++    let sign_message = {
++      type: "SIGN",
++      id: 42,
++      origin: "https://calling-service.example.com/",
++      message: "abcdefghijklmnopqrstuvwyz"
++    };
 +
-+  let onMessage = function onMessage(message) {
-+    switch(message.type) {
-+      case "READY":
-+        // wait until the next tick so channel will not be undefined
-+        do_timeout(0, function sendSignMessage() {
-+          channel.send(sign_message);
-+        });
-+        break;
-+      case "SUCCESS":
-+        do_check_eq(message.id, sign_message.id);
-+        do_check_eq(message.message.assertion, ASSERTION);
-+        do_test_finished();
-+        run_next_test();
-+        break;
-+      default:
-+        do_throw("Weird message type: " + message.type);
-+        break;
-+    }
-+  };
-+  let channel = new IDPChannel(onMessage, {
-+    PipeConstructor: MockPipe, 
-+    HostFrameConstructor: MockHostFrame
++    let onMessage = function onMessage(message) {
++      switch(message.type) {
++        case "READY":
++          // wait until the next tick so channel will not be undefined
++          dump("is READY");
++          do_timeout(0, function sendSignMessage() {
++            dump("channel.send " + sign_message);
++            channel.send(sign_message);
++          });
++          break;
++        case "SUCCESS":
++          do_check_eq(message.id, sign_message.id);
++          do_test_finished();
++          proxy.server.stop(run_next_test);
++          break;
++        default:
++          log("wtf!?");
++          do_throw("Weird message type: " + message.type);
++          break;
++      }
++    };
++    let channel = new IDPChannel(onMessage, {
++      provider: proxy.address,
++      protocol: "bogus"
++    });
 +  });
 +}
 +
@@ -767,7 +319,7 @@ new file mode 100644
 +        do_check_eq(message.message.identity.name, USER_IDENTITY);
 +        do_check_eq(message.message.contents, FINGERPRINT);
 +        do_test_finished();
-+        run_next_test();
++        server.stop(run_next_test);
 +        break;
 +      default:
 +        do_throw("Weird message type: " + message.type);
@@ -796,9 +348,26 @@ new file mode 100644
 +  do_throw("Oops.  Shouldn't have gotten an IDPChannel for unsupported protocol");
 +}
 +
++function usingIdpProxy(callback) {
++  log("using idp proxy");
++  let proxy = {
++    address: 'http://localhost:' + IDP_PORT,
++    server: new HttpServer()
++  };
++  
++  log("registering paths");
++  proxy.server.registerFile(WELL_KNOWN_PATH, do_get_file("data/rtc_idp" + WELL_KNOWN_PATH));
++  proxy.server.registerFile("bogus.js", do_get_file("data/rtc_idp/bogus.js"));
++
++  proxy.server.start(IDP_PORT);
++  log("started server");
++
++  callback(proxy);
++}
++
 +function MockHostFrame() { }
 +MockHostFrame.prototype = {
-+  getIframe: function getIframe(aFrameSource, aFrameScript, aOptions, aCallback) {
++  getIframe: function getIframe(aFrameSource, aFrameScript, aCallback) {
 +    aCallback(null);
 +  }
 +};
@@ -811,7 +380,7 @@ new file mode 100644
 +  close: function close() {},
 +  communicate: function communicate() {
 +    // here's where we would send our one async message (sign) 
-+    // to the hosted persona iframe.  The iframe would send a
++    // to the hosted iframe.  The iframe would send a
 +    // certificate-backed assertion back to us in response, which
 +    // we relay to the controller
 +    let message = this.options.message;
@@ -845,11 +414,10 @@ new file mode 100644
 +
 +let TESTS = [ 
 +  test_import,
-+  test_unpackAssertion,
 +  test_ready,
 +  test_sign,
-+  test_verify,
-+  test_unsupported
++  //test_verify,
++  //test_unsupported
 +];
 +
 +TESTS.forEach(add_test);
