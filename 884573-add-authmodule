@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent 07a3e7a5a7b272f364d03876cedb56b57e49e278
+# Parent 9ab28833eda00abf3dd3099f2a21798691887c74
 
 diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 --- a/dom/media/PeerConnection.js
@@ -146,7 +146,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
                                         " provided to setRemoteDescription");
      }
  
-+    let verifyCallback = function(email) {
++    let verifyCallback = function(identity) {
 +      let message, icon, priority;
 +      let browser = this._win.QueryInterface(Ci.nsIInterfaceRequestor)
 +                       .getInterface(Ci.nsIWebNavigation)
@@ -154,13 +154,13 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +      let gBrowser = browser.ownerDocument.defaultView.gBrowser;
 +      let notificationBox = gBrowser.getNotificationBox();
 +
-+      if(!email) {
++      if(!identity) {
 +        message = "WARNING: We could not verify the identity of the other party.";
 +        icon = "chrome://global/skin/icons/warning-16.png";
 +        priority = notificationBox.PRIORITY_WARNING_HIGH;
 +      }
 +      else  {
-+        message = "You are now talking securely to " + email;
++        message = "You are now talking securely to " + identity;
 +        icon = "chrome://browser/skin/Secure-Glyph.png";
 +        priority = notificationBox.PRIORITY_WARNING_MEDIUM;
 +      }
@@ -286,7 +286,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
  
    onAddStream: function(stream) {
      this.dispatchEvent(new this._dompc._win.MediaStreamEvent("addstream",
-@@ -1082,15 +1175,242 @@ PeerConnectionObserver.prototype = {
+@@ -1082,15 +1175,237 @@ PeerConnectionObserver.prototype = {
    },
  
    notifyConnection: function() {
@@ -387,7 +387,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +        if(msg.request_origin == "rtcweb://peerconnection") { // very important check!
 +          let stored_fingerprint = stored.message.fingerprint;
 +          if(stored_fingerprint && msg.contents == stored_fingerprint) { // most important check
-+            return stored.callback(identity.name); // no error: callback with email
++            return stored.callback(identity.name); // no error: callback with identity
 +          }
 +        }
 +      }
@@ -455,12 +455,7 @@ diff --git a/dom/media/PeerConnection.js b/dom/media/PeerConnection.js
 +    let browser = this._dompc._win.QueryInterface(Ci.nsIInterfaceRequestor)
 +                       .getInterface(Ci.nsIWebNavigation)
 +                       .QueryInterface(Ci.nsIDocShell).chromeEventHandler;
-+    let gBrowser = browser.ownerDocument.defaultView.gBrowser;
-+
-+    let url_host = gBrowser.currentURI.host;
-+    let url_port = gBrowser.currentURI.port;
-+    let url_scheme = gBrowser.currentURI.scheme;
-+    let origin = url_scheme + "://" + url_host + (url_port ? ":" + url_port : ""); // bare url
++    let origin = browser.ownerDocument.defaultView.gBrowser.contentWindow.location.origin;
 +
 +    let message_id = ++this.messageCount;
 +

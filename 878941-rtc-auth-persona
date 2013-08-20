@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent cab2830efeae17a3372e783b2b456037536fe8c1
+# Parent 812478e16c228f067d374f4ef69b7008c2af5463
 # User Jed Parsons <jparsons@mozilla.com>
 # Date Thu Aug  8 18:40:43 2013 -0700
 Bug 878941 - IdP Proxy and communication channel for RTC peer connection (wip)
@@ -8,7 +8,7 @@ diff --git a/toolkit/identity/RTCIdentity.jsm b/toolkit/identity/RTCIdentity.jsm
 new file mode 100644
 --- /dev/null
 +++ b/toolkit/identity/RTCIdentity.jsm
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,118 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -95,7 +95,7 @@ new file mode 100644
 +        // log("origin: " + e.origin);
 +        // log("msg: " + e.data);
 +
-+        //ensures message came from itself
++        // ensure message came from itself and not another window
 +        if(e.source == this.contentWindow) {
 +          this.receiveResponse(e.data);
 +        }
@@ -113,13 +113,12 @@ new file mode 100644
 +    }
 +
 +    try {
-+      // this is sending a message to the sandbox
++      // dispatch CustomEvent to the sandboxed window with our message as evt.detail
++      // evt.isTrusted will be true, which should be checked in content to ensure
++      // that the messages are originating from the user agent and not other content
 +      log('Sending message to sandbox: ' + message);
-+      var eve = new this.contentWindow.CustomEvent('rtcmessage', { detail : message });
-+      this.contentWindow.dispatchEvent(eve);
-+
-+      // this.contentWindow.frames.wrappedJSObject.getMessage(message);
-+      // this.contentWindow.postMessage(message, this.provider);
++      let evt = new this.contentWindow.CustomEvent('rtcmessage', { detail : message });
++      this.contentWindow.dispatchEvent(evt);
 +    } catch (err) {
 +      log('Failed to send message: ' + message);
 +      reportError(err);
