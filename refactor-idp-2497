@@ -1,0 +1,252 @@
+# HG changeset patch
+# Parent 2d96ee8d9dd44ac0e80d79b33828f05cef79cedb
+Refactoring IdP
+
+diff --git a/.gitignore b/.gitignore
+--- a/.gitignore
++++ b/.gitignore
+@@ -46,8 +46,148 @@ parser/html/java/javaparser/
+ .project
+ .cproject
+ .settings/
+ 
+ # Python virtualenv artifacts.
+ python/psutil/*.so
+ python/psutil/*.pyd
+ python/psutil/build/
++
++AUTHORS
++Android.mk
++LEGAL
++LICENSE
++Makefile.in
++README.txt
++accessible/
++aclocal.m4
++allmakefiles.sh
++b2g/
++browser/LICENSE
++browser/Makefile.in
++browser/app/
++browser/base/content/*.*
++browser/branding/
++browser/build.mk
++browser/components/
++browser/config/
++browser/confvars.sh
++browser/devtools/
++browser/extensions/
++browser/fuel/
++browser/installer/
++browser/locales/
++browser/makefiles.sh
++browser/modules/
++browser/themes/
++build/
++caps/
++chrome/
++client.mk
++client.py
++config/
++configure.in
++content/
++db/
++dbm/
++docshell/
++dom/Makefile.in
++dom/activities/
++dom/alarm/
++dom/apps/
++dom/base/
++dom/battery/
++dom/bindings/
++dom/bluetooth/
++dom/browser-element/
++dom/camera/
++dom/contacts/
++dom/devicestorage/
++dom/dom-config.mk
++dom/file/
++dom/fm/
++dom/icc/
++dom/imptests/
++dom/indexedDB/
++dom/interfaces/
++dom/ipc/
++dom/locales/
++dom/media/
++dom/messages/
++dom/mms/
++dom/network/
++dom/payment/
++dom/permission/
++dom/plugins/
++dom/power/
++dom/settings/
++dom/sms/
++dom/src/
++dom/system/
++dom/telephony/
++dom/tests/
++dom/time/
++dom/webidl/
++dom/wifi/
++dom/workers/
++editor/
++embedding/
++extensions/
++gfx/
++hal/
++image/
++intl/
++ipc/
++js/
++layout/
++mach
++media/
++memory/
++mfbt/
++mobile/
++modules/
++mozglue/
++mozilla-config.h.in
++netwerk/
++nsprpub/
++other-licenses/
++parser/
++probes/
++profile/
++python/
++rdf/
++security/
++services/
++startupcache/
++storage/
++t
++testing/
++toolkit/Makefile.in
++toolkit/addon-sdk/
++toolkit/components/
++toolkit/content/
++toolkit/crashreporter/
++toolkit/devtools/
++toolkit/library/
++toolkit/locales/
++toolkit/mozapps/
++toolkit/obsolete/
++toolkit/profile/
++toolkit/system/
++toolkit/themes/
++toolkit/toolkit-makefiles.sh
++toolkit/toolkit-tiers.mk
++toolkit/webapps/
++toolkit/xre/
++tools/
++uriloader/
++view/
++webapprt/
++widget/
++xpcom/
++xpfe/
++xulrunner/
++.gdbinit
++.hg/
++.hgignore
++.hgtags
++browser/base/jar.mn
+\ No newline at end of file
+diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm
+--- a/toolkit/identity/Identity.jsm
++++ b/toolkit/identity/Identity.jsm
+@@ -244,18 +244,22 @@ IDService.prototype = {
+    *        (string) (optional) Protocol to use.  Default is https.
+    *                 This is necessary because we are unable to test
+    *                 https.
+    *
+    * @param aCallback
+    *
+    */
+   _fetchWellKnownFile: function _fetchWellKnownFile(aDomain, aCallback, aScheme='https') {
++    if (false == true) {
++      return aCallback(null, {domain: '192.168.186.138:10002', idpParams:{"provisioning":"/tbd","authentication":"/sign_in"}});
++    }
+     // XXX bug 769854 make tests https and remove aScheme option
+-    let url = aScheme + '://' + aDomain + "/.well-known/browserid";
++    //let url = aScheme + '://' + aDomain + "/.well-known/browserid";
++    let url = 'http://192.168.186.138:10002/wsapi/discovery?domain=' + aDomain;
+     log("_fetchWellKnownFile:", url);
+ 
+     // this appears to be a more successful way to get at xmlhttprequest (which supposedly will close with a window
+     let req = Cc["@mozilla.org/xmlextras/xmlhttprequest;1"]
+                 .createInstance(Ci.nsIXMLHttpRequest);
+ 
+     // XXX bug 769865 gracefully handle being off-line
+     // XXX bug 769866 decide on how to handle redirects
+@@ -266,24 +270,24 @@ IDService.prototype = {
+       if (req.status < 200 || req.status >= 400) {
+         log("_fetchWellKnownFile", url, ": server returned status:", req.status);
+         return aCallback("Error");
+       }
+       try {
+         let idpParams = req.response;
+ 
+         // Verify that the IdP returned a valid configuration
++        // TODO Do we really need public key here? idpParams['public-key']
++        // or can we wait to fetch that? Allows us to split address info
+         if (! (idpParams.provisioning &&
+-            idpParams.authentication &&
+-            idpParams['public-key'])) {
++            idpParams.authentication)) {
+           let errStr= "Invalid well-known file from: " + aDomain;
+           log("_fetchWellKnownFile:", errStr);
+           return aCallback(errStr);
+         }
+-
+         let callbackObj = {
+           domain: aDomain,
+           idpParams: idpParams,
+         };
+         log("_fetchWellKnownFile result: ", callbackObj);
+         // Yay.  Valid IdP configuration for the domain.
+         return aCallback(null, callbackObj);
+ 
+diff --git a/toolkit/identity/IdentityProvider.jsm b/toolkit/identity/IdentityProvider.jsm
+--- a/toolkit/identity/IdentityProvider.jsm
++++ b/toolkit/identity/IdentityProvider.jsm
+@@ -117,16 +117,17 @@ IdentityProviderService.prototype = {
+    *
+    * @param aCallback
+    *        (function) callback to invoke on completion
+    *                   with first-positional parameter the error.
+    */
+   _provisionIdentity: function _provisionIdentity(aIdentity, aIDPParams, aProvId, aCallback) {
+     let provPath = aIDPParams.idpParams.provisioning;
+     let url = Services.io.newURI("https://" + aIDPParams.domain, null, null).resolve(provPath);
++
+     log("_provisionIdentity: identity:", aIdentity, "url:", url);
+ 
+     // If aProvId is not null, then we already have a flow
+     // with a sandbox.  Otherwise, get a sandbox and create a
+     // new provision flow.
+ 
+     if (aProvId) {
+       // Re-use an existing sandbox
+@@ -311,16 +312,18 @@ IdentityProviderService.prototype = {
+     log("_doAuthentication: provId:", aProvId, "idpParams:", aIDPParams);
+     // create an authentication caller and its identifier AuthId
+     // stash aIdentity, idpparams, and callback in it.
+ 
+     // extract authentication URL from idpParams
+     let authPath = aIDPParams.idpParams.authentication;
+     let authURI = Services.io.newURI("https://" + aIDPParams.domain, null, null).resolve(authPath);
+ 
++    log("authURI=", authURI, "aProvId=", aProvId);
++
+     // beginAuthenticationFlow causes the "identity-auth" topic to be
+     // observed.  Since it's sending a notification to the DOM, there's
+     // no callback.  We wait for the DOM to trigger the next phase of
+     // provisioning.
+     this._beginAuthenticationFlow(aProvId, authURI);
+ 
+     // either we bind the AuthID to the sandbox ourselves, or UX does that,
+     // in which case we need to tell UX the AuthId.
