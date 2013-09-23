@@ -1,0 +1,205 @@
+# HG changeset patch
+# User Matthew Noorenberghe <mozilla@noorenberghe.ca>
+# Date 1375242602 25200
+#      Tue Jul 30 20:50:02 2013 -0700
+# Node ID 837db860ff78d754fd4bb3ab4deeaa52c414a20b
+# Parent e42dce3209da3d347c575bea7860aa692ef107a0
+imported patch desktop_identity
+
+diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
+--- a/browser/modules/SignInToWebsite.jsm
++++ b/browser/modules/SignInToWebsite.jsm
+@@ -26,29 +26,17 @@ function log(...aMessageArgs) {
+ this.SignInToWebsiteUX = {
+
+   init: function SignInToWebsiteUX_init() {
+-
+-    /*
+-     * bug 793906 - temporarily disabling desktop UI so we can
+-     * focus on b2g without worrying about desktop as well
+-     *
+     Services.obs.addObserver(this, "identity-request", false);
+     Services.obs.addObserver(this, "identity-auth", false);
+     Services.obs.addObserver(this, "identity-auth-complete", false);
+     Services.obs.addObserver(this, "identity-login-state-changed", false);
+-     */
+   },
+
+   uninit: function SignInToWebsiteUX_uninit() {
+-    /*
+-     * As above:
+-     * bug 793906 - temporarily disabling desktop UI so we can
+-     * focus on b2g without worrying about desktop as well
+-     *
+     Services.obs.removeObserver(this, "identity-request");
+     Services.obs.removeObserver(this, "identity-auth");
+     Services.obs.removeObserver(this, "identity-auth-complete");
+     Services.obs.removeObserver(this, "identity-login-state-changed");
+-     */
+   },
+
+   observe: function SignInToWebsiteUX_observe(aSubject, aTopic, aData) {
+diff --git a/browser/modules/test/Makefile.in b/browser/modules/test/Makefile.in
+--- a/browser/modules/test/Makefile.in
++++ b/browser/modules/test/Makefile.in
+@@ -12,6 +12,7 @@ include $(DEPTH)/config/autoconf.mk
+
+ MOCHITEST_BROWSER_FILES := \
+   browser_NetworkPrioritizer.js \
++  browser_SignInToWebsite.js \
+   $(NULL)
+
+ ifeq ($(MOZ_WIDGET_TOOLKIT),windows)
+@@ -20,7 +21,4 @@ MOCHITEST_BROWSER_FILES += \
+   $(NULL)
+ endif
+
+-# bug 793906 - temporarily disabling desktop UI while working on b2g
+-# browser_SignInToWebsite.js
+-
+ include $(topsrcdir)/config/rules.mk
+diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
+--- a/dom/identity/DOMIdentity.jsm
++++ b/dom/identity/DOMIdentity.jsm
+@@ -16,7 +16,7 @@ XPCOMUtils.defineLazyModuleGetter(this,
+                                   "resource://gre/modules/identity/IdentityUtils.jsm");
+
+ XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
+-#ifdef MOZ_B2G_VERSION
++#ifdef MOZ_B2G
+                                   "resource://gre/modules/identity/MinimalIdentity.jsm");
+ #else
+                                   "resource://gre/modules/identity/Identity.jsm");
+diff --git a/dom/identity/moz.build b/dom/identity/moz.build
+--- a/dom/identity/moz.build
++++ b/dom/identity/moz.build
+@@ -8,8 +8,11 @@ TEST_DIRS += ['tests']
+
+ EXTRA_COMPONENTS += [
+     'Identity.manifest',
++    'nsIDService.js',
++]
++
++EXTRA_PP_COMPONENTS += [
+     'nsDOMIdentity.js',
+-    'nsIDService.js',
+ ]
+
+ EXTRA_PP_JS_MODULES += [
+diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
+--- a/dom/identity/nsDOMIdentity.js
++++ b/dom/identity/nsDOMIdentity.js
+@@ -346,6 +346,8 @@ nsDOMIdentity.prototype = {
+   },
+
+   completeAuthentication: function nsDOMIdentity_completeAuthentication() {
++dump("nsDOMIdentity_completeAuthentication\n");
++try {
+     if (this._authenticationEnded) {
+       throw new Error("Authentication already ended");
+     }
+@@ -356,6 +358,9 @@ nsDOMIdentity.prototype = {
+
+     this._identityInternal._mm.sendAsyncMessage("Identity:IDP:CompleteAuthentication",
+                                                 this.DOMIdentityMessage());
++} catch (ex) {
++  dump(ex + "\n");
++}
+   },
+
+   raiseAuthenticationFailure: function nsDOMIdentity_raiseAuthenticationFailure(aReason) {
+@@ -595,6 +600,7 @@ nsDOMIdentityInternal.prototype = {
+
+   // nsIDOMGlobalPropertyInitializer
+   init: function nsDOMIdentityInternal_init(aWindow) {
++dump("nsDOMIdentityInternal_init\n\n");
+     if (Services.prefs.getPrefType(PREF_ENABLED) != Ci.nsIPrefBranch.PREF_BOOL
+         || !Services.prefs.getBoolPref(PREF_ENABLED)) {
+       return null;
+@@ -604,9 +610,12 @@ nsDOMIdentityInternal.prototype = {
+       Services.prefs.getPrefType(PREF_DEBUG) == Ci.nsIPrefBranch.PREF_BOOL
+       && Services.prefs.getBoolPref(PREF_DEBUG);
+
++    this._log("init was called from " + aWindow.document.location);
++
+     let util = aWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+                       .getInterface(Ci.nsIDOMWindowUtils);
+
++#ifdef MOZ_B2G
+     // To avoid cross-process windowId collisions, use a uuid as an
+     // almost certainly unique identifier.
+     //
+@@ -614,14 +623,16 @@ nsDOMIdentityInternal.prototype = {
+     // innerwindow id to construct the unique id.
+     this._id = uuidgen.generateUUID().toString();
+     this._innerWindowID = util.currentInnerWindowID;
++#else
++    this._id = util.outerWindowID;
++#endif
+
+     // nsDOMIdentity needs to know our _id, so this goes after
+     // its creation.
++try {
+     this._identity = new nsDOMIdentity(this);
+     this._identity._init(aWindow);
+
+-    this._log("init was called from " + aWindow.document.location);
+-
+     this._mm = cpmm;
+
+     // Setup listeners for messages from parent process.
+@@ -641,7 +652,9 @@ nsDOMIdentityInternal.prototype = {
+
+     // Setup observers so we can remove message listeners.
+     Services.obs.addObserver(this, "inner-window-destroyed", false);
+-
++} catch (ex) {
++  dump(ex + "\n");
++}
+     return this._identity;
+   },
+
+diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm
+--- a/toolkit/identity/Identity.jsm
++++ b/toolkit/identity/Identity.jsm
+@@ -161,6 +161,7 @@ IDService.prototype = {
+           // for us.  To make it easier to relate provision flows with
+           // RP callers, we cross index the two here.
+           rp.provId = aProvId;
++          dump("gotID: aProvId: " + aProvId + ", aRPId: " + aRPId + "\n");
+           self.IDP._provisionFlows[aProvId].rpId = aRPId;
+
+           // At this point, we already have a cert.  If the user is also
+diff --git a/toolkit/identity/IdentityProvider.jsm b/toolkit/identity/IdentityProvider.jsm
+--- a/toolkit/identity/IdentityProvider.jsm
++++ b/toolkit/identity/IdentityProvider.jsm
+@@ -87,8 +87,8 @@ IdentityProviderService.prototype = {
+
+     if (this._sandboxConfigured) {
+       // Tear down message manager listening on the hidden window
+-      Cu.import("resource://gre/modules/DOMIdentity.jsm");
+-      DOMIdentity._configureMessages(Services.appShell.hiddenDOMWindow, false);
++      //Cu.import("resource://gre/modules/DOMIdentity.jsm");
++      //DOMIdentity._configureMessages(Services.appShell.hiddenDOMWindow, false);
+       this._sandboxConfigured = false;
+     }
+
+@@ -131,7 +131,7 @@ IdentityProviderService.prototype = {
+     if (aProvId) {
+       // Re-use an existing sandbox
+       log("_provisionIdentity: re-using sandbox in provisioning flow with id:", aProvId);
+-      this._provisionFlows[aProvId].provisioningSandbox.reload();
++      this._provisionFlows[aProvId].provisioningSandbox.reload(aCallback);
+
+     } else {
+       this._createProvisioningSandbox(url, function createdSandbox(aSandbox) {
+@@ -444,8 +444,8 @@ IdentityProviderService.prototype = {
+
+     if (!this._sandboxConfigured) {
+       // Configure message manager listening on the hidden window
+-      Cu.import("resource://gre/modules/DOMIdentity.jsm");
+-      DOMIdentity._configureMessages(Services.appShell.hiddenDOMWindow, true);
++      //Cu.import("resource://gre/modules/DOMIdentity.jsm");
++      //DOMIdentity._configureMessages(Services.appShell.hiddenDOMWindow, true);
+       this._sandboxConfigured = true;
+     }
