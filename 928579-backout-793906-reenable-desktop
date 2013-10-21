@@ -1,0 +1,69 @@
+# HG changeset patch
+# User Matthew Noorenberghe <mozilla@noorenberghe.ca>
+Bug XXX - Backout bug 793906 to re-enable desktop Signin-to-Web UI.
+
+diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
+--- a/browser/modules/SignInToWebsite.jsm
++++ b/browser/modules/SignInToWebsite.jsm
+@@ -22,38 +22,27 @@ XPCOMUtils.defineLazyModuleGetter(this, 
+ function log(...aMessageArgs) {
+   Logger.log.apply(Logger, ["SignInToWebsiteUX"].concat(aMessageArgs));
+ }
+ 
+ this.SignInToWebsiteUX = {
+ 
+   init: function SignInToWebsiteUX_init() {
+ 
+-    /*
+-     * bug 793906 - temporarily disabling desktop UI so we can
+-     * focus on b2g without worrying about desktop as well
+-     *
+     Services.obs.addObserver(this, "identity-request", false);
+     Services.obs.addObserver(this, "identity-auth", false);
+     Services.obs.addObserver(this, "identity-auth-complete", false);
+     Services.obs.addObserver(this, "identity-login-state-changed", false);
+-     */
+   },
+ 
+   uninit: function SignInToWebsiteUX_uninit() {
+-    /*
+-     * As above:
+-     * bug 793906 - temporarily disabling desktop UI so we can
+-     * focus on b2g without worrying about desktop as well
+-     *
+     Services.obs.removeObserver(this, "identity-request");
+     Services.obs.removeObserver(this, "identity-auth");
+     Services.obs.removeObserver(this, "identity-auth-complete");
+     Services.obs.removeObserver(this, "identity-login-state-changed");
+-     */
+   },
+ 
+   observe: function SignInToWebsiteUX_observe(aSubject, aTopic, aData) {
+     log("observe: received", aTopic, "with", aData, "for", aSubject);
+     let options = null;
+     if (aSubject) {
+       options = aSubject.wrappedJSObject;
+     }
+diff --git a/browser/modules/test/Makefile.in b/browser/modules/test/Makefile.in
+--- a/browser/modules/test/Makefile.in
++++ b/browser/modules/test/Makefile.in
+@@ -2,11 +2,8 @@
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+ ifeq ($(MOZ_WIDGET_TOOLKIT),windows)
+ MOCHITEST_BROWSER_FILES += \
+   browser_taskbar_preview.js \
+   $(NULL)
+ endif
+-
+-# bug 793906 - temporarily disabling desktop UI while working on b2g
+-# browser_SignInToWebsite.js
+diff --git a/browser/modules/test/browser.ini b/browser/modules/test/browser.ini
+--- a/browser/modules/test/browser.ini
++++ b/browser/modules/test/browser.ini
+@@ -1,3 +1,4 @@
+ [DEFAULT]
+ 
+ [browser_NetworkPrioritizer.js]
++[browser_SignInToWebsite.js]
