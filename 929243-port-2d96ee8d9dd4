@@ -486,11 +486,9 @@ diff --git a/dom/identity/Identity.manifest b/dom/identity/Identity.manifest
 +++ b/dom/identity/Identity.manifest
 @@ -1,9 +1,9 @@
  # nsDOMIdentity.js
--component {210853d9-2c97-4669-9761-b1ab9cbf57ef} nsDOMIdentity.js
--contract @mozilla.org/dom/identity;1 {210853d9-2c97-4669-9761-b1ab9cbf57ef}
+ component {210853d9-2c97-4669-9761-b1ab9cbf57ef} nsDOMIdentity.js
+ contract @mozilla.org/dom/identity;1 {210853d9-2c97-4669-9761-b1ab9cbf57ef}
 -category JavaScript-navigator-property mozId @mozilla.org/dom/identity;1
-+component {8bcac6a3-56a4-43a4-a44c-cdf42763002f} nsDOMIdentity.js
-+contract @mozilla.org/dom/identity;1 {8bcac6a3-56a4-43a4-a44c-cdf42763002f}
 +category JavaScript-navigator-property id @mozilla.org/dom/identity;1
  
  # nsIDService.js (initialization on startup)
@@ -596,7 +594,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      }
      if (!aReason || typeof(aReason) != "string") {
        throw new Error("raiseProvisioningFailure reason is required");
-@@ -590,42 +597,48 @@ nsDOMIdentityInternal.prototype = {
+@@ -590,42 +597,50 @@ nsDOMIdentityInternal.prototype = {
        // Avoid errors when removing more than once.
      }
  
@@ -619,6 +617,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
                        .getInterface(Ci.nsIDOMWindowUtils);
  
 +#ifdef MOZ_B2G
++    dump("AOK B2G in the house");
      // To avoid cross-process windowId collisions, use a uuid as an
      // almost certainly unique identifier.
      //
@@ -627,6 +626,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
      this._id = uuidgen.generateUUID().toString();
      this._innerWindowID = util.currentInnerWindowID;
 +#else
++    dump("AOK Fx in the house");
 +    this._id = util.outerWindowID;
 +#endif
  
@@ -646,7 +646,7 @@ diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
        "Identity:ResetState",
        "Identity:RP:Watch:OnLogin",
        "Identity:RP:Watch:OnLogout",
-@@ -636,17 +649,19 @@ nsDOMIdentityInternal.prototype = {
+@@ -636,17 +651,19 @@ nsDOMIdentityInternal.prototype = {
        "Identity:IDP:CallBeginAuthenticationCallback"
      ];
      this._messages.forEach(function(msgName) {
