@@ -1,0 +1,862 @@
+# HG changeset patch
+# Parent 31382b5fa51e14ce2e8c37e307a900fe8889ff84
+
+diff --git a/browser/base/content/test/general/browser_identity_UI.js b/browser/base/content/test/general/browser_identity_UI.js
+--- a/browser/base/content/test/general/browser_identity_UI.js
++++ b/browser/base/content/test/general/browser_identity_UI.js
+@@ -11,55 +11,64 @@ function test() {
+ }
+ 
+ // Greek IDN for 'example.test'.
+ var idnDomain = "\u03C0\u03B1\u03C1\u03AC\u03B4\u03B5\u03B9\u03B3\u03BC\u03B1.\u03B4\u03BF\u03BA\u03B9\u03BC\u03AE";
+ var tests = [
+   {
+     name: "normal domain",
+     location: "http://test1.example.org/",
++    host: "test1.example.org",
+     effectiveHost: "example.org"
+   },
+   {
+     name: "view-source",
+     location: "view-source:http://example.com/",
+-    effectiveHost: null
++    // TODO: these should not be blank, bug 646690
++    host: "",
++    effectiveHost: ""
+   },
+   {
+     name: "normal HTTPS",
+     location: "https://example.com/",
++    host: "example.com",
+     effectiveHost: "example.com",
+     isHTTPS: true
+   },
+   {
+     name: "IDN subdomain",
+     location: "http://sub1." + idnDomain + "/",
++    host: "sub1." + idnDomain,
+     effectiveHost: idnDomain
+   },
+   {
+     name: "subdomain with port",
+     location: "http://sub1.test1.example.org:8000/",
++    host: "sub1.test1.example.org:8000",
+     effectiveHost: "example.org"
+   },
+   {
+     name: "subdomain HTTPS",
+-    location: "https://test1.example.com/",
+-
++    location: "https://test1.example.com",
++    host: "test1.example.com",
+     effectiveHost: "example.com",
+     isHTTPS: true
+   },
+   {
+     name: "view-source HTTPS",
+     location: "view-source:https://example.com/",
+-    effectiveHost: null,
++    // TODO: these should not be blank, bug 646690
++    host: "",
++    effectiveHost: "",
+     isHTTPS: true
+   },
+   {
+     name: "IP address",
+     location: "http://127.0.0.1:8888/",
++    host: "127.0.0.1:8888",
+     effectiveHost: "127.0.0.1"
+   },
+ ]
+ 
+ let gCurrentTest, gCurrentTestIndex = -1, gTestDesc;
+ // Go through the tests in both directions, to add additional coverage for
+ // transitions between different states.
+ let gForward = true;
+@@ -98,17 +107,13 @@ function nextTest() {
+     if (!gForward)
+       gTestDesc += " (second time)";
+     content.location.reload(true);
+   }
+ }
+ 
+ function checkResult() {
+   // Sanity check other values, and the value of gIdentityHandler.getEffectiveHost()
+-  is(gIdentityHandler._lastUri.spec, gCurrentTest.location, "location matches for test " + gTestDesc);
+-  // getEffectiveHost can't be called for all modes
+-  if (gCurrentTest.effectiveHost === null)
+-    is(gIdentityHandler._mode == gIdentityHandler.IDENTITY_MODE_UNKNOWN || gIdentityHandler._mode == gIdentityHandler.IDENTITY_MODE_CHROMEUI, true, "mode matched");
+-  else
+-    is(gIdentityHandler.getEffectiveHost(), gCurrentTest.effectiveHost, "effectiveHost matches for test " + gTestDesc);
++  is(gIdentityHandler._lastLocation.host, gCurrentTest.host, "host matches for test " + gTestDesc);
++  is(gIdentityHandler.getEffectiveHost(), gCurrentTest.effectiveHost, "effectiveHost matches for test " + gTestDesc);
+ 
+   executeSoon(nextTest);
+ }
+diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
+--- a/browser/modules/SignInToWebsite.jsm
++++ b/browser/modules/SignInToWebsite.jsm
+@@ -18,42 +18,35 @@ XPCOMUtils.defineLazyModuleGetter(this, 
+ 
+ XPCOMUtils.defineLazyModuleGetter(this, "Logger",
+                                   "resource://gre/modules/identity/LogUtils.jsm");
+ 
+ function log(...aMessageArgs) {
+   Logger.log.apply(Logger, ["SignInToWebsiteUX"].concat(aMessageArgs));
+ }
+ 
++log("AOK 1 SignInToWebsite.jsm");
+ this.SignInToWebsiteUX = {
+ 
+   init: function SignInToWebsiteUX_init() {
+-
+-    /*
+-     * bug 793906 - temporarily disabling desktop UI so we can
+-     * focus on b2g without worrying about desktop as well
+-     *
++    log("AOK 1 SignInToWebsite.jsm SignInToWebsiteUX.init");
+     Services.obs.addObserver(this, "identity-request", false);
+     Services.obs.addObserver(this, "identity-auth", false);
+     Services.obs.addObserver(this, "identity-auth-complete", false);
+     Services.obs.addObserver(this, "identity-login-state-changed", false);
+-     */
++
+   },
+ 
+   uninit: function SignInToWebsiteUX_uninit() {
+-    /*
+-     * As above:
+-     * bug 793906 - temporarily disabling desktop UI so we can
+-     * focus on b2g without worrying about desktop as well
+-     *
++    log("AOK 1 SignInToWebsite.jsm SignInToWebsiteUX.uninit");
+     Services.obs.removeObserver(this, "identity-request");
+     Services.obs.removeObserver(this, "identity-auth");
+     Services.obs.removeObserver(this, "identity-auth-complete");
+     Services.obs.removeObserver(this, "identity-login-state-changed");
+-     */
++
+   },
+ 
+   observe: function SignInToWebsiteUX_observe(aSubject, aTopic, aData) {
+     log("observe: received", aTopic, "with", aData, "for", aSubject);
+     let options = null;
+     if (aSubject) {
+       options = aSubject.wrappedJSObject;
+     }
+diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
+--- a/dom/identity/DOMIdentity.jsm
++++ b/dom/identity/DOMIdentity.jsm
+@@ -2,171 +2,146 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ "use strict";
+ 
+ const {classes: Cc, interfaces: Ci, utils: Cu} = Components;
+ 
+ // This is the parent process corresponding to nsDOMIdentity.
+-this.EXPORTED_SYMBOLS = ["DOMIdentity"];
++let EXPORTED_SYMBOLS = ["DOMIdentity"];
+ 
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ 
+-XPCOMUtils.defineLazyModuleGetter(this, "objectCopy",
+-                                  "resource://gre/modules/identity/IdentityUtils.jsm");
+-
++// TODO put ifdef back in for MinimalIdentity.jsm
+ XPCOMUtils.defineLazyModuleGetter(this, "IdentityService",
+-#ifdef MOZ_B2G_VERSION
+-                                  "resource://gre/modules/identity/MinimalIdentity.jsm");
+-#else
+                                   "resource://gre/modules/identity/Identity.jsm");
+-#endif
+ 
+ XPCOMUtils.defineLazyModuleGetter(this,
+                                   "Logger",
+                                   "resource://gre/modules/identity/LogUtils.jsm");
+ 
+-XPCOMUtils.defineLazyServiceGetter(this, "ppmm",
+-                                   "@mozilla.org/parentprocessmessagemanager;1",
+-                                   "nsIMessageListenerManager");
+-
+ function log(...aMessageArgs) {
+   Logger.log.apply(Logger, ["DOMIdentity"].concat(aMessageArgs));
+ }
+ 
+-function IDDOMMessage(aOptions) {
+-  objectCopy(aOptions, this);
++function IDDOMMessage(aID) {
++  this.id = aID;
+ }
+ 
+ function IDPProvisioningContext(aID, aOrigin, aTargetMM) {
+   this._id = aID;
+   this._origin = aOrigin;
+   this._mm = aTargetMM;
+ }
+ 
+ IDPProvisioningContext.prototype = {
+   get id() this._id,
+   get origin() this._origin,
+ 
+   doBeginProvisioningCallback: function IDPPC_doBeginProvCB(aID, aCertDuration) {
+-    let message = new IDDOMMessage({id: this.id});
++    let message = new IDDOMMessage(this.id);
+     message.identity = aID;
+     message.certDuration = aCertDuration;
+     this._mm.sendAsyncMessage("Identity:IDP:CallBeginProvisioningCallback",
+                               message);
+   },
+ 
+   doGenKeyPairCallback: function IDPPC_doGenKeyPairCallback(aPublicKey) {
+     log("doGenKeyPairCallback");
+-    let message = new IDDOMMessage({id: this.id});
++    let message = new IDDOMMessage(this.id);
+     message.publicKey = aPublicKey;
+     this._mm.sendAsyncMessage("Identity:IDP:CallGenKeyPairCallback", message);
+   },
+ 
+   doError: function(msg) {
+     log("Provisioning ERROR: " + msg);
+-  }
++  },
+ };
+ 
+ function IDPAuthenticationContext(aID, aOrigin, aTargetMM) {
+   this._id = aID;
+   this._origin = aOrigin;
+   this._mm = aTargetMM;
+ }
+ 
+ IDPAuthenticationContext.prototype = {
+   get id() this._id,
+   get origin() this._origin,
+ 
+   doBeginAuthenticationCallback: function IDPAC_doBeginAuthCB(aIdentity) {
+-    let message = new IDDOMMessage({id: this.id});
++    let message = new IDDOMMessage(this.id);
+     message.identity = aIdentity;
+     this._mm.sendAsyncMessage("Identity:IDP:CallBeginAuthenticationCallback",
+                               message);
+   },
+ 
+   doError: function IDPAC_doError(msg) {
+     log("Authentication ERROR: " + msg);
+-  }
++  },
+ };
+ 
+-function RPWatchContext(aOptions, aTargetMM) {
+-  objectCopy(aOptions, this);
+-
+-  // id and origin are required
+-  if (! (this.id && this.origin)) {
+-    throw new Error("id and origin are required for RP watch context");
+-  }
+-
+-  // default for no loggedInUser is undefined, not null
+-  this.loggedInUser = aOptions.loggedInUser;
+-
+-  // Maybe internal
+-  this._internal = aOptions._internal;
+-
++function RPWatchContext(aID, aOrigin, aLoggedInEmail, aTargetMM) {
++  this._id = aID;
++  this._origin = aOrigin;
++  this._loggedInEmail = aLoggedInEmail;
+   this._mm = aTargetMM;
+ }
+ 
+ RPWatchContext.prototype = {
+-  doLogin: function RPWatchContext_onlogin(aAssertion, aMaybeInternalParams) {
++  get id() this._id,
++  get origin() this._origin,
++  get loggedInEmail() this._loggedInEmail,
++
++  doLogin: function RPWatchContext_onlogin(aAssertion) {
+     log("doLogin: " + this.id);
+-    let message = new IDDOMMessage({id: this.id, assertion: aAssertion});
+-    if (aMaybeInternalParams) {
+-      message._internalParams = aMaybeInternalParams;
+-    }
++    let message = new IDDOMMessage(this.id);
++    message.assertion = aAssertion;
+     this._mm.sendAsyncMessage("Identity:RP:Watch:OnLogin", message);
+   },
+ 
+   doLogout: function RPWatchContext_onlogout() {
+-    log("doLogout: " + this.id);
+-    let message = new IDDOMMessage({id: this.id});
++    log("doLogout :" + this.id);
++    let message = new IDDOMMessage(this.id);
+     this._mm.sendAsyncMessage("Identity:RP:Watch:OnLogout", message);
+   },
+ 
+   doReady: function RPWatchContext_onready() {
+     log("doReady: " + this.id);
+-    let message = new IDDOMMessage({id: this.id});
++    let message = new IDDOMMessage(this.id);
+     this._mm.sendAsyncMessage("Identity:RP:Watch:OnReady", message);
+   },
+ 
+-  doCancel: function RPWatchContext_oncancel() {
+-    log("doCancel: " + this.id);
+-    let message = new IDDOMMessage({id: this.id});
+-    this._mm.sendAsyncMessage("Identity:RP:Watch:OnCancel", message);
+-  },
+-
+   doError: function RPWatchContext_onerror(aMessage) {
+     log("doError: " + aMessage);
+   }
+ };
+ 
+-this.DOMIdentity = {
++let DOMIdentity = {
+   // nsIMessageListener
+   receiveMessage: function DOMIdentity_receiveMessage(aMessage) {
+     let msg = aMessage.json;
+ 
+     // Target is the frame message manager that called us and is
+     // used to send replies back to the proper window.
+-    let targetMM = aMessage.target;
++    let targetMM = aMessage.target
++                           .QueryInterface(Ci.nsIFrameLoaderOwner)
++                           .frameLoader.messageManager;
+ 
+     switch (aMessage.name) {
+       // RP
+       case "Identity:RP:Watch":
+         this._watch(msg, targetMM);
+         break;
+-      case "Identity:RP:Unwatch":
+-        this._unwatch(msg, targetMM);
+-        break;
+       case "Identity:RP:Request":
+-        this._request(msg, targetMM);
++        this._request(msg);
+         break;
+       case "Identity:RP:Logout":
+-        this._logout(msg, targetMM);
++        this._logout(msg);
+         break;
+       // IDP
+       case "Identity:IDP:BeginProvisioning":
+         this._beginProvisioning(msg, targetMM);
+         break;
+       case "Identity:IDP:GenKeyPair":
+         this._genKeyPair(msg);
+         break;
+@@ -180,97 +155,85 @@ this.DOMIdentity = {
+         this._beginAuthentication(msg, targetMM);
+         break;
+       case "Identity:IDP:CompleteAuthentication":
+         this._completeAuthentication(msg);
+         break;
+       case "Identity:IDP:AuthenticationFailure":
+         this._authenticationFailure(msg);
+         break;
+-      case "child-process-shutdown":
+-        // we receive child-process-shutdown if the appliction crashes,
+-        // including if it is crashed by the OS (killed for out-of-memory,
+-        // for example)
+-        this._childProcessShutdown(targetMM);
+-        break;
+     }
+   },
+ 
+   // nsIObserver
+   observe: function DOMIdentity_observe(aSubject, aTopic, aData) {
+     switch (aTopic) {
++      case "domwindowopened":
++      case "domwindowclosed":
++        let win = aSubject.QueryInterface(Ci.nsIInterfaceRequestor)
++                          .getInterface(Ci.nsIDOMWindow);
++        this._configureMessages(win, aTopic == "domwindowopened");
++        break;
++
+       case "xpcom-shutdown":
+-        this._unsubscribeListeners();
++        Services.ww.unregisterNotification(this);
+         Services.obs.removeObserver(this, "xpcom-shutdown");
+-        Services.ww.unregisterNotification(this);
+         break;
+     }
+   },
+ 
+   messages: ["Identity:RP:Watch", "Identity:RP:Request", "Identity:RP:Logout",
+              "Identity:IDP:BeginProvisioning", "Identity:IDP:ProvisioningFailure",
+              "Identity:IDP:RegisterCertificate", "Identity:IDP:GenKeyPair",
+              "Identity:IDP:BeginAuthentication",
+              "Identity:IDP:CompleteAuthentication",
+-             "Identity:IDP:AuthenticationFailure",
+-             "Identity:RP:Unwatch",
+-             "child-process-shutdown"],
++             "Identity:IDP:AuthenticationFailure"],
+ 
+   // Private.
+   _init: function DOMIdentity__init() {
+     Services.ww.registerNotification(this);
+     Services.obs.addObserver(this, "xpcom-shutdown", false);
+-    this._subscribeListeners();
+   },
+ 
+-  _subscribeListeners: function DOMIdentity__subscribeListeners() {
+-    if (!ppmm) return;
++  _configureMessages: function DOMIdentity__configureMessages(aWindow, aRegister) {
++    if (!aWindow.messageManager)
++      return;
++
++    let func = aWindow.messageManager[aRegister ? "addMessageListener"
++                                                : "removeMessageListener"];
++
+     for (let message of this.messages) {
+-      ppmm.addMessageListener(message, this);
++      func.call(aWindow.messageManager, message, this);
+     }
+   },
+ 
+-  _unsubscribeListeners: function DOMIdentity__unsubscribeListeners() {
+-    for (let message of this.messages) {
+-      ppmm.removeMessageListener(message, this);
+-    }
+-    ppmm = null;
+-  },
+-
+   _resetFrameState: function(aContext) {
+     log("_resetFrameState: ", aContext.id);
+     if (!aContext._mm) {
+       throw new Error("ERROR: Trying to reset an invalid context");
+     }
+-    let message = new IDDOMMessage({id: aContext.id});
++    let message = new IDDOMMessage(aContext.id);
+     aContext._mm.sendAsyncMessage("Identity:ResetState", message);
+   },
+ 
+   _watch: function DOMIdentity__watch(message, targetMM) {
+     log("DOMIdentity__watch: " + message.id);
+     // Pass an object with the watch members to Identity.jsm so it can call the
+     // callbacks.
+-    let context = new RPWatchContext(message, targetMM);
++    let context = new RPWatchContext(message.id, message.origin,
++                                     message.loggedInEmail, targetMM);
+     IdentityService.RP.watch(context);
+   },
+ 
+-  _unwatch: function DOMIdentity_unwatch(message, targetMM) {
+-    IdentityService.RP.unwatch(message.id, targetMM);
+-  },
+-
+   _request: function DOMIdentity__request(message) {
+     IdentityService.RP.request(message.id, message);
+   },
+ 
+   _logout: function DOMIdentity__logout(message) {
+-    IdentityService.RP.logout(message.id, message.origin, message);
+-  },
+-
+-  _childProcessShutdown: function DOMIdentity__childProcessShutdown(targetMM) {
+-    IdentityService.RP.childProcessShutdown(targetMM);
++    IdentityService.RP.logout(message.id, message.origin);
+   },
+ 
+   _beginProvisioning: function DOMIdentity__beginProvisioning(message, targetMM) {
+     let context = new IDPProvisioningContext(message.id, message.origin,
+                                              targetMM);
+     IdentityService.IDP.beginProvisioning(context);
+   },
+ 
+@@ -293,12 +256,12 @@ this.DOMIdentity = {
+   },
+ 
+   _completeAuthentication: function DOMIdentity__completeAuthentication(message) {
+     IdentityService.IDP.completeAuthentication(message.id);
+   },
+ 
+   _authenticationFailure: function DOMIdentity__authenticationFailure(message) {
+     IdentityService.IDP.cancelAuthentication(message.id);
+-  }
++  },
+ };
+ 
+ // Object is initialized by nsIDService.js
+diff --git a/dom/identity/Identity.manifest b/dom/identity/Identity.manifest
+--- a/dom/identity/Identity.manifest
++++ b/dom/identity/Identity.manifest
+@@ -1,9 +1,9 @@
+ # nsDOMIdentity.js
+-component {210853d9-2c97-4669-9761-b1ab9cbf57ef} nsDOMIdentity.js
+-contract @mozilla.org/dom/identity;1 {210853d9-2c97-4669-9761-b1ab9cbf57ef}
+-category JavaScript-navigator-property mozId @mozilla.org/dom/identity;1
++component {8bcac6a3-56a4-43a4-a44c-cdf42763002f} nsDOMIdentity.js
++contract @mozilla.org/dom/identity;1 {8bcac6a3-56a4-43a4-a44c-cdf42763002f}
++category JavaScript-navigator-property id @mozilla.org/dom/identity;1
+ 
+ # nsIDService.js (initialization on startup)
+-component {4e0a0e98-b1d3-4745-a1eb-f815199dd06b} nsIDService.js
+-contract @mozilla.org/dom/identity/service;1 {4e0a0e98-b1d3-4745-a1eb-f815199dd06b}
++component {baa581e5-8e72-406c-8c9f-dcd4b23a6f82} nsIDService.js
++contract @mozilla.org/dom/identity/service;1 {baa581e5-8e72-406c-8c9f-dcd4b23a6f82}
+ category app-startup IDService @mozilla.org/dom/identity/service;1
+diff --git a/dom/identity/moz.build b/dom/identity/moz.build
+--- a/dom/identity/moz.build
++++ b/dom/identity/moz.build
+@@ -3,16 +3,18 @@
+ # This Source Code Form is subject to the terms of the Mozilla Public
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+ TEST_DIRS += ['tests']
+ 
+ EXTRA_COMPONENTS += [
+     'Identity.manifest',
+-    'nsDOMIdentity.js',
+     'nsIDService.js',
+ ]
+ 
++EXTRA_PP_COMPONENTS += [
++     'nsDOMIdentity.js',
++]
++
+ EXTRA_PP_JS_MODULES += [
+     'DOMIdentity.jsm',
+-]
+-
++]
+\ No newline at end of file
+diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
+--- a/dom/identity/nsDOMIdentity.js
++++ b/dom/identity/nsDOMIdentity.js
+@@ -14,16 +14,18 @@ const PREF_ENABLED = "dom.identity.enabl
+ // events.  Synthetic marionette events are ok.
+ const PREF_SYNTHETIC_EVENTS_OK = "dom.identity.syntheticEventsOk";
+ 
+ // Maximum length of a string that will go through IPC
+ const MAX_STRING_LENGTH = 2048;
+ // Maximum number of times navigator.id.request can be called for a document
+ const MAX_RP_CALLS = 100;
+ 
++dump("AOK 1 nsDOMIdentity.js\n");
++
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ 
+ XPCOMUtils.defineLazyModuleGetter(this, "checkDeprecated",
+                                   "resource://gre/modules/identity/IdentityUtils.jsm");
+ XPCOMUtils.defineLazyModuleGetter(this, "checkRenamed",
+                                   "resource://gre/modules/identity/IdentityUtils.jsm");
+ XPCOMUtils.defineLazyModuleGetter(this, "objectCopy",
+@@ -70,16 +72,17 @@ nsDOMIdentity.prototype = {
+     return true;
+   },
+ 
+   /**
+    * Relying Party (RP) APIs
+    */
+ 
+   watch: function nsDOMIdentity_watch(aOptions) {
++    dump("AOK 1 nsDOMIdentity.js watch called\n");
+     if (this._rpWatcher) {
+       throw new Error("navigator.id.watch was already called");
+     }
+ 
+     if (!aOptions || typeof(aOptions) !== "object") {
+       throw new Error("options argument to watch is required");
+     }
+ 
+@@ -341,26 +344,30 @@ nsDOMIdentity.prototype = {
+     }
+ 
+     this._beginAuthenticationCallback = aCallback;
+     this._identityInternal._mm.sendAsyncMessage("Identity:IDP:BeginAuthentication",
+                                                 this.DOMIdentityMessage());
+   },
+ 
+   completeAuthentication: function nsDOMIdentity_completeAuthentication() {
++  try {
+     if (this._authenticationEnded) {
+       throw new Error("Authentication already ended");
+     }
+     if (!this._beginAuthenticationCallback) {
+       throw new Error("navigator.id.completeAuthentication called outside of authentication");
+     }
+     this._authenticationEnded = true;
+ 
+     this._identityInternal._mm.sendAsyncMessage("Identity:IDP:CompleteAuthentication",
+                                                 this.DOMIdentityMessage());
++    } catch (ex) {
++      dump(ex + "\n");
++    }
+   },
+ 
+   raiseAuthenticationFailure: function nsDOMIdentity_raiseAuthenticationFailure(aReason) {
+     if (this._authenticationEnded) {
+       throw new Error("Authentication already ended");
+     }
+     if (!aReason || typeof(aReason) != "string") {
+       throw new Error("raiseProvisioningFailure reason is required");
+@@ -590,42 +597,48 @@ nsDOMIdentityInternal.prototype = {
+       // Avoid errors when removing more than once.
+     }
+ 
+     this._mm = null;
+   },
+ 
+   // nsIDOMGlobalPropertyInitializer
+   init: function nsDOMIdentityInternal_init(aWindow) {
++    dump("AOK 1 nsDOMIdentity.js init ");
+     if (Services.prefs.getPrefType(PREF_ENABLED) != Ci.nsIPrefBranch.PREF_BOOL
+         || !Services.prefs.getBoolPref(PREF_ENABLED)) {
+       return null;
+     }
+ 
+     this._debug =
+       Services.prefs.getPrefType(PREF_DEBUG) == Ci.nsIPrefBranch.PREF_BOOL
+       && Services.prefs.getBoolPref(PREF_DEBUG);
+ 
+     let util = aWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+                       .getInterface(Ci.nsIDOMWindowUtils);
+ 
++#ifdef MOZ_B2G
+     // To avoid cross-process windowId collisions, use a uuid as an
+     // almost certainly unique identifier.
+     //
+     // XXX Bug 869182 - use a combination of child process id and
+     // innerwindow id to construct the unique id.
+     this._id = uuidgen.generateUUID().toString();
+     this._innerWindowID = util.currentInnerWindowID;
++#else
++    this._id = util.outerWindowID;
++#endif
+ 
+     // nsDOMIdentity needs to know our _id, so this goes after
+     // its creation.
++  try {
+     this._identity = new nsDOMIdentity(this);
+     this._identity._init(aWindow);
+ 
+-    this._log("init was called from " + aWindow.document.location);
++   //this._log("init was called from " + aWindow.document.location);
+ 
+     this._mm = cpmm;
+ 
+     // Setup listeners for messages from parent process.
+     this._messages = [
+       "Identity:ResetState",
+       "Identity:RP:Watch:OnLogin",
+       "Identity:RP:Watch:OnLogout",
+@@ -636,17 +649,19 @@ nsDOMIdentityInternal.prototype = {
+       "Identity:IDP:CallBeginAuthenticationCallback"
+     ];
+     this._messages.forEach(function(msgName) {
+       this._mm.addMessageListener(msgName, this);
+     }, this);
+ 
+     // Setup observers so we can remove message listeners.
+     Services.obs.addObserver(this, "inner-window-destroyed", false);
+-
++} catch (ex) {
++  dump(ex + "\n");
++}
+     return this._identity;
+   },
+ 
+   // Private.
+   _log: function nsDOMIdentityInternal__log(msg) {
+     if (!this._debug) {
+       return;
+     }
+diff --git a/dom/identity/nsIDService.js b/dom/identity/nsIDService.js
+--- a/dom/identity/nsIDService.js
++++ b/dom/identity/nsIDService.js
+@@ -3,22 +3,21 @@
+  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ "use strict";
+ 
+ const {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+ 
+-this.IDService = function IDService() {
++function IDService() {
+   this.wrappedJSObject = this;
+-};
+-
+-this.IDService.prototype = {
+-  classID: Components.ID("{4e0a0e98-b1d3-4745-a1eb-f815199dd06b}"),
++}
++IDService.prototype = {
++  classID: Components.ID("{baa581e5-8e72-406c-8c9f-dcd4b23a6f82}"),
+ 
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver,
+                                          Ci.nsISupportsWeakReference]),
+ 
+   observe: function observe(subject, topic, data) {
+     switch (topic) {
+       case "app-startup":
+         Services.obs.addObserver(this, "final-ui-startup", true);
+@@ -27,9 +26,9 @@ this.IDService.prototype = {
+         // Startup DOMIdentity.jsm
+         Cu.import("resource://gre/modules/DOMIdentity.jsm");
+         DOMIdentity._init();
+         break;
+     }
+   }
+ };
+ 
+-this.NSGetFactory = XPCOMUtils.generateNSGetFactory([IDService]);
++const NSGetFactory = XPCOMUtils.generateNSGetFactory([IDService]);
+diff --git a/dom/identity/tests/moz.build b/dom/identity/tests/moz.build
+--- a/dom/identity/tests/moz.build
++++ b/dom/identity/tests/moz.build
+@@ -1,6 +1,13 @@
+ # -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+ # vim: set filetype=python:
+ # This Source Code Form is subject to the terms of the Mozilla Public
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
++# TODO port Makefile.in contents below
++# MOCHITEST_FILES = \
++#  head_identity.js \
++#  test_identity_idp_auth_basics.html \
++#  test_identity_idp_prov_basics.html \
++#  test_identity_rp_basics.html \
++#  $(NULL)
+diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm
+--- a/toolkit/identity/Identity.jsm
++++ b/toolkit/identity/Identity.jsm
+@@ -25,16 +25,17 @@ XPCOMUtils.defineLazyModuleGetter(this,
+                                   "resource://gre/modules/identity/jwcrypto.jsm");
+ 
+ function log(...aMessageArgs) {
+   Logger.log.apply(Logger, ["core"].concat(aMessageArgs));
+ }
+ function reportError(...aMessageArgs) {
+   Logger.reportError.apply(Logger, ["core"].concat(aMessageArgs));
+ }
++log("AOK 1 Identity.jsm");
+ 
+ function IDService() {
+   Services.obs.addObserver(this, "quit-application-granted", false);
+   Services.obs.addObserver(this, "identity-auth-complete", false);
+ 
+   this._store = IdentityStore;
+   this.RP = RelyingParty;
+   this.IDP = IdentityProvider;
+@@ -297,9 +298,10 @@ IDService.prototype = {
+       log("ERROR: _fetchWellKnownFile:", err);
+       return aCallback("Error");
+     };
+     req.send(null);
+   },
+ 
+ };
+ 
++log("AOK Identity.jsm new IDService()");
+ this.IdentityService = new IDService();
+diff --git a/toolkit/identity/IdentityProvider.jsm b/toolkit/identity/IdentityProvider.jsm
+--- a/toolkit/identity/IdentityProvider.jsm
++++ b/toolkit/identity/IdentityProvider.jsm
+@@ -82,18 +82,18 @@ IdentityProviderService.prototype = {
+     }
+   },
+ 
+   shutdown: function RP_shutdown() {
+     this.reset();
+ 
+     if (this._sandboxConfigured) {
+       // Tear down message manager listening on the hidden window
+-      Cu.import("resource://gre/modules/DOMIdentity.jsm");
+-      DOMIdentity._configureMessages(Services.appShell.hiddenDOMWindow, false);
++      //Cu.import("resource://gre/modules/DOMIdentity.jsm");
++      //DOMIdentity._configureMessages(Services.appShell.hiddenDOMWindow, false);
+       this._sandboxConfigured = false;
+     }
+ 
+     Services.obs.removeObserver(this, "quit-application-granted");
+   },
+ 
+   get securityLevel() {
+     return 1;
+@@ -126,17 +126,17 @@ IdentityProviderService.prototype = {
+ 
+     // If aProvId is not null, then we already have a flow
+     // with a sandbox.  Otherwise, get a sandbox and create a
+     // new provision flow.
+ 
+     if (aProvId) {
+       // Re-use an existing sandbox
+       log("_provisionIdentity: re-using sandbox in provisioning flow with id:", aProvId);
+-      this._provisionFlows[aProvId].provisioningSandbox.reload();
++      this._provisionFlows[aProvId].provisioningSandbox.reload(aCallback);
+ 
+     } else {
+       this._createProvisioningSandbox(url, function createdSandbox(aSandbox) {
+         // create a provisioning flow, using the sandbox id, and
+         // stash callback associated with this provisioning workflow.
+ 
+         let provId = aSandbox.id;
+         this._provisionFlows[provId] = {
+@@ -439,18 +439,18 @@ IdentityProviderService.prototype = {
+    * Load the provisioning URL in a hidden frame to start the provisioning
+    * process.
+    */
+   _createProvisioningSandbox: function _createProvisioningSandbox(aURL, aCallback) {
+     log("_createProvisioningSandbox:", aURL);
+ 
+     if (!this._sandboxConfigured) {
+       // Configure message manager listening on the hidden window
+-      Cu.import("resource://gre/modules/DOMIdentity.jsm");
+-      DOMIdentity._configureMessages(Services.appShell.hiddenDOMWindow, true);
++      //Cu.import("resource://gre/modules/DOMIdentity.jsm");
++      //DOMIdentity._configureMessages(Services.appShell.hiddenDOMWindow, true);
+       this._sandboxConfigured = true;
+     }
+ 
+     new Sandbox(aURL, aCallback);
+   },
+ 
+   /**
+    * Load the authentication UI to start the authentication process.
+diff --git a/toolkit/identity/tests/chrome/moz.build b/toolkit/identity/tests/chrome/moz.build
+--- a/toolkit/identity/tests/chrome/moz.build
++++ b/toolkit/identity/tests/chrome/moz.build
+@@ -1,8 +1,19 @@
+ # -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+ # vim: set filetype=python:
+ # This Source Code Form is subject to the terms of the Mozilla Public
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+ MOCHITEST_CHROME_MANIFESTS += ['chrome.ini']
+ 
++# TODO MOCHITEST_CHROME_FILES = \
++# sandbox_content.html \
++# sandbox_content_alert.html \
++# sandbox_content_framed.html \
++# sandbox_content_perms.html \
++# sandbox_content_popup.html \
++# sandbox_content_redirect.html \
++# sandbox_content_redirect.html^headers^ \
++# sandbox_content.sjs \
++# test_sandbox.xul \
++# $(NULL)
+diff --git a/toolkit/identity/tests/mochitest/moz.build b/toolkit/identity/tests/mochitest/moz.build
+--- a/toolkit/identity/tests/mochitest/moz.build
++++ b/toolkit/identity/tests/mochitest/moz.build
+@@ -1,6 +1,12 @@
+ # -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+ # vim: set filetype=python:
+ # This Source Code Form is subject to the terms of the Mozilla Public
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
++# MOCHITEST_FILES = \
++# head_identity.js \
++# test_authentication.html \
++# test_provisioning.html \
++# test_relying_party.html \
++# $(NULL)
