@@ -1,0 +1,310 @@
+# HG changeset patch
+# Parent eecc5a95ccd3cd42f11db0f8e797b7d9cdff906e
+
+diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
+--- a/dom/identity/DOMIdentity.jsm
++++ b/dom/identity/DOMIdentity.jsm
+@@ -216,16 +216,31 @@ this.DOMIdentity = {
+ 
+   // Private.
+   _init: function DOMIdentity__init() {
+     Services.ww.registerNotification(this);
+     Services.obs.addObserver(this, "xpcom-shutdown", false);
+     this._subscribeListeners();
+   },
+ 
++  _configureMessages: function DOMIdentity__configureMessages(aWindow, aRegister) {
++    if (!aWindow.messageManager) {
++      dump("No aWindow.messageManager... bailing\n");
++      return;
++    }
++
++
++    let func = aWindow.messageManager[aRegister ? "addMessageListener"
++                                                : "removeMessageListener"];
++
++    for (let message of this.messages) {
++      func.call(aWindow.messageManager, message, this);
++    }
++  },
++
+   _subscribeListeners: function DOMIdentity__subscribeListeners() {
+     if (!ppmm) return;
+     for (let message of this.messages) {
+       ppmm.addMessageListener(message, this);
+     }
+   },
+ 
+   _unsubscribeListeners: function DOMIdentity__unsubscribeListeners() {
+diff --git a/dom/identity/Identity.manifest b/dom/identity/Identity.manifest
+--- a/dom/identity/Identity.manifest
++++ b/dom/identity/Identity.manifest
+@@ -1,9 +1,14 @@
+-# nsDOMIdentity.js
++# nsDOMIdentity.js Desktop
++component {8bcac6a3-56a4-43a4-a44c-cdf42763002f} nsDOMIdentity.js
++contract @mozilla.org/dom/identity;1 {8bcac6a3-56a4-43a4-a44c-cdf42763002f}
++category JavaScript-navigator-property id @mozilla.org/dom/identity;1
++
++# nsDOMIdentity.js B2G
+ component {210853d9-2c97-4669-9761-b1ab9cbf57ef} nsDOMIdentity.js
+ contract @mozilla.org/dom/identity;1 {210853d9-2c97-4669-9761-b1ab9cbf57ef}
+ category JavaScript-navigator-property mozId @mozilla.org/dom/identity;1
+ 
+ # nsIDService.js (initialization on startup)
+ component {4e0a0e98-b1d3-4745-a1eb-f815199dd06b} nsIDService.js
+ contract @mozilla.org/dom/identity/service;1 {4e0a0e98-b1d3-4745-a1eb-f815199dd06b}
+ category app-startup IDService @mozilla.org/dom/identity/service;1
+diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
+--- a/dom/identity/nsDOMIdentity.js
++++ b/dom/identity/nsDOMIdentity.js
+@@ -14,16 +14,24 @@ const PREF_ENABLED = "dom.identity.enabl
+ // events.  Synthetic marionette events are ok.
+ const PREF_SYNTHETIC_EVENTS_OK = "dom.identity.syntheticEventsOk";
+ 
+ // Maximum length of a string that will go through IPC
+ const MAX_STRING_LENGTH = 2048;
+ // Maximum number of times navigator.id.request can be called for a document
+ const MAX_RP_CALLS = 100;
+ 
++// Put const here for different B2G versus Firefox
++  //# ifdef MOZ_B2G
++const COMPONENT_ID = "{210853d9-2c97-4669-9761-b1ab9cbf57ef}";
++ // # else
++//const COMPONENT_ID = "{8bcac6a3-56a4-43a4-a44c-cdf42763002f}";
++ // # endif
++
++
+ Cu.import("resource://gre/modules/Services.jsm");
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ 
+ XPCOMUtils.defineLazyModuleGetter(this, "checkDeprecated",
+                                   "resource://gre/modules/identity/IdentityUtils.jsm");
+ XPCOMUtils.defineLazyModuleGetter(this, "checkRenamed",
+                                   "resource://gre/modules/identity/IdentityUtils.jsm");
+ XPCOMUtils.defineLazyModuleGetter(this, "objectCopy",
+@@ -626,17 +634,16 @@ nsDOMIdentityInternal.prototype = {
+     this._id = util.outerWindowID;
+ #endif
+ 
+     // nsDOMIdentity needs to know our _id, so this goes after
+     // its creation.
+ try {
+     this._identity = new nsDOMIdentity(this);
+     this._identity._init(aWindow);
+-
+     this._mm = cpmm;
+ 
+     // Setup listeners for messages from parent process.
+     this._messages = [
+       "Identity:ResetState",
+       "Identity:RP:Watch:OnLogin",
+       "Identity:RP:Watch:OnLogout",
+       "Identity:RP:Watch:OnReady",
+@@ -661,24 +668,23 @@ try {
+   _log: function nsDOMIdentityInternal__log(msg) {
+     if (!this._debug) {
+       return;
+     }
+     dump("nsDOMIdentity (" + this._id + "): " + msg + "\n");
+   },
+ 
+   // Component setup.
+-  classID: Components.ID("{210853d9-2c97-4669-9761-b1ab9cbf57ef}"),
++  classID: Components.ID(COMPONENT_ID),
+ 
+   QueryInterface: XPCOMUtils.generateQI(
+     [Ci.nsIDOMGlobalPropertyInitializer, Ci.nsIMessageListener]
+   ),
+ 
+   classInfo: XPCOMUtils.generateCI({
+-    classID: Components.ID("{210853d9-2c97-4669-9761-b1ab9cbf57ef}"),
++    classID: Components.ID(COMPONENT_ID),
+     contractID: "@mozilla.org/dom/identity;1",
+     interfaces: [],
+     classDescription: "Identity DOM Implementation"
+   })
+-
+ };
+ 
+ this.NSGetFactory = XPCOMUtils.generateNSGetFactory([nsDOMIdentityInternal]);
+diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm
+--- a/toolkit/identity/Identity.jsm
++++ b/toolkit/identity/Identity.jsm
+@@ -154,32 +154,44 @@ IDService.prototype = {
+           rp.doError(err);
+           return;
+         }
+ 
+         // The idpParams tell us where to go to provision and authenticate
+         // the identity.
+         self.IDP._provisionIdentity(aIdentity, idpParams, provId, function gotID(err, aProvId) {
+ 
++
++          log("AOK aProvId");
++          log(aProvId);
++          log("AOK _provisionFlows");
++          log(self.IDP._provisionFlows);
++          log("AOK _provisionFlows[aProvId]");
++          log(self.IDP._provisionFlows[aProvId]);
++          log("AOK aRPId");
++          log(aRPId);
++
+           // Provision identity may have created a new provision flow
+           // for us.  To make it easier to relate provision flows with
+           // RP callers, we cross index the two here.
+           rp.provId = aProvId;
+           self.IDP._provisionFlows[aProvId].rpId = aRPId;
+ 
+           // At this point, we already have a cert.  If the user is also
+           // already authenticated with the IdP, then we can try again
+           // to generate an assertion and login.
+           if (err) {
+             // We are not authenticated.  If we have already tried to
+             // authenticate and failed, then this is a "hard fail" and
+             // we give up.  Otherwise we try to authenticate with the
+             // IdP.
+-
++            log("AOK error, not authenticated");
++            log(err);
+             if (self.IDP._provisionFlows[aProvId].didAuthentication) {
++              log("AOK didAuthentication, cleaning up");
+               self.IDP._cleanUpProvisionFlow(aProvId);
+               self.RP._cleanUpProvisionFlow(aRPId, aProvId);
+               log("ERROR: selectIdentity: authentication hard fail");
+               rp.doError("Authentication fail.");
+               return;
+             }
+             // Try to authenticate with the IdP.  Note that we do
+             // not clean up the provision flow here.  We will continue
+@@ -252,16 +264,18 @@ IDService.prototype = {
+    */
+   _fetchWellKnownFile: function _fetchWellKnownFile(aDomain, aCallback, aScheme='https') {
+     if (Services.prefs.getPrefType(PERSONA_FALLBACK) != Ci.nsIPrefBranch.PREF_STRING) {
+       return aCallback("Error: Bad persona fallback preference");
+     }
+     let personaBaseUrl = Services.prefs.getCharPref(PERSONA_FALLBACK);
+     let url = personaBaseUrl + '/wsapi/discovery?domain=' + aDomain;
+ 
++    log(url);
++
+     // this appears to be a more successful way to get at xmlhttprequest (which supposedly will close with a window
+     let req = Cc["@mozilla.org/xmlextras/xmlhttprequest;1"]
+                 .createInstance(Ci.nsIXMLHttpRequest);
+ 
+     // XXX bug 769865 gracefully handle being off-line
+     // XXX bug 769866 decide on how to handle redirects
+     req.open("GET", url, true);
+     req.responseType = "json";
+@@ -269,16 +283,19 @@ IDService.prototype = {
+     req.onload = function _fetchWellKnownFile_onload() {
+       if (req.status < 200 || req.status >= 400) {
+         log("_fetchWellKnownFile", url, ": server returned status:", req.status);
+         return aCallback("Error");
+       }
+       try {
+         let idpParams = req.response;
+ 
++        log("AOK callback ");
++        log(idpParams);
++
+         // Verify that the IdP returned a valid configuration
+         if (! (idpParams.provisioning &&
+             idpParams.authentication &&
+             idpParams['public-key'])) {
+           let errStr= "Invalid well-known file from: " + aDomain;
+           log("_fetchWellKnownFile:", errStr);
+           return aCallback(errStr);
+         }
+diff --git a/toolkit/identity/IdentityProvider.jsm b/toolkit/identity/IdentityProvider.jsm
+--- a/toolkit/identity/IdentityProvider.jsm
++++ b/toolkit/identity/IdentityProvider.jsm
+@@ -37,16 +37,17 @@ function IdentityProviderService() {
+                                     "resource://gre/modules/identity/IdentityStore.jsm",
+                                     "IdentityStore");
+ 
+   this.reset();
+ }
+ 
+ IdentityProviderService.prototype = {
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsISupports, Ci.nsIObserver]),
++  _sandboxConfigured: false,
+ 
+   observe: function observe(aSubject, aTopic, aData) {
+     switch (aTopic) {
+       case "quit-application-granted":
+         Services.obs.removeObserver(this, "quit-application-granted");
+         this.shutdown();
+         break;
+     }
+@@ -79,16 +80,22 @@ IdentityProviderService.prototype = {
+     if (typeof aErrBack === 'function') {
+       aErrBack(err);
+     }
+   },
+ 
+   shutdown: function RP_shutdown() {
+     this.reset();
+ 
++    if (this._sandboxConfigured) {
++      // Tear down message manager listening on the hidden window
++      Cu.import("resource://gre/modules/DOMIdentity.jsm");
++      DOMIdentity._configureMessages(Services.appShell.hiddenDOMWindow, false);
++      this._sandboxConfigured = false;
++    }
+ 
+     Services.obs.removeObserver(this, "quit-application-granted");
+   },
+ 
+   get securityLevel() {
+     return 1;
+   },
+ 
+@@ -430,16 +437,23 @@ IdentityProviderService.prototype = {
+ 
+   /**
+    * Load the provisioning URL in a hidden frame to start the provisioning
+    * process.
+    */
+   _createProvisioningSandbox: function _createProvisioningSandbox(aURL, aCallback) {
+     log("_createProvisioningSandbox:", aURL);
+ 
++    if (!this._sandboxConfigured) {
++      // Configure message manager listening on the hidden window
++      Cu.import("resource://gre/modules/DOMIdentity.jsm");
++      DOMIdentity._configureMessages(Services.appShell.hiddenDOMWindow, true);
++      this._sandboxConfigured = true;
++    }
++
+     new Sandbox(aURL, aCallback);
+   },
+ 
+   /**
+    * Load the authentication UI to start the authentication process.
+    */
+   _beginAuthenticationFlow: function _beginAuthenticationFlow(aProvId, aURL) {
+     log("_beginAuthenticationFlow:", aProvId, aURL);
+diff --git a/toolkit/identity/Sandbox.jsm b/toolkit/identity/Sandbox.jsm
+--- a/toolkit/identity/Sandbox.jsm
++++ b/toolkit/identity/Sandbox.jsm
+@@ -94,18 +94,19 @@ this.Sandbox.prototype = {
+ 
+     // Stop about:blank from being loaded.
+     docShell.stop(Ci.nsIWebNavigation.STOP_NETWORK);
+ 
+     // Disable some types of content
+     docShell.allowAuth = false;
+     docShell.allowPlugins = false;
+     docShell.allowImages = false;
+-    docShell.allowMedia = false;
+     docShell.allowWindowControl = false;
++    // TODO: disable media (bug 759964)
++    // docShell.allowMedia = false;
+ 
+     // Disable stylesheet loading since the document is not visible.
+     let markupDocViewer = docShell.contentViewer
+                                   .QueryInterface(Ci.nsIMarkupDocumentViewer);
+     markupDocViewer.authorStyleDisabled = true;
+ 
+     // Set instance properties.
+     this._frame = frame;
