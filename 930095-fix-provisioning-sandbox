@@ -1,10 +1,59 @@
 # HG changeset patch
 # Parent eecc5a95ccd3cd42f11db0f8e797b7d9cdff906e
 
+diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
+--- a/browser/modules/SignInToWebsite.jsm
++++ b/browser/modules/SignInToWebsite.jsm
+@@ -88,21 +88,22 @@ this.SignInToWebsiteUX = {
+     let options = {
+       identity: {
+         origin: aOptions.origin,
+       },
+     };
+     let secondaryActions = [];
+ 
+     // add some extra properties to the notification to store some identity-related state
+-    for (let opt in aOptions) {
+-      options.identity[opt] = aOptions[opt];
++    log("requestLogin: rpId: ", options.identity.rpId);
++    if (IdentityService.RP["_rpFlows"][options.identity.rpId]) {
++      var rpOptions = IdentityService.RP["_rpFlows"][options.identity.rpId];
++      for (let opt in aOptions) {
++      rpOptions[opt] = aOptions[opt];
+     }
+-    log("requestLogin: rpId: ", options.identity.rpId);
+-
+     chromeWin.PopupNotifications.show(browserEl, "identity-request", message,
+                                       "identity-notification-icon", mainAction,
+                                       [], options);
+   },
+ 
+   /**
+    * Get the list of possible identities to login to the given origin.
+    */
+@@ -110,17 +111,17 @@ this.SignInToWebsiteUX = {
+     return IdentityService.RP.getIdentitiesForSite(aOrigin);
+   },
+ 
+   /**
+    * User chose a new or existing identity from the doorhanger after a request() call
+    */
+   selectIdentity: function SignInToWebsiteUX_selectIdentity(aRpId, aIdentity) {
+     log("selectIdentity: rpId: ", aRpId, " identity: ", aIdentity);
+-    IdentityService.selectIdentity(aRpId, aIdentity);
++    IdentityService.selectIdentity(aRpId, aIdentity, IdentityService.RP["_rpFlows"][aRpId]);
+   },
+ 
+   // Private
+ 
+   /**
+    * Return the chrome window and <browser> for the given outer window ID.
+    */
+   _getUIForWindowID: function(aWindowID) {
 diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
 --- a/dom/identity/DOMIdentity.jsm
 +++ b/dom/identity/DOMIdentity.jsm
-@@ -216,16 +216,31 @@ this.DOMIdentity = {
+@@ -216,16 +216,30 @@ this.DOMIdentity = {
  
    // Private.
    _init: function DOMIdentity__init() {
@@ -15,10 +64,9 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
  
 +  _configureMessages: function DOMIdentity__configureMessages(aWindow, aRegister) {
 +    if (!aWindow.messageManager) {
-+      dump("No aWindow.messageManager... bailing\n");
++      log("No aWindow.messageManager... bailing");
 +      return;
 +    }
-+
 +
 +    let func = aWindow.messageManager[aRegister ? "addMessageListener"
 +                                                : "removeMessageListener"];
@@ -36,140 +84,50 @@ diff --git a/dom/identity/DOMIdentity.jsm b/dom/identity/DOMIdentity.jsm
    },
  
    _unsubscribeListeners: function DOMIdentity__unsubscribeListeners() {
-diff --git a/dom/identity/Identity.manifest b/dom/identity/Identity.manifest
---- a/dom/identity/Identity.manifest
-+++ b/dom/identity/Identity.manifest
-@@ -1,9 +1,14 @@
--# nsDOMIdentity.js
-+# nsDOMIdentity.js Desktop
-+component {8bcac6a3-56a4-43a4-a44c-cdf42763002f} nsDOMIdentity.js
-+contract @mozilla.org/dom/identity;1 {8bcac6a3-56a4-43a4-a44c-cdf42763002f}
-+category JavaScript-navigator-property id @mozilla.org/dom/identity;1
-+
-+# nsDOMIdentity.js B2G
- component {210853d9-2c97-4669-9761-b1ab9cbf57ef} nsDOMIdentity.js
- contract @mozilla.org/dom/identity;1 {210853d9-2c97-4669-9761-b1ab9cbf57ef}
- category JavaScript-navigator-property mozId @mozilla.org/dom/identity;1
- 
- # nsIDService.js (initialization on startup)
- component {4e0a0e98-b1d3-4745-a1eb-f815199dd06b} nsIDService.js
- contract @mozilla.org/dom/identity/service;1 {4e0a0e98-b1d3-4745-a1eb-f815199dd06b}
- category app-startup IDService @mozilla.org/dom/identity/service;1
-diff --git a/dom/identity/nsDOMIdentity.js b/dom/identity/nsDOMIdentity.js
---- a/dom/identity/nsDOMIdentity.js
-+++ b/dom/identity/nsDOMIdentity.js
-@@ -14,16 +14,24 @@ const PREF_ENABLED = "dom.identity.enabl
- // events.  Synthetic marionette events are ok.
- const PREF_SYNTHETIC_EVENTS_OK = "dom.identity.syntheticEventsOk";
- 
- // Maximum length of a string that will go through IPC
- const MAX_STRING_LENGTH = 2048;
- // Maximum number of times navigator.id.request can be called for a document
- const MAX_RP_CALLS = 100;
- 
-+// Put const here for different B2G versus Firefox
-+  //# ifdef MOZ_B2G
-+const COMPONENT_ID = "{210853d9-2c97-4669-9761-b1ab9cbf57ef}";
-+ // # else
-+//const COMPONENT_ID = "{8bcac6a3-56a4-43a4-a44c-cdf42763002f}";
-+ // # endif
-+
-+
- Cu.import("resource://gre/modules/Services.jsm");
- Cu.import("resource://gre/modules/XPCOMUtils.jsm");
- 
- XPCOMUtils.defineLazyModuleGetter(this, "checkDeprecated",
-                                   "resource://gre/modules/identity/IdentityUtils.jsm");
- XPCOMUtils.defineLazyModuleGetter(this, "checkRenamed",
-                                   "resource://gre/modules/identity/IdentityUtils.jsm");
- XPCOMUtils.defineLazyModuleGetter(this, "objectCopy",
-@@ -626,17 +634,16 @@ nsDOMIdentityInternal.prototype = {
-     this._id = util.outerWindowID;
- #endif
- 
-     // nsDOMIdentity needs to know our _id, so this goes after
-     // its creation.
- try {
-     this._identity = new nsDOMIdentity(this);
-     this._identity._init(aWindow);
--
-     this._mm = cpmm;
- 
-     // Setup listeners for messages from parent process.
-     this._messages = [
-       "Identity:ResetState",
-       "Identity:RP:Watch:OnLogin",
-       "Identity:RP:Watch:OnLogout",
-       "Identity:RP:Watch:OnReady",
-@@ -661,24 +668,23 @@ try {
-   _log: function nsDOMIdentityInternal__log(msg) {
-     if (!this._debug) {
-       return;
-     }
-     dump("nsDOMIdentity (" + this._id + "): " + msg + "\n");
-   },
- 
-   // Component setup.
--  classID: Components.ID("{210853d9-2c97-4669-9761-b1ab9cbf57ef}"),
-+  classID: Components.ID(COMPONENT_ID),
- 
-   QueryInterface: XPCOMUtils.generateQI(
-     [Ci.nsIDOMGlobalPropertyInitializer, Ci.nsIMessageListener]
-   ),
- 
-   classInfo: XPCOMUtils.generateCI({
--    classID: Components.ID("{210853d9-2c97-4669-9761-b1ab9cbf57ef}"),
-+    classID: Components.ID(COMPONENT_ID),
-     contractID: "@mozilla.org/dom/identity;1",
-     interfaces: [],
-     classDescription: "Identity DOM Implementation"
-   })
--
- };
- 
- this.NSGetFactory = XPCOMUtils.generateNSGetFactory([nsDOMIdentityInternal]);
 diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm
 --- a/toolkit/identity/Identity.jsm
 +++ b/toolkit/identity/Identity.jsm
-@@ -154,32 +154,44 @@ IDService.prototype = {
-           rp.doError(err);
-           return;
-         }
+@@ -113,17 +113,17 @@ IDService.prototype = {
+    *
+    * @param aRPId
+    *        (integer) the id of the doc object obtained in .watch() and
+    *                  passed to the UX component.
+    *
+    * @param aIdentity
+    *        (string) the email chosen for login
+    */
+-  selectIdentity: function selectIdentity(aRPId, aIdentity) {
++  selectIdentity: function selectIdentity(aRPId, aIdentity, aOptions) {
+     log("selectIdentity: RP id:", aRPId, "identity:", aIdentity);
  
-         // The idpParams tell us where to go to provision and authenticate
-         // the identity.
-         self.IDP._provisionIdentity(aIdentity, idpParams, provId, function gotID(err, aProvId) {
+     // Get the RP that was stored when watch() was invoked.
+     let rp = this.RP._rpFlows[aRPId];
+     if (!rp) {
+       reportError("selectIdentity", "Invalid RP id: ", aRPId);
+       return;
+     }
+@@ -131,16 +131,20 @@ IDService.prototype = {
+     // It's possible that we are in the process of provisioning an
+     // identity.
+     let provId = rp.provId;
  
+     let rpLoginOptions = {
+       loggedInUser: aIdentity,
+       origin: rp.origin
+     };
 +
-+          log("AOK aProvId");
-+          log(aProvId);
-+          log("AOK _provisionFlows");
-+          log(self.IDP._provisionFlows);
-+          log("AOK _provisionFlows[aProvId]");
-+          log(self.IDP._provisionFlows[aProvId]);
-+          log("AOK aRPId");
-+          log(aRPId);
-+
-           // Provision identity may have created a new provision flow
-           // for us.  To make it easier to relate provision flows with
-           // RP callers, we cross index the two here.
-           rp.provId = aProvId;
-           self.IDP._provisionFlows[aProvId].rpId = aRPId;
++    for (let opt in aOptions) {
++      rpLoginOptions[opt] = aOptions[opt];
++    }
+     log("selectIdentity: provId:", provId, "origin:", rp.origin);
  
-           // At this point, we already have a cert.  If the user is also
-           // already authenticated with the IdP, then we can try again
-           // to generate an assertion and login.
-           if (err) {
-             // We are not authenticated.  If we have already tried to
-             // authenticate and failed, then this is a "hard fail" and
-             // we give up.  Otherwise we try to authenticate with the
-             // IdP.
--
-+            log("AOK error, not authenticated");
-+            log(err);
-             if (self.IDP._provisionFlows[aProvId].didAuthentication) {
-+              log("AOK didAuthentication, cleaning up");
-               self.IDP._cleanUpProvisionFlow(aProvId);
+     // Once we have a cert, and once the user is authenticated with the
+     // IdP, we can generate an assertion and deliver it to the doc.
+     let self = this;
+     this.RP._generateAssertion(rp.origin, aIdentity, function hadReadyAssertion(err, assertion) {
+       if (!err && assertion) {
+         self.RP._doLogin(rp, rpLoginOptions, assertion);
+@@ -179,17 +183,17 @@ IDService.prototype = {
                self.RP._cleanUpProvisionFlow(aRPId, aProvId);
                log("ERROR: selectIdentity: authentication hard fail");
                rp.doError("Authentication fail.");
@@ -177,45 +135,17 @@ diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm
              }
              // Try to authenticate with the IdP.  Note that we do
              // not clean up the provision flow here.  We will continue
-@@ -252,16 +264,18 @@ IDService.prototype = {
-    */
-   _fetchWellKnownFile: function _fetchWellKnownFile(aDomain, aCallback, aScheme='https') {
-     if (Services.prefs.getPrefType(PERSONA_FALLBACK) != Ci.nsIPrefBranch.PREF_STRING) {
-       return aCallback("Error: Bad persona fallback preference");
-     }
-     let personaBaseUrl = Services.prefs.getCharPref(PERSONA_FALLBACK);
-     let url = personaBaseUrl + '/wsapi/discovery?domain=' + aDomain;
+             // to use it.
+-            self.IDP._doAuthentication(aProvId, idpParams);
++            self.IDP._doAuthentication(aProvId, idpParams, rpLoginOptions);
+             return;
+           }
  
-+    log(url);
-+
-     // this appears to be a more successful way to get at xmlhttprequest (which supposedly will close with a window
-     let req = Cc["@mozilla.org/xmlextras/xmlhttprequest;1"]
-                 .createInstance(Ci.nsIXMLHttpRequest);
- 
-     // XXX bug 769865 gracefully handle being off-line
-     // XXX bug 769866 decide on how to handle redirects
-     req.open("GET", url, true);
-     req.responseType = "json";
-@@ -269,16 +283,19 @@ IDService.prototype = {
-     req.onload = function _fetchWellKnownFile_onload() {
-       if (req.status < 200 || req.status >= 400) {
-         log("_fetchWellKnownFile", url, ": server returned status:", req.status);
-         return aCallback("Error");
-       }
-       try {
-         let idpParams = req.response;
- 
-+        log("AOK callback ");
-+        log(idpParams);
-+
-         // Verify that the IdP returned a valid configuration
-         if (! (idpParams.provisioning &&
-             idpParams.authentication &&
-             idpParams['public-key'])) {
-           let errStr= "Invalid well-known file from: " + aDomain;
-           log("_fetchWellKnownFile:", errStr);
-           return aCallback(errStr);
-         }
+           // Provisioning flows end when a certificate has been registered.
+           // Thus IdentityProvider's registerCertificate() cleans up the
+           // current provisioning flow.  We only do this here on error.
+           self.RP._generateAssertion(rp.origin, aIdentity, function gotAssertion(err, assertion) {
+             if (err) {
 diff --git a/toolkit/identity/IdentityProvider.jsm b/toolkit/identity/IdentityProvider.jsm
 --- a/toolkit/identity/IdentityProvider.jsm
 +++ b/toolkit/identity/IdentityProvider.jsm
@@ -260,7 +190,51 @@ diff --git a/toolkit/identity/IdentityProvider.jsm b/toolkit/identity/IdentityPr
      return 1;
    },
  
-@@ -430,16 +437,23 @@ IdentityProviderService.prototype = {
+@@ -295,23 +302,41 @@ IdentityProviderService.prototype = {
+    *
+    * @param aProvId
+    *        (int) the identifier of the provisioning flow which failed
+    *
+    * @param aCallback
+    *        (function) to invoke upon completion, with
+    *                   first-positional-param error.
+    */
+-  _doAuthentication: function _doAuthentication(aProvId, aIDPParams) {
++  _doAuthentication: function _doAuthentication(aProvId, aIDPParams, aOptions) {
+     log("_doAuthentication: provId:", aProvId, "idpParams:", aIDPParams);
+     // create an authentication caller and its identifier AuthId
+     // stash aIdentity, idpparams, and callback in it.
+ 
++    var whitelist = [
++      'backgroundColor',
++      'origin',
++      'privacyPolicy',
++      'returnTo',
++      'siteLogo',
++      'siteName',
++      'termsOfService'
++    ];
++
++    var rpLoginOptions = [];
++    for (let opt in aOptions) {
++      if (whitelist.indexOf(opt) !== -1) {
++        rpLoginOptions.push([opt] + '=' + encodeURIComponent(aOptions[opt]));
++      }
++    }
++
+     // extract authentication URL from idpParams
+-    let authPath = aIDPParams.idpParams.authentication;
++    let authPath = aIDPParams.idpParams.authentication +
++      '?' + rpLoginOptions.join('&');
+     let authURI = Services.io.newURI("https://" + aIDPParams.domain, null, null).resolve(authPath);
+ 
+     // beginAuthenticationFlow causes the "identity-auth" topic to be
+     // observed.  Since it's sending a notification to the DOM, there's
+     // no callback.  We wait for the DOM to trigger the next phase of
+     // provisioning.
+     this._beginAuthenticationFlow(aProvId, authURI);
+ 
+@@ -430,16 +455,23 @@ IdentityProviderService.prototype = {
  
    /**
     * Load the provisioning URL in a hidden frame to start the provisioning
