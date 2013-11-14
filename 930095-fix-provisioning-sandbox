@@ -4,7 +4,7 @@
 diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsite.jsm
 --- a/browser/modules/SignInToWebsite.jsm
 +++ b/browser/modules/SignInToWebsite.jsm
-@@ -83,23 +83,33 @@ this.SignInToWebsiteUX = {
+@@ -83,24 +83,29 @@ this.SignInToWebsiteUX = {
      let mainAction = {
        label: chromeWin.gNavigatorBundle.getString("identity.next.label"),
        accessKey: chromeWin.gNavigatorBundle.getString("identity.next.accessKey"),
@@ -26,13 +26,8 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
 +      for (let opt in aOptions) {
 +        rpOptions[opt] = aOptions[opt];
 +      }
-+    } else {
-+      dump(JSON.stringify(IdentityService.RP["_rpFlows"]));
-+
-+    dump("\nAOK options=" + JSON.stringify(options) + "\n");
-+
-+      dump("AOK ERROR, OUCH, NO IdentityService.RP[_rpFlows][options.identity.rpId]");
      }
++
      log("requestLogin: rpId: ", options.identity.rpId);
  
      chromeWin.PopupNotifications.show(browserEl, "identity-request", message,
@@ -40,7 +35,8 @@ diff --git a/browser/modules/SignInToWebsite.jsm b/browser/modules/SignInToWebsi
                                        [], options);
    },
  
-@@ -110,17 +120,17 @@ this.SignInToWebsiteUX = {
+   /**
+@@ -110,17 +115,17 @@ this.SignInToWebsiteUX = {
      return IdentityService.RP.getIdentitiesForSite(aOrigin);
    },
  
@@ -116,7 +112,7 @@ diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm
        reportError("selectIdentity", "Invalid RP id: ", aRPId);
        return;
      }
-@@ -131,17 +131,27 @@ IDService.prototype = {
+@@ -131,16 +131,23 @@ IDService.prototype = {
      // It's possible that we are in the process of provisioning an
      // identity.
      let provId = rp.provId;
@@ -125,17 +121,14 @@ diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm
        loggedInUser: aIdentity,
        origin: rp.origin
      };
-+    log(rpLoginOptions);
++
 +    for (let opt in aOptions) {
 +      if (!! aOptions[opt]) {
-+        dump("AOK setting " + opt + "=" + aOptions[opt] + "\n");
 +        rpLoginOptions[opt] = aOptions[opt];
 +      }
 +
 +    }
      log("selectIdentity: provId:", provId, "origin:", rp.origin);
-+    dump("AOK Identity.jsm rpLoginOptions are\n");
-+    dump(JSON.stringify(rpLoginOptions) + "\n");
  
      // Once we have a cert, and once the user is authenticated with the
      // IdP, we can generate an assertion and deliver it to the doc.
@@ -143,8 +136,8 @@ diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm
      this.RP._generateAssertion(rp.origin, aIdentity, function hadReadyAssertion(err, assertion) {
        if (!err && assertion) {
          self.RP._doLogin(rp, rpLoginOptions, assertion);
-         return;
-@@ -154,53 +164,67 @@ IDService.prototype = {
+@@ -153,43 +160,41 @@ IDService.prototype = {
+         if (err) {
            rp.doError(err);
            return;
          }
@@ -152,17 +145,7 @@ diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm
          // The idpParams tell us where to go to provision and authenticate
          // the identity.
          self.IDP._provisionIdentity(aIdentity, idpParams, provId, function gotID(err, aProvId) {
- 
-+
-+          log("AOK aProvId");
-+          log(aProvId);
-+          log("AOK _provisionFlows");
-+          log(self.IDP._provisionFlows);
-+          log("AOK _provisionFlows[aProvId]");
-+          log(self.IDP._provisionFlows[aProvId]);
-+          log("AOK aRPId");
-+          log(aRPId);
-+
+-
            // Provision identity may have created a new provision flow
            // for us.  To make it easier to relate provision flows with
            // RP callers, we cross index the two here.
@@ -178,10 +161,7 @@ diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm
              // we give up.  Otherwise we try to authenticate with the
              // IdP.
 -
-+            log("AOK error, not authenticated");
-+            log(err);
              if (self.IDP._provisionFlows[aProvId].didAuthentication) {
-+              log("AOK didAuthentication, cleaning up");
                self.IDP._cleanUpProvisionFlow(aProvId);
                self.RP._cleanUpProvisionFlow(aRPId, aProvId);
                log("ERROR: selectIdentity: authentication hard fail");
@@ -201,29 +181,9 @@ diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm
            // current provisioning flow.  We only do this here on error.
            self.RP._generateAssertion(rp.origin, aIdentity, function gotAssertion(err, assertion) {
              if (err) {
-               rp.doError(err);
-               return;
-             }
-+            log("AOK Identity.jsm looking for email - ");
-+            log(rpLoginOptions);
-             self.RP._doLogin(rp, rpLoginOptions, assertion);
-             self.RP._cleanUpProvisionFlow(aRPId, aProvId);
-             return;
-           });
-         });
-       });
-     });
-   },
-@@ -246,22 +270,25 @@ IDService.prototype = {
-    *        (string) (optional) Protocol to use.  Default is https.
-    *                 This is necessary because we are unable to test
-    *                 https.
-    *
-    * @param aCallback
-    *
+@@ -252,16 +257,18 @@ IDService.prototype = {
     */
    _fetchWellKnownFile: function _fetchWellKnownFile(aDomain, aCallback, aScheme='https') {
-+    dump("AOK fetching well known \n");
      if (Services.prefs.getPrefType(PERSONA_FALLBACK) != Ci.nsIPrefBranch.PREF_STRING) {
        return aCallback("Error: Bad persona fallback preference");
      }
@@ -240,26 +200,6 @@ diff --git a/toolkit/identity/Identity.jsm b/toolkit/identity/Identity.jsm
      // XXX bug 769866 decide on how to handle redirects
      req.open("GET", url, true);
      req.responseType = "json";
-@@ -269,16 +296,19 @@ IDService.prototype = {
-     req.onload = function _fetchWellKnownFile_onload() {
-       if (req.status < 200 || req.status >= 400) {
-         log("_fetchWellKnownFile", url, ": server returned status:", req.status);
-         return aCallback("Error");
-       }
-       try {
-         let idpParams = req.response;
- 
-+        log("AOK callback ");
-+        log(idpParams);
-+
-         // Verify that the IdP returned a valid configuration
-         if (! (idpParams.provisioning &&
-             idpParams.authentication &&
-             idpParams['public-key'])) {
-           let errStr= "Invalid well-known file from: " + aDomain;
-           log("_fetchWellKnownFile:", errStr);
-           return aCallback(errStr);
-         }
 diff --git a/toolkit/identity/IdentityProvider.jsm b/toolkit/identity/IdentityProvider.jsm
 --- a/toolkit/identity/IdentityProvider.jsm
 +++ b/toolkit/identity/IdentityProvider.jsm
@@ -304,7 +244,7 @@ diff --git a/toolkit/identity/IdentityProvider.jsm b/toolkit/identity/IdentityPr
      return 1;
    },
  
-@@ -294,24 +301,44 @@ IdentityProviderService.prototype = {
+@@ -294,24 +301,46 @@ IdentityProviderService.prototype = {
     * Begin the authentication process with an IdP
     *
     * @param aProvId
@@ -322,6 +262,8 @@ diff --git a/toolkit/identity/IdentityProvider.jsm b/toolkit/identity/IdentityPr
      // create an authentication caller and its identifier AuthId
      // stash aIdentity, idpparams, and callback in it.
  
++    // Take these whitelisted options and inject them into our fallback IdP's
++    // authentication page via query string parameters
 +    var whitelist = [
 +      'backgroundColor',
 +      'origin',
@@ -351,7 +293,7 @@ diff --git a/toolkit/identity/IdentityProvider.jsm b/toolkit/identity/IdentityPr
      // provisioning.
      this._beginAuthenticationFlow(aProvId, authURI);
  
-@@ -430,16 +457,23 @@ IdentityProviderService.prototype = {
+@@ -430,16 +459,23 @@ IdentityProviderService.prototype = {
  
    /**
     * Load the provisioning URL in a hidden frame to start the provisioning
@@ -375,51 +317,6 @@ diff --git a/toolkit/identity/IdentityProvider.jsm b/toolkit/identity/IdentityPr
     */
    _beginAuthenticationFlow: function _beginAuthenticationFlow(aProvId, aURL) {
      log("_beginAuthenticationFlow:", aProvId, aURL);
-diff --git a/toolkit/identity/IdentityStore.jsm b/toolkit/identity/IdentityStore.jsm
---- a/toolkit/identity/IdentityStore.jsm
-+++ b/toolkit/identity/IdentityStore.jsm
-@@ -56,16 +56,19 @@ IDServiceStore.prototype = {
-    *        (boolean) whether or not the user is logged in
-    *
-    * @param aEmail
-    *        (email) the email address the user is logged in with,
-    *                or, if not logged in, the default email for that origin.
-    */
-   setLoginState: function setLoginState(aOrigin, aState, aEmail) {
-     if (aState && !aEmail) {
-+      dump('AOK aState=' + JSON.stringify(aState) + "\n");
-+      dump(JSON.stringify(aEmail) + "\n");
-+      dump(new Error('ouch').stack);
-       throw "isLoggedIn cannot be set to true without an email";
-     }
-     return this._loginStates[aOrigin] = {isLoggedIn: aState, email: aEmail};
-   },
-   getLoginState: function getLoginState(aOrigin) {
-     return aOrigin in this._loginStates ? this._loginStates[aOrigin] : null;
-   },
-   clearLoginState: function clearLoginState(aOrigin) {
-diff --git a/toolkit/identity/RelyingParty.jsm b/toolkit/identity/RelyingParty.jsm
---- a/toolkit/identity/RelyingParty.jsm
-+++ b/toolkit/identity/RelyingParty.jsm
-@@ -139,16 +139,18 @@ IdentityRelyingParty.prototype = {
-    * on login
-    *
-    * Note that this calls _getAssertion
-    */
-   _doLogin: function _doLogin(aRpCaller, aOptions, aAssertion) {
-     log("_doLogin: rpId:", aRpCaller.id, "origin:", aOptions.origin);
- 
-     let loginWithAssertion = function loginWithAssertion(assertion) {
-+      log(aOptions);
-+      log("AOK loggedInUser" + aOptions.loggedInUser);
-       this._store.setLoginState(aOptions.origin, true, aOptions.loggedInUser);
-       this._notifyLoginStateChanged(aRpCaller.id, aOptions.loggedInUser);
-       aRpCaller.doLogin(assertion);
-       aRpCaller.doReady();
-     }.bind(this);
- 
-     if (aAssertion) {
-       loginWithAssertion(aAssertion);
 diff --git a/toolkit/identity/Sandbox.jsm b/toolkit/identity/Sandbox.jsm
 --- a/toolkit/identity/Sandbox.jsm
 +++ b/toolkit/identity/Sandbox.jsm
